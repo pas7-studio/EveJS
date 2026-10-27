@@ -2984,8 +2984,7 @@ function completeHaulCycle(scene, fleetRecord, now) {
           const hauler = scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
           const hp = hauler && hauler.position, mp = miner.position;
           const gap = hp ? Math.round(Math.sqrt(Math.pow(Number(hp.x) - Number(mp.x), 2) + Math.pow(Number(hp.y) - Number(mp.y), 2) + Math.pow(Number(hp.z) - Number(mp.z), 2))) : null;
-          const haulerWarping = Boolean(hauler && (hauler.mode === "WARP" || hauler.pendingWarp || hauler.warpState));
-          let approach = {status: "NO_HAULER_ENTITY", gap};
+          const haulerWarping = Boolean(hauler && (hauler.mode === "WARP" || hauler.pendingWarp || hauler.warpState));          let approach = {status: "NO_HAULER_ENTITY", gap};
           if (hauler) {
             const rareRetry = attempts === 1 || attempts % 24 === 0;
             if (rareRetry && !haulerWarping && gap !== null && gap > 150000 && typeof npcRuntime.warpToEntity === "function") {
@@ -3004,14 +3003,25 @@ function completeHaulCycle(scene, fleetRecord, now) {
                 // the transfer range is 2 500 m. Leave a correct order alone.
                 approach = {...approach, gap, status: "ALREADY_FOLLOWING"};
               } else {
-                const order = typeof npcRuntime.follow === "function"
-                  ? npcRuntime.follow(haulerID, minerID, 500)
-                  : (typeof npcRuntime.orbit === "function" ? npcRuntime.orbit(haulerID, minerID, 500) : null);
+                // Measured 2026-10-27: npcRuntime.follow() sets the scene movement mode and
+                // the stock NPC behaviour loop re-tasks the hull on its next think. The same
+                // trap is already documented in this codebase ("a one-shot follow loses to
+                // the NPC's own loop"). The measured result was mode FOLLOW, speedFraction 1
+                // and a FROZEN 3 221 m gap over dozens of attempts. A manual order is the
+                // path the behaviour loop itself honours, so the approach must use it.
+                const npcService = require("../../space/npc/npcService");
+                const order = typeof npcService.issueManualOrder === "function"
+                  ? npcService.issueManualOrder(haulerID, {
+                    type: "follow", targetID: minerID, followRangeMeters: 500,
+                    allowWeapons: false,
+                  })
+                  : (typeof npcRuntime.follow === "function"
+                    ? npcRuntime.follow(haulerID, minerID, 500) : null);
                 approach = {...approach, gap, status: order && order.success === true ? "FOLLOWING_MINER" : "FOLLOW_REFUSED", nativeReason: String((order && order.errorMsg) || approach.nativeReason || "").slice(0, 48)};
               }
             }
           }
-          require("../../space/coopRuntimeProbe").observe("living-haul-approach-issued", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), haulerID, minerID, ...approach });
+          require("../../space/coopRuntimeProbe").observe("living-haul-approach-issued", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), haulerID, minerID, ...approach, haulerMode: String((hauler && hauler.mode) || ""), haulerTargetID: toInt(hauler && hauler.targetEntityID, 0), haulerSpeed: toFiniteNumber(hauler && hauler.speedFraction, 0), minerMode: String((miner && miner.mode) || "") });
         }
       } catch (_coopApproachError) { console.warn("[CoopHaulApproach]", _coopApproachError.message); }
       require("../../space/coopRuntimeProbe").observe("living-haul-empty-retry", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), attempts });
