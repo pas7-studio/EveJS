@@ -2997,6 +2997,12 @@ function completeHaulCycle(scene, fleetRecord, now) {
             if (approach.status !== "WARPED_TO_MINER") {
               if (haulerWarping) {
                 approach = {...approach, gap, status: "ALREADY_WARPING"};
+              } else if (String(hauler.mode || "").toUpperCase() === "FOLLOW" &&
+                Number(hauler.targetEntityID) === Number(minerID)) {
+                // Re-issuing the same follow every five seconds restarted the very approach
+                // it was waiting for: measured, the gap oscillated around 3.3-4.9 km while
+                // the transfer range is 2 500 m. Leave a correct order alone.
+                approach = {...approach, gap, status: "ALREADY_FOLLOWING"};
               } else {
                 const order = typeof npcRuntime.follow === "function"
                   ? npcRuntime.follow(haulerID, minerID, 500)
