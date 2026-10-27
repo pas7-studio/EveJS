@@ -2966,44 +2966,48 @@ function completeHaulCycle(scene, fleetRecord, now) {
       fleetRecord.nextThinkAtMs = fleetRecord.haulCompleteAtMs;
       // The stock warp lands the hauler near the ASTEROID (750 m radius) while the
       // miner orbits that rock kilometres away, so the 2 500 m transfer range was
-      // never reached (measured: 35 km - 130 km). Send the hauler to the miner
-      // itself, but RARELY: a warp takes ~24 s even at x5, so re-issuing it every
-      // 10 s restarted the very warp it was waiting for (measured: range never
-      // closed). Once per two minutes, plus the first failure of a haul.
-      if (attempts === 1 || attempts % 24 === 0) {
-        try {
-          const minerID = toInt((fleetRecord.minerEntityIDs || [])[0], 0);
-          const haulerID = toInt((fleetRecord.haulerEntityIDs || [])[0], 0);
-          const miner = minerID && scene.getEntityByID ? scene.getEntityByID(minerID) : null;
-          if (haulerID && miner && miner.position) {
-            // Measured 2026-10-27 on the work stack: the hauler sat 24 km - 90 km from its
-            // own miner, every warp answered WARP_DISTANCE_TOO_CLOSE, and the orbit
-            // fallback left it drifting AWAY from the miner (57 km -> 90 km between two
-            // retries). Warp only beyond the native warp minimum, otherwise FOLLOW the
-            // moving miner at sub-warp speed, and record which order was really taken.
-            const npcRuntime = require("../../space/npc/npcRuntime");
-            const hauler = scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
-            const hp = hauler && hauler.position, mp = miner.position;
-            const gap = hp ? Math.round(Math.sqrt(Math.pow(Number(hp.x) - Number(mp.x), 2) + Math.pow(Number(hp.y) - Number(mp.y), 2) + Math.pow(Number(hp.z) - Number(mp.z), 2))) : null;
-            let approach = {status: "NO_HAULER_ENTITY", gap};
-            if (hauler) {
-              if (gap !== null && gap > 150000 && typeof npcRuntime.warpToEntity === "function") {
-                const warpResult = npcRuntime.warpToEntity(haulerID, minerID, { forceImmediateStart: false, broadcastWarpStartToVisibleSessions: true });
-                approach = warpResult && warpResult.success === true
-                  ? {status: "WARPED_TO_MINER", gap}
-                  : {status: "WARP_REFUSED", gap, nativeReason: String((warpResult && warpResult.errorMsg) || "").slice(0, 48)};
-              }
-              if (approach.status !== "WARPED_TO_MINER") {
+      // never reached (measured: 35 km - 130 km). Send the hauler to the miner itself.
+      // Measured 2026-10-27 on the work stack: the hauler sat 24 km - 90 km from its own
+      // miner, every warp answered WARP_DISTANCE_TOO_CLOSE, and the orbit fallback left
+      // it drifting AWAY (57 km -> 90 km between two retries). Worse, the miners were
+      // parked between two attempts and something re-accelerated them onto a straight
+      // full-throttle line, so a follow order issued once every two minutes lost the race
+      // every time. A warp is expensive and is re-issued RARELY (it must not restart the
+      // warp it waits for), but a follow order is cheap and idempotent: issue it on EVERY
+      // unproductive haul attempt, and publish which order the native call really took.
+      try {
+        const minerID = toInt((fleetRecord.minerEntityIDs || [])[0], 0);
+        const haulerID = toInt((fleetRecord.haulerEntityIDs || [])[0], 0);
+        const miner = minerID && scene.getEntityByID ? scene.getEntityByID(minerID) : null;
+        if (haulerID && miner && miner.position) {
+          const npcRuntime = require("../../space/npc/npcRuntime");
+          const hauler = scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
+          const hp = hauler && hauler.position, mp = miner.position;
+          const gap = hp ? Math.round(Math.sqrt(Math.pow(Number(hp.x) - Number(mp.x), 2) + Math.pow(Number(hp.y) - Number(mp.y), 2) + Math.pow(Number(hp.z) - Number(mp.z), 2))) : null;
+          const haulerWarping = Boolean(hauler && (hauler.mode === "WARP" || hauler.pendingWarp || hauler.warpState));
+          let approach = {status: "NO_HAULER_ENTITY", gap};
+          if (hauler) {
+            const rareRetry = attempts === 1 || attempts % 24 === 0;
+            if (rareRetry && !haulerWarping && gap !== null && gap > 150000 && typeof npcRuntime.warpToEntity === "function") {
+              const warpResult = npcRuntime.warpToEntity(haulerID, minerID, { forceImmediateStart: false, broadcastWarpStartToVisibleSessions: true });
+              approach = warpResult && warpResult.success === true
+                ? {status: "WARPED_TO_MINER", gap}
+                : {status: "WARP_REFUSED", gap, nativeReason: String((warpResult && warpResult.errorMsg) || "").slice(0, 48)};
+            }
+            if (approach.status !== "WARPED_TO_MINER") {
+              if (haulerWarping) {
+                approach = {...approach, gap, status: "ALREADY_WARPING"};
+              } else {
                 const order = typeof npcRuntime.follow === "function"
                   ? npcRuntime.follow(haulerID, minerID, 500)
                   : (typeof npcRuntime.orbit === "function" ? npcRuntime.orbit(haulerID, minerID, 500) : null);
                 approach = {...approach, gap, status: order && order.success === true ? "FOLLOWING_MINER" : "FOLLOW_REFUSED", nativeReason: String((order && order.errorMsg) || approach.nativeReason || "").slice(0, 48)};
               }
             }
-            require("../../space/coopRuntimeProbe").observe("living-haul-approach-issued", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), haulerID, minerID, ...approach });
           }
-        } catch (_coopApproachError) { console.warn("[CoopHaulApproach]", _coopApproachError.message); }
-      }
+          require("../../space/coopRuntimeProbe").observe("living-haul-approach-issued", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), haulerID, minerID, ...approach });
+        }
+      } catch (_coopApproachError) { console.warn("[CoopHaulApproach]", _coopApproachError.message); }
       require("../../space/coopRuntimeProbe").observe("living-haul-empty-retry", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), attempts });
       return;
     }
