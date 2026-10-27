@@ -1045,49 +1045,94 @@ function buildMiningMovementOrder(targetEntityID, movementMode, distanceMeters) 
   };
 }
 
+// Measured 2026-10-27 on the work stack (admin bridge mining_fleet_diagnose):
+//  - miners reported mode GOTO with targetPoint ~1.0e16 m from the system origin;
+//  - the hull itself sat 2.5 AU out and only 54 km from its nearest belt;
+//  - miner -> rock distance GREW (45 765 m -> 49 487 m in 29 s of wallclock);
+//  - the hauler followed its miner, closed to 4 km, and the gap reopened every cycle.
+// `1.0e16` is not a computed destination: it is what the native speed command writes
+// (movement/commands/movementStopSpeedCommands.js: targetPoint = position + direction *
+// 1.0e16) when a positive speed fraction is applied to a hull in mode STOP. Such a hull
+// flies straight forever in whatever direction it happened to face. Stopping it is the
+// only order that can be honoured, and it makes the next orbit/follow meaningful.
+function stopRunawayFullThrottle(scene, entity, reason) {
+  if (!scene || !entity) return false;
+  const target = entity.targetPoint;
+  const position = entity.position;
+  if (
+    !target ||
+    !position ||
+    !Number.isFinite(Number(target.x)) ||
+    !Number.isFinite(Number(position.x))
+  ) {
+    return false;
+  }
+  const gap = Math.hypot(
+    Number(target.x) - Number(position.x),
+    Number(target.y) - Number(position.y),
+    Number(target.z) - Number(position.z),
+  );
+  const fullThrottle = toFiniteNumber(entity.speedFraction, 0) > 0;
+  if (!(gap > 1e9) && !fullThrottle) return false;
+  let accepted = false;
+  try {
+    const npcRuntime = require("../../space/npc/npcRuntime");
+    if (typeof npcRuntime.stop === "function") {
+      const result = npcRuntime.stop(entity.itemID, { reason: "coop-runaway-" + reason });
+      accepted = result === true || Boolean(result && result.success === true);
+    } else if (typeof scene.stopShipEntity === "function") {
+      accepted = scene.stopShipEntity(entity) === true;
+    }
+  } catch (_coopStopError) { /* an unstoppable hull must still receive its new order */ }
+  try {
+    require("../../space/coopMiningTrace").note("RUNAWAY_ORDER_STOPPED", {
+      fleetID: 0,
+      systemID: toInt(scene.systemID, 0),
+      shipID: toInt(entity.itemID, 0),
+      reason,
+      targetGapMeters: Math.round(gap),
+      speedFraction: toFiniteNumber(entity.speedFraction, 0),
+      accepted,
+    });
+  } catch (_coopStopNote) { /* telemetry must never break movement */ }
+  return accepted;
+}
+
+// While a fleet is hauling, loaded or returning, this function's caller returns before the
+// per-miner loop - so the miners never receive another order. Combined with the runaway
+// straight line above, they simply flew away from the belt and the hauler could not reach
+// them. Park them where they are: mining resumes from a known position, and the hauler
+// only has to close a distance that is not growing.
+function parkFleetMiners(scene, fleetRecord, reason) {
+  if (!scene || !fleetRecord) return 0;
+  let parked = 0;
+  for (const minerEntityID of Array.isArray(fleetRecord.minerEntityIDs)
+    ? fleetRecord.minerEntityIDs
+    : []) {
+    const entity = scene.getEntityByID ? scene.getEntityByID(minerEntityID) : null;
+    if (!entity || entity.mode === "WARP" || entity.pendingWarp || entity.warpState) {
+      continue;
+    }
+    if (stopRunawayFullThrottle(scene, entity, reason)) parked += 1;
+  }
+  if (parked > 0) {
+    try {
+      require("../../space/coopRuntimeProbe").observe("living-mining-miners-parked", null,
+        { spaceState: { systemID: toInt(scene.systemID, 0) } },
+        { fleetID: toInt(fleetRecord.fleetID, 0), reason, parked });
+    } catch (_coopParkNote) { /* telemetry must never break movement */ }
+  }
+  return parked;
+}
+
 function syncMiningApproachOrder(scene, entity, targetEntity, orbitDistanceMeters) {
   if (!scene || !entity || !targetEntity) {
     return false;
   }
 
-  // Measured 2026-10-27 on the work stack: after a restart both fleets reported mode
-  // GOTO with a movement targetPoint ~1.0e16 m from the system origin (68 000 AU) while
-  // the hull itself sat 2.5 AU out and only 54 km from its nearest belt. Every new
-  // orbit/follow order was then flown against that nonsense point, so the hauler and the
-  // miners drifted away from each other (24-90 km, oscillating) and no ore ever moved.
-  // A movement target further away than a whole solar system is never a real order: stop
-  // the hull once so the approach below starts from a clean state instead of a ghost.
-  const ghostTarget = entity.targetPoint;
-  const hullPosition = entity.position;
-  if (
-    ghostTarget &&
-    hullPosition &&
-    Number.isFinite(Number(ghostTarget.x)) &&
-    Number.isFinite(Number(hullPosition.x)) &&
-    Math.hypot(
-      Number(ghostTarget.x) - Number(hullPosition.x),
-      Number(ghostTarget.y) - Number(hullPosition.y),
-      Number(ghostTarget.z) - Number(hullPosition.z),
-    ) > 1e9
-  ) {
-    try {
-      const npcRuntime = require("../../space/npc/npcRuntime");
-      if (typeof npcRuntime.stop === "function") {
-        npcRuntime.stop(entity.itemID, { reason: "coop-absurd-movement-target" });
-      } else if (typeof scene.stopShipEntity === "function") {
-        scene.stopShipEntity(entity);
-      }
-    } catch (_coopGhostError) { /* a hull we cannot stop must still get a new order */ }
-    try {
-      require("../../space/coopRuntimeProbe").observe("living-mining-order-reset", null,
-        { spaceState: { systemID: Number(scene.systemID) || 0 } },
-        { shipID: toInt(entity.itemID, 0), targetID: toInt(targetEntity.itemID, 0),
-          ghostGapMeters: Math.round(Math.hypot(
-            Number(ghostTarget.x) - Number(hullPosition.x),
-            Number(ghostTarget.y) - Number(hullPosition.y),
-            Number(ghostTarget.z) - Number(hullPosition.z))) });
-    } catch (_coopGhostNote) { /* telemetry must never break movement */ }
-  }
+  // A hull that is still flying a native straight-line full-throttle order cannot be
+  // re-aimed sensibly: stop it once so the approach below starts from a clean state.
+  stopRunawayFullThrottle(scene, entity, "mining-approach");
 
   const normalizedOrbitDistance = Math.max(0, toFiniteNumber(orbitDistanceMeters, 0));
   const surfaceDistanceMeters = getSurfaceDistance(entity, targetEntity);
@@ -3084,12 +3129,17 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
 
   if (process.env.EVEJS_COOP_PLAYER_NPC_MINING_COMPANY === "1" && require("../../space/coopPlayerMiningFleetTick").beforeTick({scene,fleetRecord,now,hooks,startHaul:()=>startHaulCycle(scene,fleetRecord,now,hooks),deactivate:()=>deactivateMiningModulesForFleet(scene,fleetRecord,hooks,"player-mining-shift"),retreat:()=>retreatFleetToOrigin(fleetRecord,{state:"retreating",scene,hooks,reason:"player-mining-shift"})})===true) return;
   if (fleetRecord.state === "hauling") {
+    // The state machine returns here, before the per-miner loop, so the miners would
+    // otherwise keep whatever movement they had - including a full-throttle straight line
+    // that carries them away from their own belt while the hauler chases them.
+    parkFleetMiners(scene, fleetRecord, "hauling");
     if (now >= toFiniteNumber(fleetRecord.haulCompleteAtMs, 0)) {
       completeHaulCycle(scene, fleetRecord, now);
     }
     return;
   }
   if (fleetRecord.state === "loaded") {
+    parkFleetMiners(scene, fleetRecord, "loaded");
     if (now < toFiniteNumber(fleetRecord.loadedUntilMs, 0)) return;
     const ingressMs = Math.max(250, toFiniteNumber(config.miningNpcWarpIngressDurationMs, DEFAULT_MINING_WARP_INGRESS_DURATION_MS));
     if (process.env.EVEJS_COOP_NPC_STATION_DELIVERY === "1") {
@@ -3333,6 +3383,8 @@ module.exports = {
     areManualOrdersEquivalent,
     applyPassiveMiningFleetOverrides,
     syncMiningApproachOrder,
+    stopRunawayFullThrottle,
+    parkFleetMiners,
     chooseFleetMineableTarget,
     chooseMineableTargetForMiner,
     syncMiningTargetLock,
