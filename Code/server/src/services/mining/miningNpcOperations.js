@@ -1050,6 +1050,45 @@ function syncMiningApproachOrder(scene, entity, targetEntity, orbitDistanceMeter
     return false;
   }
 
+  // Measured 2026-10-27 on the work stack: after a restart both fleets reported mode
+  // GOTO with a movement targetPoint ~1.0e16 m from the system origin (68 000 AU) while
+  // the hull itself sat 2.5 AU out and only 54 km from its nearest belt. Every new
+  // orbit/follow order was then flown against that nonsense point, so the hauler and the
+  // miners drifted away from each other (24-90 km, oscillating) and no ore ever moved.
+  // A movement target further away than a whole solar system is never a real order: stop
+  // the hull once so the approach below starts from a clean state instead of a ghost.
+  const ghostTarget = entity.targetPoint;
+  const hullPosition = entity.position;
+  if (
+    ghostTarget &&
+    hullPosition &&
+    Number.isFinite(Number(ghostTarget.x)) &&
+    Number.isFinite(Number(hullPosition.x)) &&
+    Math.hypot(
+      Number(ghostTarget.x) - Number(hullPosition.x),
+      Number(ghostTarget.y) - Number(hullPosition.y),
+      Number(ghostTarget.z) - Number(hullPosition.z),
+    ) > 1e9
+  ) {
+    try {
+      const npcRuntime = require("../../space/npc/npcRuntime");
+      if (typeof npcRuntime.stop === "function") {
+        npcRuntime.stop(entity.itemID, { reason: "coop-absurd-movement-target" });
+      } else if (typeof scene.stopShipEntity === "function") {
+        scene.stopShipEntity(entity);
+      }
+    } catch (_coopGhostError) { /* a hull we cannot stop must still get a new order */ }
+    try {
+      require("../../space/coopRuntimeProbe").observe("living-mining-order-reset", null,
+        { spaceState: { systemID: Number(scene.systemID) || 0 } },
+        { shipID: toInt(entity.itemID, 0), targetID: toInt(targetEntity.itemID, 0),
+          ghostGapMeters: Math.round(Math.hypot(
+            Number(ghostTarget.x) - Number(hullPosition.x),
+            Number(ghostTarget.y) - Number(hullPosition.y),
+            Number(ghostTarget.z) - Number(hullPosition.z))) });
+    } catch (_coopGhostNote) { /* telemetry must never break movement */ }
+  }
+
   const normalizedOrbitDistance = Math.max(0, toFiniteNumber(orbitDistanceMeters, 0));
   const surfaceDistanceMeters = getSurfaceDistance(entity, targetEntity);
   const sameTarget =
