@@ -266,6 +266,7 @@ function getNpcTableIndex(tableName) {
 }
 
 function findRawByID(tableName, value) {
+  if (tableName === "npcLoadouts" && process.env.EVEJS_COOP_WAR_PATROL_LOADOUT_ROW === "1") { try { const coopAuthoredRow = require("../coopWarPatrolLoadoutRow").resolveRow(value); if (coopAuthoredRow) return coopAuthoredRow; } catch (_error) { /* static table stays authoritative */ } }
   const normalizedValue = String(value || "").trim();
   if (!normalizedValue) {
     return null;
@@ -456,13 +457,20 @@ function resolveNpcStartupRule(query, fallbackStartupRuleID = "") {
   };
 }
 
-function buildNpcDefinition(profileID) {
+function buildNpcDefinition(profileID, options = {}) {
   const profileRow = findRawByID(NPC_TABLE.PROFILES, profileID);
   if (!profileRow) {
     return null;
   }
 
-  const loadoutRow = findRawByID(NPC_TABLE.LOADOUTS, profileRow.loadoutID);
+  // An explicit loadout override fits a real authored loadout row for this
+  // profile without editing the profile table (e.g. a pirate profile whose row
+  // points at the retail empty loadout while its own `*_loadout` row carries the
+  // real turret). Without the option the profile's own row is used, unchanged.
+  const requestedLoadoutID = String((options && options.loadoutID) || "").trim();
+  const loadoutRow = requestedLoadoutID
+    ? findRawByID(NPC_TABLE.LOADOUTS, requestedLoadoutID)
+    : findRawByID(NPC_TABLE.LOADOUTS, profileRow.loadoutID);
   const behaviorProfileRow = findRawByID(
     NPC_TABLE.BEHAVIOR_PROFILES,
     profileRow.behaviorProfileID,

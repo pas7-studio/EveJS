@@ -143,8 +143,10 @@ class TutorialSvcService extends BaseService {
     return buildRowset(["actionID", "actionTypeID", "actionData"], []);
   }
 
-  Handle_GetCharacterTutorialState() {
+  Handle_GetCharacterTutorialState(args, session) {
     log.debug("[TutorialSvc] GetCharacterTutorialState");
+    if (process.env.EVEJS_COOP_NPE_NATIVE_SAFETY === "1")
+      return require("../../space/coopNpeSafety").currentTutorialState(args, session);
     return 0;
   }
 

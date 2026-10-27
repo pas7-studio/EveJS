@@ -94,6 +94,16 @@ function isCombatDormantControllerRecord(controllerRecord) {
   const entityType = String(controllerRecord.entityType || "").trim().toLowerCase();
   const startupRuleID = String(controllerRecord.startupRuleID || "").trim();
   const operatorKind = String(controllerRecord.operatorKind || "").trim();
+  // Dormancy is a memory optimisation for transient ambient/combat NPCs. A
+  // durable NPC is owned by whatever restored it and is re-materialised as soon
+  // as it disappears, so evicting it here (a scene with no sessions triggers this
+  // sweep) puts the two mechanisms in a loop: dematerialise, restore, repeat,
+  // and every fresh entity starts with an empty module-effect map, so a mining
+  // cycle can never finish. Durable rows are never dormant.
+  if (controllerRecord.transient !== true) {
+    return false;
+  }
+
   return (
     runtimeKind === "nativeCombat" &&
     (entityType === "npc" || entityType === "concord") &&

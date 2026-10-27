@@ -135,6 +135,18 @@ if (serviceManager.lookup("trademgr") && !serviceManager.lookup("tradeMgr")) {
   serviceManager.registerAlias("tradeMgr", "trademgr");
 }
 
+if (process.env.EVEJS_COOP_NATIVE_CONTRACTS === "1") {
+  // The stock client calls contractMgr, but that service has no settlement
+  // handlers. Route the existing name to the authoritative contractProxy.
+  const nativeContractProxy = serviceManager.lookup("contractProxy");
+  if (!serviceManager.lookup("contractMgr") || !nativeContractProxy ||
+      typeof nativeContractProxy.Handle_CreateContract !== "function" ||
+      typeof nativeContractProxy.Handle_AcceptContract !== "function" ||
+      typeof nativeContractProxy.Handle_CompleteContract !== "function")
+    throw Error("COOP_NATIVE_CONTRACT_PROXY_UNAVAILABLE");
+  serviceManager.registerAlias("contractMgr", "contractProxy");
+}
+
 log.success(`registered ${serviceManager.count} services`);
 log.line();
 

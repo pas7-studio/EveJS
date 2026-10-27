@@ -268,6 +268,7 @@ function disconnectCharacterSession(session, options = {}) {
   const structureID = Number(session.structureid || session.structureID || 0);
 
   persistCharacterLogoffState(session);
+  require("../../space/coopRuntimeProbe").observe("disconnect-after-persist", session, null);
   try {
     const fleetRuntime = require(path.join(__dirname, "../fleets/fleetRuntime"));
     if (fleetRuntime && typeof fleetRuntime.handleSessionDisconnected === "function") {

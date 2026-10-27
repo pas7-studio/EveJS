@@ -251,6 +251,10 @@ function applyCapitalNpcCombatOverrides(entity, entityRecord, definition) {
       toFiniteNumber(entity.capacitorCapacity, 0),
       toFiniteNumber(getTypeAttributeValue(supportHullTypeID, "capacitorCapacity"), 0),
     );
+    entity.capacitorRechargeRate = Math.max(
+      toFiniteNumber(entity.capacitorRechargeRate, 0),
+      toFiniteNumber(getTypeAttributeValue(supportHullTypeID, "rechargeRate"), 0),
+    );
     entity.scanResolution = Math.max(
       toFiniteNumber(entity.scanResolution, 0),
       toFiniteNumber(getTypeAttributeValue(supportHullTypeID, "scanResolution"), 0),
@@ -265,6 +269,7 @@ function applyCapitalNpcCombatOverrides(entity, entityRecord, definition) {
     entity.passiveDerivedState.maxTargetRange = entity.maxTargetRange;
     entity.passiveDerivedState.scanResolution = entity.scanResolution;
     entity.passiveDerivedState.capacitorCapacity = entity.capacitorCapacity;
+    entity.passiveDerivedState.capacitorRechargeRate = entity.capacitorRechargeRate;
   }
   return entity;
 }
@@ -331,6 +336,14 @@ function applyNativeNpcHullCombatOverrides(entity, entityRecord, definition) {
     toFiniteNumber(entity.capacitorCapacity, 0),
     dogmaCapacitorCapacity,
   );
+  // Native NPC hulls never received a recharge rate, so CCP passive capacitor
+  // recharge never ran for them and a module that needs cap worked exactly once.
+  if (toFiniteNumber(entity.capacitorRechargeRate, 0) <= 0) {
+    entity.capacitorRechargeRate = Math.max(
+      0,
+      toFiniteNumber(getTypeAttributeValue(shipTypeID, "rechargeRate"), 0),
+    );
+  }
   if (typeHasEffectName(shipTypeID, "entitySuperWeapon")) {
     entity.component_turboshield = 0;
   }
@@ -340,6 +353,7 @@ function applyNativeNpcHullCombatOverrides(entity, entityRecord, definition) {
     entity.passiveDerivedState.maxTargetRange = entity.maxTargetRange;
     entity.passiveDerivedState.maxLockedTargets = entity.maxLockedTargets;
     entity.passiveDerivedState.capacitorCapacity = entity.capacitorCapacity;
+    entity.passiveDerivedState.capacitorRechargeRate = entity.capacitorRechargeRate;
   }
   return entity;
 }
@@ -554,6 +568,19 @@ function buildNativeCargoRecords(entityRecord, moduleRecords, definition, option
       if (!isNpcChargeCompatibleWithModule(moduleRecord, chargeType.typeID)) {
         continue;
       }
+      // COOP_EX03B3_SPLIT_OPEN
+      const splitNativeScannerCharges =
+        process.env.EVEJS_COOP_NPC_PROBE_LOADOUT_SPLIT === "1" &&
+        process.env.EVEJS_COOP_NPC_PROBE_LAUNCH === "1" &&
+        toPositiveInt(chargeType.groupID, 0) === 479 &&
+        toPositiveInt(chargeType.categoryID, 0) === 8 &&
+        toPositiveInt(moduleRecord.groupID, 0) === 481 &&
+        chargeEntry.singleton !== true &&
+        quantityPerModule >= 4 && quantityPerModule <= 8 &&
+        transient !== true;
+      const originalUnits = splitNativeScannerCharges ? quantityPerModule : 1;
+      for (let originalUnit = 0; originalUnit < originalUnits; originalUnit += 1) {
+      // COOP_EX03B3_SPLIT_OPEN_END
 
       const cargoIDResult = nativeNpcStore.allocateCargoID({
         transient,
@@ -575,7 +602,7 @@ function buildNativeCargoRecords(entityRecord, moduleRecords, definition, option
         groupID: toPositiveInt(chargeType.groupID, 0),
         categoryID: toPositiveInt(chargeType.categoryID, 0),
         itemName: String(chargeType.name || ""),
-        quantity: quantityPerModule,
+        quantity: splitNativeScannerCharges ? 1 : quantityPerModule,
         singleton,
         moduleState:
           singleton
@@ -597,6 +624,9 @@ function buildNativeCargoRecords(entityRecord, moduleRecords, definition, option
         return upsertResult;
       }
       cargoRecords.push(cargoRecord);
+      // COOP_EX03B3_SPLIT_CLOSE
+      }
+      // COOP_EX03B3_SPLIT_CLOSE_END
     }
   }
 
@@ -982,6 +1012,9 @@ function materializeNativeRuntimeEntity(scene, entityRecord, controllerRecord, d
   if (runtimeKind === "nativeAmbient") {
     syncNativeAmbientIdleState(scene, entity, controller, definition);
   }
+  if (process.env.EVEJS_COOP_ESCORT_NATIVE_INGRESS_SNAPSHOT === "1" && entity.nativeNpc === true) {
+    try { require("../coopNativeStationArrival").restoreNativeIngress(entity, entityRecord); } catch (_) { /* skip recovery; never alter spawn */ }
+  }
   return {
     success: true,
     data: {
@@ -1180,7 +1213,10 @@ function dematerializeNativeController(controller, options = {}) {
       nativeNpcStore.upsertNativeEntity(
         buildStoredEntityRecordFromRuntimeEntity(storedEntityRecord, runtimeEntity),
         {
-          transient: true,
+          // A durable NPC keeps its durable identity: marking this state write
+          // transient would strip the row from every later flush, so a restart
+          // would find no ship and start the world from zero again.
+          transient: storedEntityRecord.transient === true,
         },
       );
     }
@@ -1193,7 +1229,7 @@ function dematerializeNativeController(controller, options = {}) {
           runtimeController,
         ),
         {
-          transient: true,
+          transient: storedControllerRecord.transient === true,
         },
       );
     }
@@ -1227,6 +1263,28 @@ function spawnNativeNpcEntityInContext(context, definition, options = {}) {
     };
   }
 
+  // COOP_EX03B4_NATIVE_SCOUT_AUTHORING
+  if (process.env.EVEJS_COOP_NPC_SCOUT_LOADOUT === "1" &&
+      process.env.EVEJS_COOP_NPC_PROBE_LOADOUT_SPLIT === "1" &&
+      process.env.EVEJS_COOP_NPC_PROBE_LAUNCH === "1" &&
+      options.coopExpeditionScout === true &&
+      options.transient === false) {
+    const explorationAuthority = require(path.join(__dirname,
+      "../../services/exploration/explorationAuthority"));
+    const authoredScout = require(path.join(__dirname, "../coopNpcScoutLoadout"))
+      .createNpcScoutLoadout({
+        resolveItemByTypeID,
+        resolveItemByName:name=>require(path.join(__dirname,
+          "../../services/inventory/itemTypeRegistry")).resolveItemByName(name),
+        typeHasEffectName,
+        withAnalyzers:process.env.EVEJS_COOP_NPC_EXPEDITION_HACK==="1",
+        compatibleCharges:typeID=>explorationAuthority
+          .getCompatibleProbeChargeTypeIDs(typeID)
+      }).apply(definition);
+    if (!authoredScout.success) return authoredScout;
+    definition = authoredScout.definition;
+  }
+  // COOP_EX03B4_NATIVE_SCOUT_AUTHORING_END
   const hardwareValidation = validateNpcHardwareDefinition(definition);
   if (!hardwareValidation.success) {
     return hardwareValidation;

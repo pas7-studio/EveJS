@@ -945,6 +945,19 @@ function isShipWarpDisabledByRuntime(entity, nowMs = Date.now()) {
     isMobileAnalysisBeaconWarpDisabled(entity, nowMs)
   );
 }
+// The native NPC loops command a hull by ENTITY ID (runtime.warpToPoint(entityID,
+// ...) and runtime.warpToEntity(entityID, ...)), while a player commands it by
+// session. getShipEntityForSession only understands a session, so every
+// pre-flight check in those two methods silently saw no ship for an NPC: a
+// scrambled or immobilised NPC hull still warped, which is exactly the warp a
+// real warp disruptor is supposed to forbid.
+function resolveCommandShipEntity(runtime, sessionOrEntityID) {
+  if (sessionOrEntityID && typeof sessionOrEntityID === "object") {
+    return runtime.getShipEntityForSession(sessionOrEntityID);
+  }
+  const entityID = toInt(sessionOrEntityID, 0);
+  return entityID > 0 ? runtime.getEntityByID(entityID) : null;
+}
 
 function roundNumber(value, decimals = 1) {
   const factor = 10 ** decimals;
@@ -5628,14 +5641,27 @@ function refreshShipConditionFields(entity) {
     ? getShipConditionState(shipItem)
     : normalizeShipConditionState(entity.conditionState);
   entity.conditionState = conditionState;
-  entity.capacitorChargeRatio = clamp(
-    toFiniteNumber(
-      conditionState && conditionState.charge,
-      toFiniteNumber(entity.capacitorChargeRatio, 1),
-    ),
-    0,
-    1,
-  );
+  // The live entity is authoritative for capacitor charge: a ship that is
+  // recharging must not be knocked back to a stale stored snapshot every time
+  // its presentation fields are refreshed. A native NPC has a ship item whose
+  // stored condition is only written when the NPC is persisted, so a durable
+  // ship that never leaves the scene kept a frozen charge: measured 0.77 -> 0.01
+  // over four minutes while the recharge loop advanced correctly, and every
+  // mining activation failed with NOT_ENOUGH_CAPACITOR. The stored snapshot now
+  // seeds a fresh entity and is otherwise kept in step with the live value.
+  const liveChargeRatio = toFiniteNumber(entity.capacitorChargeRatio, NaN);
+  if (Number.isFinite(liveChargeRatio)) {
+    entity.capacitorChargeRatio = clamp(liveChargeRatio, 0, 1);
+    if (conditionState && typeof conditionState === "object") {
+      conditionState.charge = entity.capacitorChargeRatio;
+    }
+  } else {
+    entity.capacitorChargeRatio = clamp(
+      toFiniteNumber(conditionState && conditionState.charge, 1),
+      0,
+      1,
+    );
+  }
   return entity;
 }
 
@@ -12920,6 +12946,7 @@ function finalizeGenericModuleDeactivationWithoutSession(
   effectState,
   options = {},
 ) {
+  require("./coopMiningTrace").noteModuleStop(scene,entity,effectState&&effectState.moduleID,(options&&options.reason)||"state","nosession");
   if (
     !scene ||
     !entity ||
@@ -14571,6 +14598,26 @@ function consumeTurretAmmoCharge(
     };
   }
 
+  if (isNativeNpcEntity(attackerEntity) &&
+      (process.env.EVEJS_COOP_NPC_STRICT_AMMO === "1" ||
+       process.env.EVEJS_COOP_NPC_BANK_ATOMIC === "1")) {
+    const guard = require("./coopNpcAmmoBankAtomic").guardDirectDebit({entity: attackerEntity});
+    if (!guard.allowed) return { success: false, errorMsg: guard.status, stopReason: "ammo" };
+  }
+  let coopAmmoDurableToken = null;
+  if (isNativeNpcEntity(attackerEntity) && process.env.EVEJS_COOP_NPC_STRICT_AMMO === "1") {
+    const proof = require("./coopNpcFireDebitProof").verify({
+      entity: attackerEntity, moduleItem, chargeItem, quantity: consumeQuantity,
+    });
+    if (!proof.allowed) return { success: false, errorMsg: "NO_AMMO", stopReason: "ammo" };
+    if (process.env.EVEJS_COOP_NPC_AMMO_DURABLE_CYCLE === "1") {
+      const reserved = require("./coopNpcAmmoDebitJournal").begin({
+        entity: attackerEntity, moduleItem, chargeItem, quantity: consumeQuantity, whenMs,
+      });
+      if (!reserved.ok) return { success: false, errorMsg: reserved.status, stopReason: "ammo" };
+      coopAmmoDurableToken = reserved.token;
+    }
+  }
   const nextQuantity = Math.max(0, previousQuantity - consumeQuantity);
   let updatedChargeItem = null;
   const previousChargeItemSnapshot =
@@ -14615,6 +14662,29 @@ function consumeTurretAmmoCharge(
       }
     }
 
+    if (isNativeNpcEntity(attackerEntity) && process.env.EVEJS_COOP_NPC_STRICT_AMMO === "1") {
+      let observed;
+      try {
+        observed = nativeNpcStore.listNativeCargoForEntity(entityID)
+          .filter((row) => toInt(row && row.cargoID, 0) === chargeItemID);
+      } catch (_) {
+        return { success: false, errorMsg: "AMMO_WRITE_UNVERIFIED", stopReason: "ammo" };
+      }
+      if (!Array.isArray(observed) ||
+        (nextQuantity > 0 ?
+          observed.length !== 1 ||
+          Number(observed[0].quantity) !== nextQuantity ||
+          toInt(observed[0].moduleID, 0) !== moduleID ||
+          Number(observed[0].typeID) !== Number(chargeItem.typeID) ||
+          Number(observed[0].ownerID) !== Number(attackerEntity.ownerID)
+          : observed.length !== 0)) {
+        return { success: false, errorMsg: "AMMO_WRITE_UNVERIFIED", stopReason: "ammo" };
+      }
+    }
+    if (coopAmmoDurableToken) {
+      const settled = require("./coopNpcAmmoDebitJournal").commit(coopAmmoDurableToken);
+      if (!settled.ok) return { success: false, errorMsg: settled.status, stopReason: "ammo" };
+    }
     if (Array.isArray(attackerEntity.nativeCargoItems)) {
       attackerEntity.nativeCargoItems = attackerEntity.nativeCargoItems.flatMap((cargoItem) => {
         const matchesCharge = (
@@ -16331,6 +16401,57 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
     ? applyPrecursorTurretSpoolToSnapshot(resolvedWeaponSnapshot, effectState)
     : resolvedWeaponSnapshot;
 
+  if (isNativeNpcEntity(attackerEntity) &&
+      process.env.EVEJS_COOP_NPC_BANK_OUTCOME_WITNESS === "1" &&
+      !require("./coopNpcFireOutcomeWitness").enabled())
+    return { success: false, errorMsg: "BANK_OUTCOME_FLAGS_INCOMPLETE", stopReason: "ammo" };
+  if (isNativeNpcEntity(attackerEntity) &&
+      process.env.EVEJS_COOP_NPC_STRICT_AMMO === "1" &&
+      process.env.EVEJS_COOP_NPC_AMMO_DURABLE_CYCLE === "1" &&
+      resolvedWeaponSnapshot.chargeMode === "stack" &&
+      !chargeOptionalTurretWeapon) {
+    const bank = require("./coopNpcAmmoDebitJournal").preflightBank({
+      entity: attackerEntity, entries: activeTurretEntries, whenMs: cycleBoundaryMs,
+    });
+    if (!bank.ok) return { success: false, errorMsg: bank.status, stopReason: "ammo" };
+  }
+  // P0: before actual native fire or turret damage, verify the real
+  // fitted cargo. Stack ammo is debited before shot resolution; crystals
+  // are checked before firing but keep their native volatility semantics.
+  const strictNativeTurretProof = isNativeNpcEntity(attackerEntity) &&
+    process.env.EVEJS_COOP_NPC_STRICT_AMMO === "1" &&
+    !chargeOptionalTurretWeapon;
+  const strictNativeStackDebit = strictNativeTurretProof &&
+    resolvedWeaponSnapshot.chargeMode === "stack";
+  let strictNativeDebitResults = null;
+  if (strictNativeTurretProof) {
+    const proof = require("./coopNpcFireDebitProof").verifyBank({
+      entity: attackerEntity, entries: activeTurretEntries,
+    });
+    if (!proof.allowed) return { success: false, errorMsg: "NO_AMMO", stopReason: "ammo" };
+    if (effectState._coopStrictAmmoLastBoundaryMs === cycleBoundaryMs)
+      return { success: false, errorMsg: "NATIVE_FIRE_CYCLE_REPLAY", stopReason: "ammo" };
+    effectState._coopStrictAmmoLastBoundaryMs = cycleBoundaryMs;
+  }
+  if (strictNativeStackDebit) {
+    strictNativeDebitResults = new Map();
+    if (process.env.EVEJS_COOP_NPC_BANK_ATOMIC === "1") {
+      const bank = require("./coopNpcAmmoBankAtomic").consumeBank({
+        entity: attackerEntity, entries: activeTurretEntries, whenMs: cycleBoundaryMs,
+      });
+      if (!bank.success) return { success: false, errorMsg: bank.errorMsg, stopReason: "ammo" };
+      for (const row of bank.results) strictNativeDebitResults.set(row.moduleID, row.result);
+    } else {
+      for (const entry of activeTurretEntries) {
+        const debit = consumeTurretAmmoCharge(
+          attackerEntity, entry.moduleItem, entry.chargeItem, cycleBoundaryMs,
+        );
+        if (!debit.success) return { success: false, errorMsg: "AMMO_UPDATE_FAILED", stopReason: "ammo" };
+        strictNativeDebitResults.set(toInt(entry.moduleItem.itemID, 0), debit);
+      }
+    }
+  }
+
   const shotResult = resolveTurretShot({
     attackerEntity,
     targetEntity,
@@ -16412,20 +16533,22 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
       }
       continue;
     }
-    const chargeResult = resolvedWeaponSnapshot.chargeMode === "crystal"
-      ? applyCrystalVolatilityDamage(
-        scene,
-        attackerEntity,
-        currentModuleItem,
-        currentChargeItem,
-        cycleBoundaryMs,
-      )
-      : consumeTurretAmmoCharge(
-        attackerEntity,
-        currentModuleItem,
-        currentChargeItem,
-        cycleBoundaryMs,
-      );
+    const chargeResult = strictNativeDebitResults
+      ? strictNativeDebitResults.get(toInt(currentModuleItem.itemID, 0))
+      : resolvedWeaponSnapshot.chargeMode === "crystal"
+        ? applyCrystalVolatilityDamage(
+          scene,
+          attackerEntity,
+          currentModuleItem,
+          currentChargeItem,
+          cycleBoundaryMs,
+        )
+        : consumeTurretAmmoCharge(
+          attackerEntity,
+          currentModuleItem,
+          currentChargeItem,
+          cycleBoundaryMs,
+        );
     chargeResults.push(chargeResult);
     if (
       !reloadState &&
@@ -16482,6 +16605,13 @@ function executeTurretCycle(scene, attackerEntity, effectState, cycleBoundaryMs)
         : chargeItem;
   }
 
+  if (strictNativeStackDebit && process.env.EVEJS_COOP_NPC_BANK_OUTCOME_WITNESS === "1") {
+    const record = require("./coopNpcFireOutcomeWitness").record({
+      entity: attackerEntity, whenMs: cycleBoundaryMs, kind: "TURRET_RESOLVED",
+      hit: Boolean(shotResult && shotResult.hit),
+    });
+    if (!record.ok) return { success: false, errorMsg: record.status, stopReason: "ammo" };
+  }
   return {
     success: true,
     data: {
@@ -16730,16 +16860,48 @@ function executeMissileCycle(
     ),
   });
 
+  if (isNativeNpcEntity(attackerEntity) &&
+      process.env.EVEJS_COOP_NPC_BANK_OUTCOME_WITNESS === "1" &&
+      !require("./coopNpcFireOutcomeWitness").enabled())
+    return { success: false, errorMsg: "BANK_OUTCOME_FLAGS_INCOMPLETE", stopReason: "ammo" };
+  if (isNativeNpcEntity(attackerEntity) &&
+      process.env.EVEJS_COOP_NPC_STRICT_AMMO === "1" &&
+      process.env.EVEJS_COOP_NPC_AMMO_DURABLE_CYCLE === "1") {
+    const bank = require("./coopNpcAmmoDebitJournal").preflightBank({
+      entity: attackerEntity, entries: armedEntries, whenMs: cycleBoundaryMs,
+    });
+    if (!bank.ok) return { success: false, errorMsg: bank.status, stopReason: "ammo" };
+  }
+  if (isNativeNpcEntity(attackerEntity) && process.env.EVEJS_COOP_NPC_STRICT_AMMO === "1") {
+    const proof = require("./coopNpcFireDebitProof").verifyBank({
+      entity: attackerEntity, entries: armedEntries,
+    });
+    if (!proof.allowed) return { success: false, errorMsg: "NO_AMMO", stopReason: "ammo" };
+    if (effectState._coopStrictAmmoLastBoundaryMs === cycleBoundaryMs)
+      return { success: false, errorMsg: "NATIVE_FIRE_CYCLE_REPLAY", stopReason: "ammo" };
+    effectState._coopStrictAmmoLastBoundaryMs = cycleBoundaryMs;
+  }
+  let coopAtomicMissileResults = null;
+  if (isNativeNpcEntity(attackerEntity) &&
+      process.env.EVEJS_COOP_NPC_BANK_ATOMIC === "1") {
+    const bank = require("./coopNpcAmmoBankAtomic").consumeBank({
+      entity: attackerEntity, entries: armedEntries, whenMs: cycleBoundaryMs,
+    });
+    if (!bank.success) return { success: false, errorMsg: bank.errorMsg, stopReason: "ammo" };
+    coopAtomicMissileResults = new Map(bank.results.map(row => [row.moduleID, row.result]));
+  }
   const chargeResults = [];
   let groupedAmmoFailure = false;
   const depletedEntries = [];
   for (const entry of armedEntries) {
-    const chargeResult = consumeTurretAmmoCharge(
-      attackerEntity,
-      entry.moduleItem,
-      entry.chargeItem,
-      cycleBoundaryMs,
-    );
+    const chargeResult = coopAtomicMissileResults
+      ? coopAtomicMissileResults.get(toInt(entry.moduleItem.itemID, 0))
+      : consumeTurretAmmoCharge(
+        attackerEntity,
+        entry.moduleItem,
+        entry.chargeItem,
+        cycleBoundaryMs,
+      );
     chargeResults.push({
       moduleItem: entry.moduleItem,
       chargeItem: entry.chargeItem,
@@ -16752,6 +16914,10 @@ function executeMissileCycle(
     if (chargeResult.data && chargeResult.data.depleted) {
       depletedEntries.push(entry);
     }
+  }
+  if (groupedAmmoFailure && isNativeNpcEntity(attackerEntity) &&
+      process.env.EVEJS_COOP_NPC_STRICT_AMMO === "1") {
+    return { success: false, errorMsg: "AMMO_UPDATE_FAILED", stopReason: "ammo" };
   }
   if (groupedAmmoFailure && chargeResults.every((entry) => !entry.result || !entry.result.success)) {
     return {
@@ -16802,6 +16968,12 @@ function executeMissileCycle(
     },
   );
   if (!launchResult.success || !launchResult.data) {
+    if (coopAtomicMissileResults && process.env.EVEJS_COOP_NPC_BANK_OUTCOME_WITNESS === "1") {
+      // Still record the known failed launch; never refund or retry.
+      require("./coopNpcFireOutcomeWitness").record({
+        entity: attackerEntity, whenMs: cycleBoundaryMs, kind: "MISSILE_LAUNCH_FAILED",
+      });
+    }
     return {
       success: false,
       errorMsg: launchResult.errorMsg || "MISSILE_SPAWN_FAILED",
@@ -16812,6 +16984,13 @@ function executeMissileCycle(
     };
   }
 
+  if (coopAtomicMissileResults && process.env.EVEJS_COOP_NPC_BANK_OUTCOME_WITNESS === "1") {
+    const record = require("./coopNpcFireOutcomeWitness").record({
+      entity: attackerEntity, whenMs: cycleBoundaryMs, kind: "MISSILE_LAUNCHED",
+      missileID: toInt(launchResult.data.entity && launchResult.data.entity.itemID, 0),
+    });
+    if (!record.ok) return { success: false, errorMsg: record.status, stopReason: "ammo" };
+  }
   const reloadStates =
     depletedEntries.length > 0
       ? queueGroupedMissileReloadStates(
@@ -26315,6 +26494,7 @@ class SolarSystemScene {
 
   deactivateGenericModule(session, moduleID, options = {}) {
     const entity = this.getShipEntityForSession(session);
+   require("./coopMiningTrace").noteModuleStop(this,this.getShipEntityForSession(session),moduleID,(options&&options.reason)||"manual","session");
     const normalizedModuleID = toInt(moduleID, 0);
     if (
       !entity ||
@@ -32559,7 +32739,7 @@ class SolarSystemScene {
   }
 
   warpToEntity(session, targetEntityID, options = {}) {
-    const entity = this.getShipEntityForSession(session);
+    const entity = resolveCommandShipEntity(this, session);
     if (isShipWarpDisabledByRuntime(entity, this.getCurrentSimTimeMs())) {
       return {
         success: false,
@@ -32583,7 +32763,7 @@ class SolarSystemScene {
   }
 
   warpToPoint(session, point, options = {}) {
-    const entity = this.getShipEntityForSession(session);
+    const entity = resolveCommandShipEntity(this, session);
     if (isShipWarpDisabledByRuntime(entity, this.getCurrentSimTimeMs())) {
       return {
         success: false,

@@ -395,6 +395,7 @@ module.exports = function (serviceManager) {
         );
       }
       tidiAutoscaler.init();
+      try { require("../../space/coopVirtualWorldRuntime").start(); } catch (error) { console.warn("[CoopVirtualWorld] startup", error.message); }
     });
 
   server.on("error", (err) => {

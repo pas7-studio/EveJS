@@ -297,6 +297,7 @@ function sessionHasDirectorRole(session) {
 }
 
 function sessionCanRentOffice(session) {
+  if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1") return require("../../space/coopPlayerCorporationAccess").canRent(session,resolveCorporationID(session));
   const roleMask = getSessionCorpRoleMask(session);
   return (
     (roleMask & CORP_ROLE_DIRECTOR) === CORP_ROLE_DIRECTOR ||
@@ -312,6 +313,7 @@ function ensureCanRentOffice(session) {
 }
 
 function ensureCanUnrentOffice(session) {
+  if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").canManageMembers(session,resolveCorporationID(session))) throwWrappedUserError("CrpAccessDenied");
   if (sessionHasDirectorRole(session)) {
     return;
   }

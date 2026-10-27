@@ -39,22 +39,30 @@ function cloneValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function getCachedNpcDefinition(profileID, definitionCache) {
+function getCachedNpcDefinition(profileID, definitionCache, loadoutID = "") {
   const normalizedProfileID = String(profileID || "").trim();
   if (!normalizedProfileID) {
     return null;
   }
 
-  if (definitionCache.has(normalizedProfileID)) {
-    return definitionCache.get(normalizedProfileID);
+  // A loadout override changes the definition, so it is part of the cache key:
+  // the retail definition and an overridden one must never share an entry.
+  const normalizedLoadoutID = String(loadoutID || "").trim();
+  const cacheKey = normalizedLoadoutID
+    ? `${normalizedProfileID}\u0000${normalizedLoadoutID}`
+    : normalizedProfileID;
+  if (definitionCache.has(cacheKey)) {
+    return definitionCache.get(cacheKey);
   }
 
-  const definition = buildNpcDefinition(normalizedProfileID);
+  const definition = normalizedLoadoutID
+    ? buildNpcDefinition(normalizedProfileID, { loadoutID: normalizedLoadoutID })
+    : buildNpcDefinition(normalizedProfileID);
   if (!definition) {
     return null;
   }
 
-  definitionCache.set(normalizedProfileID, definition);
+  definitionCache.set(cacheKey, definition);
   return definition;
 }
 
@@ -170,12 +178,14 @@ function buildDefinitionsForPool(
 ) {
   const requestedAmount = Math.max(1, toPositiveInt(amount, 1));
   const requiredWeaponFamily = String(options.requiredWeaponFamily || "").trim();
+  const loadoutID = String(options.loadoutID || "").trim();
   const definitions = [];
   const eligibleEntries = Array.isArray(pool && pool.entries)
     ? pool.entries.filter((entry) => {
       const definition = getCachedNpcDefinition(
         entry && entry.profileID,
         definitionCache,
+        loadoutID,
       );
       if (!definition) {
         return false;
@@ -200,6 +210,7 @@ function buildDefinitionsForPool(
     const definition = getCachedNpcDefinition(
       chosenEntry.profileID,
       definitionCache,
+      loadoutID,
     );
     if (!definition) {
       return {
@@ -250,6 +261,7 @@ function buildDefinitionsForProfile(
       profileResolution.data &&
       profileResolution.data.profileID,
     new Map(),
+    String(options.loadoutID || "").trim(),
   );
   if (!definition) {
     return {
@@ -292,6 +304,7 @@ function buildDefinitionsForProfile(
 function buildDefinitionsForSpawnGroup(group, options = {}) {
   const expectedEntityType = String(options.entityType || "").trim().toLowerCase();
   const requiredWeaponFamily = String(options.requiredWeaponFamily || "").trim();
+  const loadoutID = String(options.loadoutID || "").trim();
   const definitionCache = new Map();
   const definitions = [];
   const composition = [];
@@ -307,6 +320,7 @@ function buildDefinitionsForSpawnGroup(group, options = {}) {
       const definition = getCachedNpcDefinition(
         entry.profileID,
         definitionCache,
+        loadoutID,
       );
       if (!definition) {
         return {
@@ -357,6 +371,7 @@ function buildDefinitionsForSpawnGroup(group, options = {}) {
         definitionCache,
         {
           requiredWeaponFamily,
+          loadoutID,
         },
       );
       if (!poolResult.success || !poolResult.data) {
@@ -406,6 +421,7 @@ function resolveNpcSpawnGroupPlan(query, options = {}) {
   const expectedEntityType = String(options.entityType || "").trim().toLowerCase();
   const fallbackSpawnGroupID = String(options.fallbackSpawnGroupID || "").trim();
   const requiredWeaponFamily = String(options.requiredWeaponFamily || "").trim();
+  const loadoutID = String(options.loadoutID || "").trim();
 
   if (!trimmedQuery && fallbackSpawnGroupID) {
     const fallbackGroup = getNpcSpawnGroup(fallbackSpawnGroupID);
@@ -413,6 +429,7 @@ function resolveNpcSpawnGroupPlan(query, options = {}) {
       return buildDefinitionsForSpawnGroup(fallbackGroup, {
         entityType: expectedEntityType,
         requiredWeaponFamily,
+        loadoutID,
       });
     }
   }
@@ -425,6 +442,7 @@ function resolveNpcSpawnGroupPlan(query, options = {}) {
   return buildDefinitionsForSpawnGroup(groupResolution.data, {
     entityType: expectedEntityType,
     requiredWeaponFamily,
+    loadoutID,
   });
 }
 
@@ -435,6 +453,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
   const defaultPoolID = String(options.defaultPoolID || "").trim();
   const fallbackProfileID = String(options.fallbackProfileID || "").trim();
   const requiredWeaponFamily = String(options.requiredWeaponFamily || "").trim();
+  const loadoutID = String(options.loadoutID || "").trim();
 
   if (!trimmedQuery) {
     if (defaultPoolID) {
@@ -447,6 +466,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
           new Map(),
           {
             requiredWeaponFamily,
+            loadoutID,
           },
         );
       }
@@ -463,6 +483,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
         expectedEntityType,
         {
           requiredWeaponFamily,
+          loadoutID,
         },
       );
     }
@@ -480,6 +501,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
       expectedEntityType,
       {
         requiredWeaponFamily,
+        loadoutID,
       },
     );
   }
@@ -491,6 +513,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
       new Map(),
       {
         requiredWeaponFamily,
+        loadoutID,
       },
     );
   }
@@ -502,6 +525,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
         expectedEntityType,
         {
           requiredWeaponFamily,
+          loadoutID,
         },
       );
     }
@@ -513,6 +537,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
         new Map(),
         {
           requiredWeaponFamily,
+          loadoutID,
         },
       );
     }
@@ -524,6 +549,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
         new Map(),
         {
           requiredWeaponFamily,
+          loadoutID,
         },
       );
     }
@@ -533,6 +559,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
       expectedEntityType,
       {
         requiredWeaponFamily,
+        loadoutID,
       },
     );
   }

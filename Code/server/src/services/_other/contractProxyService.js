@@ -810,7 +810,7 @@ class contractProxyService extends BaseService {
     ) {
       return null;
     }
-    const result = contractRuntime.createContract(rawInfo, session, {
+    const result = (process.env.EVEJS_COOP_NATIVE_CONTRACT_MUTATION_FENCE === "1" ? require("../../space/coopNativeContractMutationFence").facade() : contractRuntime).createContract(rawInfo, session, {
       confirm: kwargs && kwargs.confirm,
     });
     return buildList(result.contractIDs || []);
@@ -820,7 +820,7 @@ class contractProxyService extends BaseService {
     recordAuditEvent("AcceptContract", args, session);
     const contractID = normalizePositiveInteger(Array.isArray(args) ? unwrapMarshalValue(args[0]) : 0, 0);
     const forCorp = normalizeBoolean(Array.isArray(args) ? unwrapMarshalValue(args[1]) : false, false);
-    return buildContractRow(contractRuntime.acceptContract(contractID, session, forCorp));
+    return buildContractRow((process.env.EVEJS_COOP_NATIVE_CONTRACT_MUTATION_FENCE === "1" ? require("../../space/coopNativeContractMutationFence").facade() : contractRuntime).acceptContract(contractID, session, forCorp));
   }
 
   Handle_CompleteContract(args, session) {
@@ -829,13 +829,13 @@ class contractProxyService extends BaseService {
     const status = Array.isArray(args) && args.length > 1
       ? unwrapMarshalValue(args[1])
       : contractRuntime.CONTRACT_STATUS.FINISHED;
-    return contractRuntime.completeContract(contractID, status, session);
+    return (process.env.EVEJS_COOP_NATIVE_CONTRACT_MUTATION_FENCE === "1" ? require("../../space/coopNativeContractMutationFence").facade() : contractRuntime).completeContract(contractID, status, session);
   }
 
   Handle_DeleteContract(args, session) {
     recordAuditEvent("DeleteContract", args, session);
     const contractID = normalizePositiveInteger(Array.isArray(args) ? unwrapMarshalValue(args[0]) : 0, 0);
-    return contractRuntime.deleteContract(contractID, session);
+    return (process.env.EVEJS_COOP_NATIVE_CONTRACT_MUTATION_FENCE === "1" ? require("../../space/coopNativeContractMutationFence").facade() : contractRuntime).deleteContract(contractID, session);
   }
 
   Handle_DeleteMultipleContracts(args, session) {
@@ -843,7 +843,7 @@ class contractProxyService extends BaseService {
     const contractIDs = extractList(Array.isArray(args) ? args[0] : [])
       .map((contractID) => normalizePositiveInteger(contractID, 0))
       .filter((contractID) => contractID > 0);
-    const result = contractRuntime.deleteMultipleContracts(contractIDs, session);
+    const result = (process.env.EVEJS_COOP_NATIVE_CONTRACT_MUTATION_FENCE === "1" ? require("../../space/coopNativeContractMutationFence").facade() : contractRuntime).deleteMultipleContracts(contractIDs, session);
     return [buildList(result.deleted), buildList(result.failed)];
   }
 

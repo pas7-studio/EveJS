@@ -53,9 +53,13 @@ const ERROR_MESSAGES = Object.freeze({
   INVALID_CHARACTER: "Character data is unavailable for this purchase.",
   INVALID_QUANTITY: "Heraldry offers can only be purchased one at a time.",
   INVALID_STORE: "That LP store is not available.",
+  INVALID_STATIC_OFFER_QUANTITY: "An LP Store purchase is limited to 100 offers at a time.",
   ITEM_GRANT_FAILED: "LP store purchase delivery failed.",
   LICENSE_NOT_FOUND: "That Heraldry emblem could not be resolved.",
   LOYALTY_STORE_UNAVAILABLE: "That loyalty store service is not available.",
+  STANDING_REQUIREMENT_NOT_MET: "Your faction or corporation standing is too low for this offer.",
+  STANDING_DATA_UNAVAILABLE: "Character standings cannot be verified for this offer.",
+  UNSUPPORTED_STANDING_REQUIREMENT: "This LP offer has an unsupported standing requirement.",
   OFFER_NOT_FOUND: "That offer is no longer available.",
   REQ_ITEMS_UNSUPPORTED: "That offer requires unsupported extra items.",
 });
@@ -345,6 +349,9 @@ function takeStaticOfferForCharacter(session, corpID, offerID, numberOfOffers = 
   const normalizedCorpID = normalizePositiveInteger(corpID, 0);
   const normalizedOfferID = normalizePositiveInteger(offerID, 0);
   const normalizedNumberOfOffers = normalizeStaticOfferQuantity(numberOfOffers, 1);
+  // Always bound native LP purchase batches, even without the standing flag.
+  if (!Number.isSafeInteger(normalizedNumberOfOffers) || normalizedNumberOfOffers > 100)
+    return { success: false, errorMsg: "INVALID_STATIC_OFFER_QUANTITY" };
   if (!characterID) {
     return {
       success: false,
@@ -364,6 +371,14 @@ function takeStaticOfferForCharacter(session, corpID, offerID, numberOfOffers = 
       success: false,
       errorMsg: "OFFER_NOT_FOUND",
     };
+  }
+  if (process.env.EVEJS_COOP_LP_STANDING_REQUIREMENTS === "1") {
+    const standingGate = require("../../space/coopNativeLpStandings").check({
+      characterID, corpID: normalizedCorpID,
+      requirements: offer.requiredStandings,
+      standingRuntime: require("../character/standingRuntime"),
+    });
+    if (!standingGate.ok) return { success: false, errorMsg: standingGate.errorMsg };
   }
   if (normalizePositiveInteger(offer.akCost, 0) > 0) {
     return {

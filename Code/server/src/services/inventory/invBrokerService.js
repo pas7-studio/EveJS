@@ -388,6 +388,7 @@ class InvBrokerService extends BaseService {
 
   _canQueryCorporationHangarFlag(session, flagID) {
     const numericFlag = this._normalizeInventoryId(flagID, 0);
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && this._isCorporationHangarFlag(numericFlag)) return require("../../space/coopPlayerCorporationAccess").canView(session,this._getCorporationId(session),this._getStationId(session),numericFlag);
     const requiredRole = CORP_HANGAR_QUERY_ROLE_BY_FLAG.get(numericFlag);
     if (!requiredRole) {
       return true;
@@ -1779,6 +1780,7 @@ class InvBrokerService extends BaseService {
     const sourceItem = sourceItemDescriptor && sourceItemDescriptor.item
       ? sourceItemDescriptor.item
       : null;
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").authorizeInventoryMove({session,sourceItemDescriptor,destination})) return {handled:true,success:false,errorMsg:"CORPORATE_ASSET_ACCESS_DENIED"};
     if (
       !sourceItem ||
       this._normalizeInventoryId(sourceItem.categoryID, 0) !== CHARGE_CATEGORY_ID ||
@@ -4600,6 +4602,7 @@ class InvBrokerService extends BaseService {
     }
 
     const sourceItem = sourceItemDescriptor.item;
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").authorizeInventoryMove({session,sourceItemDescriptor,destination})) return {success:false,errorMsg:"CORPORATE_ASSET_ACCESS_DENIED"};
     const groupingContext = {
       shipID: this._normalizeInventoryId(sourceItem.locationID, 0),
       moduleID: this._normalizeInventoryId(sourceItem.itemID, 0),
@@ -7465,6 +7468,7 @@ class InvBrokerService extends BaseService {
         continue;
       }
 
+      if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !this._isTransferSourceLocationMatch(sourceItemDescriptor, sourceLocationID)) continue;
       this._validateMoonMaterialBaySourceAccess(session, item);
 
       const destination = this._resolveDestinationForMove(

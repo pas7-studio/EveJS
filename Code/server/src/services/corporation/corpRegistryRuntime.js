@@ -1715,6 +1715,7 @@ class CorpRegistryRuntimeService extends BaseService {
     const applicationText = normalizeText(args && args[3], "");
     const status = normalizeInteger(args && args[4], 0);
     const customMessage = normalizeText(args && args[5], "");
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").canUpdateApplication(session,corporationID,applicationID,characterID,status)) return null;
     let joinedCharacterID = null;
     let nextApplicationRow = null;
     let applicationFound = false;
@@ -1820,6 +1821,7 @@ class CorpRegistryRuntimeService extends BaseService {
 
   Handle_SetCorpWelcomeMail(args, session) {
     const corporationID = resolveCorporationID(session);
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").canRecruit(session,corporationID)) return null;
     const welcomeMail = normalizeText(args && args[0], "");
     const editorCharacterID = resolveCharacterID(session, []);
     const changeDate = String(currentFileTime());
@@ -1841,6 +1843,7 @@ class CorpRegistryRuntimeService extends BaseService {
 
   Handle_InsertInvitation(args, session) {
     const corporationID = resolveCorporationID(session);
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").canRecruit(session,corporationID)) return null;
     const characterID = normalizePositiveInteger(args && args[0], null);
     let invitationID = null;
     let applicationID = null;
@@ -1941,6 +1944,7 @@ class CorpRegistryRuntimeService extends BaseService {
 
   Handle_UpdateMember(args, session) {
     const corporationID = resolveCorporationID(session);
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").canManageMembers(session,corporationID)) return null;
     const memberID = normalizePositiveInteger(args && args[0], null);
     const previousMemberRecord = getCorporationMember(corporationID, memberID);
     const previousMember = buildCorporationMemberSnapshot(corporationID, memberID);
@@ -1989,6 +1993,7 @@ class CorpRegistryRuntimeService extends BaseService {
 
   Handle_GetMyGrantableRoles(args, session) {
     const corporationID = resolveCorporationID(session);
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").isMember(session,corporationID)) return [buildLong(0n),buildLong(0n),buildLong(0n),buildLong(0n)];
     const member = getCorporationMember(corporationID, resolveCharacterID(session, []));
     const roleMask = member ? toRoleMaskBigInt(member.grantableRoles || FULL_ADMIN_ROLE_MASK, FULL_ADMIN_ROLE_MASK) : FULL_ADMIN_ROLE_MASK;
     const locationMask = member ? toRoleMaskBigInt(member.grantableRolesAtHQ || roleMask, roleMask) : roleMask;
@@ -2161,6 +2166,7 @@ class CorpRegistryRuntimeService extends BaseService {
 
   Handle_UpdateDivisionNames(args, session) {
     const corporationID = resolveCorporationID(session);
+    if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").canManageMembers(session,corporationID)) return null;
     const previousCorporation = buildCorporationSnapshot(corporationID);
     updateCorporationRuntime(corporationID, (runtime) => {
       for (let index = 0; index < 14; index += 1) {

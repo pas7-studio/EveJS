@@ -435,6 +435,7 @@ class TradeMgrService extends BaseService {
     this._boundContexts = new Map();
     this._tradeByParticipant = new Map();
     this._tradeOrdinal = 1;
+    if (process.env.EVEJS_COOP_ATOMIC_TRADE === "1") require("../../space/coopNativeTradeCustody").startup(this,require("../inventory/itemStore"));
     activeTradeMgrService = this;
   }
 
@@ -965,6 +966,7 @@ class TradeMgrService extends BaseService {
     }
 
     trade.status = "aborted";
+    if (process.env.EVEJS_COOP_ATOMIC_TRADE === "1") require("../../space/coopNativeTradeCustody").finishAbort(this,trade);
     this._cleanupTradeIndex(trade);
     trade.offerStates = [0, 0];
     trade.offerManifests = [null, null];
@@ -1020,6 +1022,7 @@ class TradeMgrService extends BaseService {
       locationID: Number(item.locationID || 0) || 0,
       flagID: Number(item.flagID || 0) || 0,
     };
+    if (process.env.EVEJS_COOP_ATOMIC_TRADE === "1") require("../../space/coopNativeTradeCustody").beforeStage(this,trade,session,item,originContext,quantity);
     const moveResult = moveItemToLocation(
       itemID,
       trade.tradeContainerID,
@@ -1043,6 +1046,7 @@ class TradeMgrService extends BaseService {
       }
     }
 
+    if (process.env.EVEJS_COOP_ATOMIC_TRADE === "1") require("../../space/coopNativeTradeCustody").afterStage(this,trade,item,stagedRootItemIDs);
     this._notifyChangeList(trade, changes);
     return {
       changes,
@@ -1223,6 +1227,7 @@ class TradeMgrService extends BaseService {
   }
 
   Handle_InitiateTrade(args, session) {
+    if (process.env.EVEJS_COOP_ATOMIC_TRADE === "1") require("../../space/coopNativeTradeCustody").assertReady(this);
     const targetCharacterID = normalizePositiveInteger(
       Array.isArray(args) ? args[0] : 0,
       0,
@@ -1501,18 +1506,22 @@ class TradeMgrService extends BaseService {
     }
 
     const completionItemsPayload = this._buildTradeItemsSetPayload(trade);
+    if (process.env.EVEJS_COOP_ATOMIC_TRADE === "1") require("../../space/coopNativeTradeCustody").beforeComplete(this,trade);
+    if (process.env.EVEJS_COOP_ATOMIC_TRADE === "1") require("../../space/coopNativeTradeAtomic").assertZeroMoney(trade,this);
+    if (process.env.EVEJS_COOP_FLEET_TRADE_SAFETY === "1") { const peerID = trade.traders.find(x => Number(x) !== Number(session.characterID)); const peer = this._getParticipantSession(peerID, session); const fleet = require("../fleets/fleetRuntime"); const fleetState = peer && require("../../space/coopNativeFleetParty").membership({leaderSession:session,peerSession:peer,fleetRuntime:fleet}); if (fleetState && fleetState.ok) { const safe = require("../../space/coopFleetTradeSafety").check({trade,session,peerSession:peer,items:this._listTradeItems(trade),getItem:findItemById,isTradable:isTradableInventoryItem,containedItems:id=>this._collectContainedItems(id),fleetRuntime:fleet,getDockedLocationID}); if (!safe.ok) { this._resetOfferState(trade); this._throwTradeError("Co-op trade blocked: " + safe.reason); } } }
     const moneyTransferResult = this._completeMoneyTransfer(trade);
     if (!moneyTransferResult.success) {
       this._resetOfferState(trade);
       this._throwTradeError("One pilot no longer has enough ISK to complete the trade.");
     }
 
-    const itemTransferResult = this._completeItemTransfers(trade);
+    const itemTransferResult = process.env.EVEJS_COOP_ATOMIC_TRADE === "1" ? require("../inventory/itemStore").transferCoopManifestAtomically(trade,this._listTradeItems(trade),trade.traders.flatMap(id=>{const p=this._getParticipantSession(id,session);return p?[p.activeShipID,p._space?.shipID]:[]})) : this._completeItemTransfers(trade);
     if (!itemTransferResult.success) {
       this._throwTradeError("Trade completion failed while moving staged items.");
     }
 
     trade.status = "completed";
+    if (process.env.EVEJS_COOP_ATOMIC_TRADE === "1") require("../../space/coopNativeTradeCustody").finishComplete(this,trade);
     this._notifyTradeCompletionItemChanges(
       trade,
       itemTransferResult.data && itemTransferResult.data.changes,

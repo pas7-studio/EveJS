@@ -109,6 +109,7 @@ class InsurgencySolarsystemService extends BaseService {
 
   Handle_GetAllVisibleCampaigns(args, session) {
     log.debug("[InsurgencySolarsystem] GetAllVisibleCampaigns called");
+    if (process.env.EVEJS_COOP_WAR_CLIENT_VIEW === "1") { try { return buildList(VISIBLE_CAMPAIGN_SNAPSHOTS.concat(require("../../space/coopWarClientView").liveCampaignSnapshots()).map(buildCampaignSnapshot)); } catch (error) { log.warn("[CoopWarClientView] campaigns", error.message); } }
     return buildList(VISIBLE_CAMPAIGN_SNAPSHOTS.map(buildCampaignSnapshot));
   }
 

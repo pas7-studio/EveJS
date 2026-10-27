@@ -308,6 +308,7 @@ function executeCorporationMemberActions(corporationID, rawTargetIDs, rawActions
     };
   }
 
+  if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" && !require("../../space/coopPlayerCorporationAccess").canExecuteActions(session,corporationID,actions)) return {success:false,errorMsg:"CORPORATION_MEMBER_ACTION_NOT_AUTHORIZED_OR_NOT_ATOMIC"};
   const walletKey = resolveSourceWalletKey(session, corporationID);
   const preflight = preflightActionGrants(
     corporationID,

@@ -657,11 +657,14 @@ function writePersistedState(scene, state, options = {}) {
     return false;
   }
 
-  repo.write(
+  const coopMiningPersistResult = repo.write(
     MINING_RUNTIME_TABLE,
     `/systems/${String(toInt(scene && scene.systemID, 0))}/entities/${String(toInt(state && state.entityID, 0))}`,
     cloneValue(state),
   );
+  if (options.requireNativeMiningPersistence === true &&
+      (!coopMiningPersistResult || coopMiningPersistResult.success !== true))
+    throw new Error("ALIFE06_MINING_STATE_WRITE_UNCONFIRMED");
   const persistedByEntityID =
     (options && options.persistedByEntityID && typeof options.persistedByEntityID === "object")
       ? options.persistedByEntityID
@@ -931,11 +934,12 @@ function updateMineableState(scene, entity, nextState, options = {}) {
   }
 
   const normalizedState = normalizeStateRecord(nextState);
-  if (shouldPersistMineableState(entity)) {
+  if (shouldPersistMineableState(entity) && options.coopNativeAtomicCommitConfirmed !== true) {
     writePersistedState(scene, normalizedState, {
       existingPersistedState:
         cache.persistedByEntityID[String(normalizedState.entityID)] || null,
       persistBaseline: true,
+      requireNativeMiningPersistence: options.requireNativeMiningPersistence === true,
     });
   }
   cache.byEntityID.set(normalizedState.entityID, normalizedState);

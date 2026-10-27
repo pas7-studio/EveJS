@@ -96,6 +96,7 @@ function completeWormholeJump({
   }
 
   const pendingJump = session._wormholeJumpPending;
+  if (process.env.EVEJS_COOP_WORMHOLE_JUMP_FENCE === "1") return require("../../../space/coopWormholeJumpFence").completeWormholeJump({session,sourceScene,sourceEndpointID,shipMass,prepareResult,wormholeRuntime,wormholeRuntimeState:require("./wormholeRuntimeState"),gameStore:require("../../../gameStore"),spaceRuntime,getActiveShipRecord,buildShipResourceState,jumpSessionToSolarSystem,syncSessionSystemWideEffectsForSystem,notifyWormholeJumpCancel});
   if (
     !pendingJump ||
     Number(pendingJump.endpointID || 0) !== Number(sourceEndpointID || 0)
@@ -193,6 +194,7 @@ class WormholeMgrService extends BaseService {
   }
 
   Handle_WormholeJump(args, session) {
+    if (process.env.EVEJS_COOP_WORMHOLE_JUMP_FENCE === "1" && !require("../../../space/coopWormholeJumpFence").mayBegin(session)) return null;
     const endpointID = toInt(args && args[0], 0);
     if (!session || !session.characterID || !session._space || endpointID <= 0) {
       return null;

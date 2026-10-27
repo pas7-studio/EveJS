@@ -1,0 +1,202 @@
+"use strict";
+// FW-005A: physically funded NPC-corporation war escrow. Moves existing ISK
+// out of a native corporation wallet under GameStore FULL SQLite transaction.
+// NEVER mints ISK, purchases inventory, or grants campaign supply permission.
+const TABLE="corporationRuntime",KEY="coop-faction-war\u001ftreasury-v1",
+ CORP_PREFIX="corporations\u001f",WAR_KEY="coop-faction-war\u001fstate-v1",
+ JOURNAL_BASE=8000000000000000,MAX_EVENTS=2000,MAX_RESERVATIONS=500;
+const pos=x=>Number.isSafeInteger(x)&&x>0;
+const nonneg=x=>Number.isSafeInteger(x)&&x>=0;
+const key=x=>typeof x==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(x)&&
+ !["__proto__","constructor","prototype"].includes(x);
+const own=(x,k)=>Object.prototype.hasOwnProperty.call(x,k);
+function cents(x){
+ if(typeof x!=="number"||!Number.isFinite(x)||x<0)return null;
+ const v=x*100,n=Math.round(v);
+ return nonneg(n)&&Math.abs(v-n)<=0.000001?n:null;
+}
+const isk=x=>x/100;
+const empty=()=>({version:1,reservations:{},processed:{},nextJournalID:JOURNAL_BASE});
+function validate(s){
+ if(!s||s.version!==1||!s.reservations||!s.processed||
+  typeof s.reservations!=="object"||Array.isArray(s.reservations)||
+  typeof s.processed!=="object"||Array.isArray(s.processed)||
+  !nonneg(s.nextJournalID)||s.nextJournalID<JOURNAL_BASE||
+  Object.keys(s.reservations).length>MAX_RESERVATIONS||
+  Object.keys(s.processed).length>MAX_EVENTS)
+  throw Error("WAR_TREASURY_INVALID");
+ for(const [id,r] of Object.entries(s.reservations)){
+  if(!key(id)||r?.reservationID!==id||!pos(r.corporationID)||
+   !pos(r.factionID)||!key(r.warID)||!key(r.campaignID)||
+   !pos(r.cents)||!["HELD","REFUNDED","PAID"].includes(r.status))
+   throw Error("WAR_TREASURY_CORRUPT_RESERVATION");
+   // A PAID row is the proof that escrowed value left the chest for a named
+   // pilot; without the whole proof the row is not a settlement.
+   if(r.status==="PAID"&&(!pos(r.paidAt)||!pos(r.paidToPilotID)||!key(r.payoutProofID)))
+    throw Error("WAR_TREASURY_CORRUPT_PAYOUT");
+ }
+ return s;
+}
+function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
+ authorizePayout=()=>false,clock=()=>Date.now(),env=process.env}={}){
+ if(typeof gameStore?.coopAtomicNativeRows?.transact!=="function"||
+  [verifyCorporation,authorizeRefund,authorizePayout,clock].some(x=>typeof x!=="function"))
+  throw Error("WAR_TREASURY_AUTHORITIES_REQUIRED");
+ const enabled=()=>env.EVEJS_COOP_FACTION_WAR==="1"&&
+  env.EVEJS_COOP_WAR_TREASURY==="1"&&env.EVEJS_COOP_NATIVE_ATOMIC_ROWS==="1";
+ let busy=false;
+ function snapshot(){
+  if(!enabled())return {status:"DISABLED"};
+  return gameStore.coopAtomicNativeRows.transact([TABLE],
+   tx=>structuredClone(validate(tx.get(TABLE,KEY)||empty())));
+ }
+ function execute(command){
+  if(!enabled())return {status:"DISABLED"};
+  if(busy)return {status:"BLOCKED",reason:"WAR_TREASURY_REENTRANT"};
+  if(!command||!key(command.eventID)||
+   !["RESERVE","REFUND","PAYOUT"].includes(command.type))
+   return {status:"BLOCKED",reason:"INVALID_TREASURY_COMMAND"};
+  busy=true;
+  try{
+   return gameStore.coopAtomicNativeRows.transact([TABLE],tx=>{
+    const state=validate(tx.get(TABLE,KEY)||empty()),
+     signature=JSON.stringify(command),recorded=own(state.processed,command.eventID)?
+      state.processed[command.eventID]:null;
+    if(recorded)return recorded.signature===signature?
+     {status:"DUPLICATE",receipt:recorded.receipt}:
+     {status:"BLOCKED",reason:"WAR_TREASURY_EVENT_CONFLICT"};
+    if(Object.keys(state.processed).length>=MAX_EVENTS)
+     return {status:"BLOCKED",reason:"WAR_TREASURY_EVENT_CAP"};
+    const id=command.reservationID,r=own(state.reservations,String(id))?
+     state.reservations[id]:null;
+    if(!key(id)||!pos(command.corporationID))
+     return {status:"BLOCKED",reason:"INVALID_TREASURY_IDENTITY"};
+    if(command.type==="RESERVE"&&(r||
+      !key(command.warID)||!key(command.campaignID)||
+      !pos(command.factionID)||!pos(command.amountCents)||
+      command.amountCents>100000000000||
+      !nonneg(command.minRemainingCents)))
+     return {status:"BLOCKED",reason:"INVALID_TREASURY_RESERVE"};
+    if(command.type==="REFUND"&&(!r||r.status!=="HELD"||
+      r.corporationID!==command.corporationID||!key(command.proofID)))
+     return {status:"BLOCKED",reason:"INVALID_TREASURY_REFUND"};
+    // PAYOUT releases a HELD escrow to one named pilot. The funds already left
+    // the native wallet at RESERVE time, so a payout can never create ISK: it
+    // only proves where the escrowed value went.
+    if(command.type==="PAYOUT"&&(!r||r.status!=="HELD"||
+      r.corporationID!==command.corporationID||!key(command.proofID)||
+      !pos(command.pilotID)))
+     return {status:"BLOCKED",reason:"INVALID_TREASURY_PAYOUT"};
+    const at=clock();
+    if(!pos(at))throw Error("WAR_TREASURY_CLOCK_UNSAFE");
+    const warState=tx.get(TABLE,WAR_KEY);
+    if(warState?.version!==1||!warState.wars||!warState.campaigns)
+     return {status:"BLOCKED",reason:"WAR_NATIVE_STATE_UNAVAILABLE"};
+    const purpose=command.type==="RESERVE"?command:r;
+    const war=own(warState.wars,purpose.warID)?warState.wars[purpose.warID]:null;
+    // Either real party to the war funds its own chest: the attacker pays for an
+    // operation and the defender pays its own defensive bounty. A faction that
+    // is not in this war can never touch its escrow.
+    if(!war||(war.attackerFactionID!==purpose.factionID&&
+      war.defenderFactionID!==purpose.factionID))
+     return {status:"BLOCKED",reason:"WAR_TREASURY_FACTION_MISMATCH"};
+    if(command.type==="RESERVE"){
+     if(war.state!=="ACTIVE"||own(warState.campaigns,command.campaignID)||
+      Object.values(state.reservations).some(v=>v.warID===command.warID&&
+       v.campaignID===command.campaignID&&v.factionID===command.factionID&&
+       v.status==="HELD")||
+      Object.keys(state.reservations).length>=MAX_RESERVATIONS)
+      return {status:"BLOCKED",reason:"WAR_TREASURY_PURPOSE_UNAVAILABLE"};
+    }else if(command.type==="PAYOUT"){
+     // The escrow belongs to one campaign of one war. A payout must name the
+     // campaign that really exists for this reservation.
+     const campaign=warState.campaigns[r.campaignID];
+     if(!campaign||campaign.warID!==r.warID)
+      return {status:"BLOCKED",reason:"WAR_TREASURY_PURPOSE_UNAVAILABLE"};
+     let valid=false;
+     try{valid=authorizePayout({...r,proofID:command.proofID,
+       pilotID:command.pilotID,war,campaign},tx)===true}catch{}
+     if(!valid)return {status:"BLOCKED",reason:"WAR_TREASURY_PAYOUT_NOT_AUTHORIZED"};
+    }else{
+     const campaign=warState.campaigns[r.campaignID];
+     if(!(war.state==="ENDED"||campaign?.state==="CANCELLED"))
+      return {status:"BLOCKED",reason:"WAR_TREASURY_STILL_IN_USE"};
+     let valid=false;
+     try{valid=authorizeRefund({...r,proofID:command.proofID,war,campaign},tx)===true}catch{}
+     if(!valid)return {status:"BLOCKED",reason:"WAR_TREASURY_REFUND_NOT_AUTHORIZED"};
+    }
+    // A payout never touches the native wallet: RESERVE already removed the
+    // value, so releasing it can only move an existing escrow to a named pilot.
+    if(command.type==="PAYOUT"){
+     const paid={...r,status:"PAID",paidAt:at,
+      paidToPilotID:command.pilotID,payoutProofID:command.proofID};
+     const receipt={type:"PAYOUT",reservationID:id,
+      corporationID:r.corporationID,factionID:r.factionID,warID:r.warID,
+      campaignID:r.campaignID,pilotID:command.pilotID,amountCents:r.cents,
+      escrowJournalID:r.sourceJournalID||0,payoutProofID:command.proofID,at};
+     state.reservations[id]=paid;
+     state.processed[command.eventID]={signature,receipt};
+     validate(state);
+     tx.put(TABLE,KEY,state);
+     return {status:"APPLIED",receipt};
+    }
+    const corpKey=CORP_PREFIX+command.corporationID,corp=tx.get(TABLE,corpKey),
+     division=corp?.wallet?.divisions?.["1000"],
+     balance=cents(division?.balance);
+    let corporationOK=false;
+    try{corporationOK=verifyCorporation({corporationID:command.corporationID,
+      factionID:purpose.factionID,warID:purpose.warID},corp,tx)===true}catch{}
+    if(!corporationOK||!corp||
+     (corp.corporationID!==undefined&&corp.corporationID!==command.corporationID)||
+     balance===null||!Array.isArray(division.journal)||
+     !Array.isArray(division.transactions))
+     return {status:"BLOCKED",reason:"NATIVE_CORPORATION_WALLET_UNVERIFIED"};
+    const amount=command.type==="RESERVE"?command.amountCents:r.cents;
+    const next=balance+(command.type==="RESERVE"?-amount:amount);
+    if(!nonneg(next)||!nonneg(amount)||!nonneg(state.nextJournalID)||
+     state.nextJournalID>=Number.MAX_SAFE_INTEGER-1||
+     (command.type==="RESERVE"&&next<command.minRemainingCents))
+     return {status:"BLOCKED",reason:"WAR_TREASURY_FUNDS_UNAVAILABLE"};
+    const journalID=state.nextJournalID;
+    if(division.journal.some(v=>v?.transactionID===journalID)||
+     division.transactions.some(v=>v?.transactionID===journalID))
+     return {status:"BLOCKED",reason:"WAR_TREASURY_JOURNAL_COLLISION"};
+    const transfer={
+     transactionID:journalID,
+     transactionDate:String(BigInt(at)*10000n+116444736000000000n),
+     referenceID:journalID,entryTypeID:0,accountKey:1000,currency:1,
+     sortValue:1,ownerID1:command.corporationID,
+     ownerID2:command.corporationID,
+     description:(command.type==="RESERVE"?
+      "Coop faction-war internal escrow reserve ":"Coop faction-war escrow refund ")+id,
+     amount:isk(command.type==="RESERVE"?-amount:amount),
+     balance:isk(next)
+    };
+    const nextCorp={...corp,wallet:{...corp.wallet,divisions:{
+     ...corp.wallet.divisions,
+     "1000":{...division,balance:isk(next),
+      journal:[...division.journal,transfer].slice(-100),
+      transactions:[...division.transactions,transfer].slice(-2000)}}}};
+    const receipt={type:command.type,reservationID:id,
+     corporationID:command.corporationID,amountCents:amount,
+     walletBeforeCents:balance,walletAfterCents:next,
+     journalID,at};
+    if(command.type==="RESERVE"){
+     state.reservations[id]={reservationID:id,corporationID:command.corporationID,
+      factionID:command.factionID,warID:command.warID,
+      campaignID:command.campaignID,cents:amount,status:"HELD",
+      reservedAt:at,sourceJournalID:journalID};
+    }else state.reservations[id]={...r,status:"REFUNDED",
+     refundedAt:at,refundJournalID:journalID,refundProofID:command.proofID};
+    state.nextJournalID++;
+    state.processed[command.eventID]={signature,receipt};
+    validate(state);
+    tx.put(TABLE,corpKey,nextCorp);
+    tx.put(TABLE,KEY,state);
+    return {status:"APPLIED",receipt};
+   });
+  }finally{busy=false}
+ }
+ return Object.freeze({execute,snapshot});
+}
+module.exports={TABLE,KEY,CORP_PREFIX,empty,validate,cents,createWarTreasury};

@@ -443,6 +443,7 @@ function createMovementWarpStateHelpers(deps = {}) {
           distance(previousPosition, entity.position) / deltaSeconds,
         );
     ingressState.lastUpdateAtMs = now;
+    if (process.env.EVEJS_COOP_ESCORT_NATIVE_WARP_OBSERVER === "1" && entity.nativeNpc === true) { try { require("../../coopNativeStationArrival").noteNativeMotion(entity, now); } catch (_) { /* witness unavailable: payout fails closed */ } }
 
     if (rawProgress >= 1 && now < completeAtMs) {
       return {

@@ -84,7 +84,8 @@ function buildNativeWreckRuntimeEntity(wreckRecord, options = {}) {
   entity.isEmpty =
     nativeNpcStore.listNativeWreckItemsForWreck(
       toPositiveInt(wreckRecord && wreckRecord.wreckID, 0),
-    ).length === 0;
+    ).length === 0 &&
+    (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK!=="1" || require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))}).list({wreckID:wreckRecord.wreckID}).length===0);
   entity.launcherID = toPositiveInt(wreckRecord && wreckRecord.launcherID, 0) || null;
   const sourceTypeID = toPositiveInt(wreckRecord && wreckRecord.sourceTypeID, 0);
   if (sourceTypeID > 0) {
@@ -173,9 +174,11 @@ function refreshNativeWreckRuntimeEntity(systemID, wreckID, options = {}) {
   }
 
   entity.itemName = String(wreckRecord.itemName || entity.itemName || "Wreck");
-  entity.isEmpty = nativeNpcStore.listNativeWreckItemsForWreck(normalizedWreckID).length === 0;
+  // EX03B18_NATIVE_WRECK_SLIM_REFRESH
+  entity.isEmpty = nativeNpcStore.listNativeWreckItemsForWreck(normalizedWreckID).length === 0 &&
+    (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK!=="1" || require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))}).list({wreckID:normalizedWreckID}).length===0);
   if (options.broadcast === true) {
-    scene.sendSlimItemChangesToAllSessions([entity]);
+    scene.broadcastSlimItemChanges([entity]);
   }
 
   return {
@@ -251,6 +254,9 @@ function destroyNativeWreck(wreckID, options = {}) {
     };
   }
 
+  // EX03B18_NATIVE_WRECK_DECAY_GUARD
+  if (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK==="1" && !require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))}).canDestroy(wreckID))
+    return {success:false,errorMsg:"EX03_ORIGINAL_ITEMSTORE_WRECK_NOT_EMPTY"};
   const systemID = toPositiveInt(options.systemID, toPositiveInt(wreckRecord.systemID, 0));
   if (systemID > 0) {
     spaceRuntime.removeDynamicEntity(systemID, wreckRecord.wreckID, {
@@ -304,7 +310,23 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
   }
 
   const wreckRecord = nativeNpcStore.getNativeWreck(wreckID);
+  // EX03B18_NATIVE_ORIGINAL_ITEM_PICKUP
+  if (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK==="1") {
+    const original=require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))}).claim({
+      characterID,wreckID,itemID:wreckItemID,
+      destinationLocationID,destinationFlagID,quantity:options.quantity
+    });
+    if(original?.status==="HANDLED") {
+      if(original.success===true)refreshNativeWreckRuntimeEntity(wreckRecord.systemID,wreckID,{broadcast:true});
+      return original.success===true?{success:true,data:original.data}:
+        {success:false,errorMsg:original.errorMsg||"EX03_WRECK_CLAIM_UNCERTAIN"};
+    }
+  }
   const wreckItemRecord = nativeNpcStore.getNativeWreckItem(wreckItemID);
+  if (process.env.EVEJS_COOP_SALVAGE_ATOMIC_TRANSFER === "1" &&
+      Number(wreckItemRecord?.sourceCargoID)>0) {
+    return {success:false,errorMsg:"SALVAGE_USE_NATIVE_ATOMIC_PICKUP"};
+  }
   if (!wreckRecord || !wreckItemRecord || toPositiveInt(wreckItemRecord.wreckID, 0) !== wreckID) {
     return {
       success: false,
@@ -326,10 +348,12 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     };
   }
 
+  if (process.env.EVEJS_COOP_NATIVE_LOOT_QUARANTINE === "1") { const guard = require("../coopNativeLootQuarantine").check({wreckID,wreckItemID}); if (guard.status !== "ALLOW") return {success:false,errorMsg:"COOP_LOOT_QUARANTINED"}; }
   const itemType = resolveItemByTypeID(wreckItemRecord.typeID) || {
     typeID: wreckItemRecord.typeID,
     name: wreckItemRecord.itemName,
   };
+  if (process.env.EVEJS_COOP_PVE_BOSS_LOOT_FENCE === "1") { const claim = require("../coopPveBossLootClaim").begin({wreck:wreckRecord,wreckItem:wreckItemRecord,characterID,destinationLocationID,requestedQuantity}); if (claim.status !== "NOT_VERIFIED_BOSS_WRECK" && claim.status !== "BOSS_LOOT_CLAIMED") return {success:false,errorMsg:"COOP_BOSS_LOOT_CLAIM_BLOCKED"}; }
   const grantResult = grantItemToCharacterLocation(
     characterID,
     destinationLocationID,
@@ -372,7 +396,8 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     };
   }
 
-  refreshNativeWreckRuntimeEntity(wreckRecord.systemID, wreckRecord.wreckID);
+  if (process.env.EVEJS_COOP_NATIVE_LOOT_EVIDENCE === "1") { try { require("../coopNativeLootPickupEvidence").note({scene:spaceRuntime.ensureScene(wreckRecord.systemID),wreck:wreckRecord,characterID,wreckItemID,destinationLocationID,sourceBefore:wreckItemRecord,sourceAfter:nativeNpcStore.getNativeWreckItem(wreckItemID),availableQuantity,requestedQuantity,grantResult}); } catch (_coopError) { console.warn("[CoopNativeLoot]",_coopError.message); } }
+  refreshNativeWreckRuntimeEntity(wreckRecord.systemID, wreckRecord.wreckID, { broadcast: true });
   return {
     success: true,
     data: {
@@ -396,6 +421,10 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
   }
 
   const nativeEntityRecord = nativeNpcStore.getNativeEntity(entityID);
+  if (process.env.EVEJS_COOP_SALVAGE_NATIVE_DEATH === "1" &&
+      nativeNpcStore.listNativeWrecks().some(w=>w.sourceEntityID === entityID)) {
+    return {success:false,errorMsg:"SALVAGE_EXISTING_NATIVE_WRECK_NEEDS_RECONCILIATION"};
+  }
   const wreckType = resolveEntityWreckType({
     nativeNpc: true,
     profileID: nativeEntityRecord && nativeEntityRecord.profileID,
@@ -461,6 +490,10 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
   const wreckRecord = {
     wreckID: wreckIDResult.data,
     sourceEntityID: entityID,
+    // EX03B18_SOURCE_CORPORATION: killer/loot-right corporation may differ
+    // from the original NPC corporation which owns the physical loot.
+    coopNpcExpeditionSourceCorpID: process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK==="1"
+      ? Number(nativeEntityRecord?.corporationID)||0 : 0,
     systemID: normalizedSystemID,
     profileID: nativeEntityRecord && nativeEntityRecord.profileID || null,
     loadoutID: nativeEntityRecord && nativeEntityRecord.loadoutID || null,
@@ -525,7 +558,38 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
   }
 
   const cargoDrops = nativeNpcStore.buildNativeCargoItems(entityID);
+  let coopSalvageCargoMoved=false;
+  if (process.env.EVEJS_COOP_SALVAGE_NATIVE_DEATH === "1" && cargoDrops.length) {
+    const prepared=[];
+    for(const original of cargoDrops){
+      if(!Number.isSafeInteger(original.itemID)||original.itemID<=0||
+         !Number.isSafeInteger(original.quantity)||original.quantity<=0){
+        nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
+        return {success:false,errorMsg:"SALVAGE_SOURCE_CARGO_ID_UNVERIFIED"};
+      }
+      const itemType=resolveItemByTypeID(original.typeID)||
+       {typeID:original.typeID,name:original.itemName};
+      const result=buildNativeWreckItemRecord(wreckRecord,itemType,{
+       quantity:original.quantity,singleton:original.singleton,
+       moduleState:original.moduleState,moduleID:original.moduleID,
+       sourceKind:"cargo"});
+      if(result.success!==true||!result.data){
+       nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
+       return result;
+      }
+      prepared.push({...result.data,sourceCargoID:original.itemID});
+    }
+    const committed=require("../coopSalvageDeathAtomic").movePinned({
+      wreckRecord,originalCargo:cargoDrops,preparedWreckItems:prepared});
+    if(committed?.status!=="SALVAGE_NATIVE_CARGO_TO_WRECK_COMMITTED"){
+      nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
+      return {success:false,errorMsg:committed?.status||
+       "SALVAGE_NATIVE_CARGO_MOVE_UNVERIFIED"};
+    }
+    coopSalvageCargoMoved=true;
+  }
   for (const cargoEntry of cargoDrops) {
+    if(coopSalvageCargoMoved)break;
     const itemType = resolveItemByTypeID(cargoEntry.typeID) || {
       typeID: cargoEntry.typeID,
       name: cargoEntry.itemName,
@@ -561,24 +625,42 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
       sourceKind: "loot",
     });
     if (!wreckItemResult.success || !wreckItemResult.data) {
-      nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
+      if(!coopSalvageCargoMoved)nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
       return wreckItemResult;
     }
     const writeResult = nativeNpcStore.upsertNativeWreckItem(wreckItemResult.data, {
       transient: wreckRecord.transient,
     });
     if (!writeResult.success) {
-      nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
+      if(!coopSalvageCargoMoved)nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
       return writeResult;
     }
   }
 
+  // EX03B18_NATIVE_WRECK_STAGE
+  if (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK==="1") {
+    const staged=require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))}).stage({
+      wreckID:wreckRecord.wreckID,shipID:entityID,
+      corporationID:nativeEntityRecord?.corporationID
+    });
+    if(staged?.success!==true)
+      return {success:false,errorMsg:staged?.errorMsg||"EX03_WRECK_CUSTODY_REPAIR_REQUIRED"};
+  }
   const removeResult = spaceRuntime.removeDynamicEntity(normalizedSystemID, entityID, {
     allowSessionOwned: false,
     terminalDestructionEffectID: DESTRUCTION_EFFECT_EXPLOSION,
   });
   if (!removeResult.success) {
-    nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
+    // EX03B18_NATIVE_DEATH_FAILURE_FENCE: original item IDs may already
+    // be in a durable wreck. Do not cascade-delete their authoritative home.
+    if (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK==="1" &&
+        !require(path.join(__dirname, "../coopNpcExpeditionWreckCustody"))
+          .createNpcExpeditionWreckCustody({
+           items:require(path.join(__dirname, "../../services/inventory/itemStore")),
+           npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))
+          }).canDestroy(wreckRecord.wreckID))
+      return {success:false,errorMsg:"EX03_WRECK_DEATH_DESTRUCTION_NEEDS_OPERATOR_REPAIR"};
+    if(!coopSalvageCargoMoved)nativeNpcStore.removeNativeWreckCascade(wreckRecord.wreckID);
     return removeResult;
   }
 
@@ -590,6 +672,10 @@ function destroyNativeNpcEntityWithWreck(systemID, shipEntity, options = {}) {
     return wreckSpawnResult;
   }
 
+  try { require("../coopVirtualWorldRuntime").confirmedNativeNpcWreck(normalizedSystemID, entityID, wreckRecord.wreckID, shipEntity); } catch (_coopError) { /* optional integration */ }
+  try { require("../coopNativeNpcDemo").confirmedWreck(normalizedSystemID, entityID, wreckRecord.wreckID); } catch (_coopError) { /* optional co-op kill tracking */ }
+  try { require("../coopNativeConsequences").noteNativeWreck(normalizedSystemID, entityID, wreckRecord.wreckID, shipEntity, options, controller); } catch (_coopError) { console.warn("[CoopConsequences]", _coopError.message); }
+  try { require("../coopNpcDestructionAttacker").note(scene, shipEntity, options, wreckRecord); } catch (_coopError) { console.warn("[CoopNpcDestructionAttacker]", _coopError.message); }
   try {
     const dungeonUniverseSiteService = require(path.join(
       __dirname,

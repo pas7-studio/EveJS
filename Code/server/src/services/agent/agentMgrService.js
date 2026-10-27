@@ -87,6 +87,7 @@ function buildDoActionResponsePayload(result) {
   const agentSays = normalizeMarshalTuple(payload
     ? payload.agentSays
     : ["This agent is unavailable.", null]);
+  if (process.env.EVEJS_COOP_AGENT_DIALOGUE === "1") { try { require("../../space/coopAgentDialogue").applyToTuple(agentSays); } catch (error) { console.warn("[CoopAgentDialogue]", error.message); } }
   return buildMarshalTuple([
     buildMarshalTuple([
       toMarshalSafe(agentSays),
@@ -661,8 +662,12 @@ class AgentMgrService extends BaseService {
   }
 
   Handle_DoAction(args, session) {
+  if (process.env.EVEJS_COOP_AGENT_DIALOGUE === "1") { try { require("../../space/coopAgentDialogue").enter(session); } catch (error) { console.warn("[CoopAgentDialogue]", error.message); } }
     const agentID = this._resolveBoundAgentID(session);
     const actionID = args && args.length > 0 ? args[0] : null;
+  if (process.env.EVEJS_COOP_FACTION_MILITIA_AGENT === "1") { const militia=require("../../space/coopFactionWarAgent").doAction({session,agentID,actionID}); if (militia) return buildDoActionResponsePayload(militia); }
+  if (process.env.EVEJS_COOP_NATIVE_JOB_AGENT === "1") { const job=require("../../space/coopNativeJobAgent").doAction({session,agentID,actionID}); if (job) return buildDoActionResponsePayload(job); }
+    if (process.env.EVEJS_COOP_PLAYER_NPC_MINING_AGENT === "1") { const mining=require("../../space/coopPlayerMiningAgent").doAction({session,agentID,actionID}); if(mining) return buildDoActionResponsePayload(mining); }
     if (Number(actionID) === agentMissionRuntime.AGENT_DIALOGUE_BUTTON_DECLINE) {
       return buildDeferredCallResponse(async ({
         dispatcher,
@@ -720,15 +725,20 @@ class AgentMgrService extends BaseService {
         }
       }, { reason: "agent-decline-confirmation" });
     }
+    const coopTicket = process.env.EVEJS_COOP_FLEET_MISSION_TURNIN === "1" ? require("../../space/coopFleetMissionTurnin").prepare({session,agentID,actionID,fleetRuntime:require("../fleets/fleetRuntime"),missionRuntime:agentMissionRuntime,sessions:require("../chat/sessionRegistry").getSessions(),getDockedLocationID:require("../structure/structureLocation").getDockedLocationID}) : null;
     const result = agentMissionRuntime.doAgentAction(
       normalizePositiveInteger(session && session.characterID, 0),
       agentID,
       actionID,
     );
+    if (coopTicket && coopTicket.ok) { try { const shared = require("../../space/coopFleetMissionTurnin").finish({ticket:coopTicket,missionRuntime:agentMissionRuntime,leaderActionResult:result,fleetRuntime:require("../fleets/fleetRuntime"),getDockedLocationID:require("../structure/structureLocation").getDockedLocationID}); require("../../space/coopRuntimeProbe").observe("coop-fleet-native-mission-turnin",session,null,shared); } catch (error) { console.warn("[CoopFleetMission]",error.message); } }
     return buildDoActionResponsePayload(result);
   }
 
   Handle_GetMissionBriefingInfo(args, session) {
+    if (process.env.EVEJS_COOP_PLAYER_NPC_MINING_AGENT === "1") { const mining=require("../../space/coopPlayerMiningAgent").briefing({session,agentID:this._resolveBoundAgentID(session)}); if(mining) return toMarshalSafe(mining); }
+    if (process.env.EVEJS_COOP_FACTION_MILITIA_AGENT === "1") { const militia=require("../../space/coopFactionWarAgent").briefing({session,agentID:this._resolveBoundAgentID(session)}); if (militia) return toMarshalSafe(militia); }
+    if (process.env.EVEJS_COOP_NATIVE_JOB_AGENT === "1") { const job=require("../../space/coopNativeJobAgent").briefing({session,agentID:this._resolveBoundAgentID(session)}); if (job) return toMarshalSafe(job); }
     return toMarshalSafe(
       agentMissionRuntime.getMissionBriefingInfo(
         normalizePositiveInteger(session && session.characterID, 0),

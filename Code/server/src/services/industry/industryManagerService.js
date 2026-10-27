@@ -60,13 +60,13 @@ class IndustryManagerService extends BaseService {
 
   Handle_InstallJob(args, session) {
     const request = parseIndustryRequest(args && args.length > 0 ? args[0] : null);
-    const result = installIndustryJob(session, request);
+    const result = process.env.EVEJS_COOP_PLAYER_INDUSTRY_GUARD === "1" ? require("../../space/coopPlayerIndustryRuntime").install({session,request,nativeInstall:installIndustryJob,readPreviousJob:getJobByID}) : installIndustryJob(session, request);
     return result && result.data ? result.data.jobID : null;
   }
 
   Handle_CompleteJob(args, session) {
     const jobID = args && args.length > 0 ? args[0] : null;
-    const result = deliverIndustryJob(session, jobID);
+    const result = process.env.EVEJS_COOP_PLAYER_INDUSTRY_GUARD === "1" ? require("../../space/coopPlayerIndustryRuntime").deliver({session,jobID,nativeDeliver:deliverIndustryJob}) : deliverIndustryJob(session, jobID);
     return result && result.data ? buildJobPayload(result.data) : null;
   }
 
@@ -80,7 +80,7 @@ class IndustryManagerService extends BaseService {
       if (jobID <= 0) {
         continue;
       }
-      const result = deliverIndustryJob(session, jobID);
+      const result = process.env.EVEJS_COOP_PLAYER_INDUSTRY_GUARD === "1" ? require("../../space/coopPlayerIndustryRuntime").deliver({session,jobID,nativeDeliver:deliverIndustryJob}) : deliverIndustryJob(session, jobID);
       if (result && result.data) {
         delivered.push(buildJobPayload(result.data));
       }
@@ -90,7 +90,7 @@ class IndustryManagerService extends BaseService {
 
   Handle_CancelJob(args, session) {
     const jobID = args && args.length > 0 ? args[0] : null;
-    const result = cancelIndustryJob(session, jobID);
+    const result = process.env.EVEJS_COOP_PLAYER_INDUSTRY_GUARD === "1" ? require("../../space/coopPlayerIndustryRuntime").cancel({session,jobID,nativeCancel:cancelIndustryJob}) : cancelIndustryJob(session, jobID);
     return result && result.data ? buildJobPayload(result.data) : null;
   }
 

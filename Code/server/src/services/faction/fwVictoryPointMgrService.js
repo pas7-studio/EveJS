@@ -108,6 +108,7 @@ class FwVictoryPointMgrService extends BaseService {
   }
 
   Handle_GetAllVictoryPointStates(args, session) {
+    if (process.env.EVEJS_COOP_WAR_ADVANTAGE === "1") { try { const view = require("../../space/coopWarAdvantage").shared().victoryPointStates(); return buildDict(Object.entries(view).map(([systemID, state]) => [Number(systemID), buildVictoryPointStatePayload(state)])); } catch (error) { log.warn("[CoopWarAdvantage] victory-points", error.message); } }
     const stateEntries = this.getStateEntries(session);
 
     log.debug(
@@ -123,6 +124,7 @@ class FwVictoryPointMgrService extends BaseService {
   }
 
   Handle_GetLocalVictoryPointState(args, session) {
+    if (process.env.EVEJS_COOP_WAR_ADVANTAGE === "1") { try { const view = require("../../space/coopWarAdvantage").shared().victoryPointStates(); const wanted = resolveSolarSystemID(args, session); const hit = view[String(wanted)]; if (hit) return [wanted, buildVictoryPointStatePayload(hit)]; } catch (error) { log.warn("[CoopWarAdvantage] local-victory-point", error.message); } }
     const solarSystemID = resolveSolarSystemID(args, session);
     const state = this.getStateEntries(session)
       .find(([candidateSolarSystemID]) => candidateSolarSystemID === solarSystemID);

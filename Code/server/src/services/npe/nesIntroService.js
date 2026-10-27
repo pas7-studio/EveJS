@@ -8,6 +8,8 @@ const {
 } = require(path.join(__dirname, "./tutorialRuntime"));
 
 function resolveCharacterID(args, session) {
+  if (process.env.EVEJS_COOP_NPE_NATIVE_SAFETY === "1")
+    return require("../../space/coopNpeSafety").resolveCharacterID(args, session);
   const directArg = Array.isArray(args) ? Number(args[0]) : NaN;
   if (Number.isFinite(directArg) && Math.trunc(directArg) > 0) {
     return Math.trunc(directArg);

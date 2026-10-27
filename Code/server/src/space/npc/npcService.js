@@ -207,6 +207,7 @@ function resolveBatchSelection(options = {}) {
     entityType: String(options.entityType || "npc"),
     preferPools: options.preferPools !== false,
     requiredWeaponFamily: String(options.requiredWeaponFamily || ""),
+    loadoutID: String(options.loadoutID || ""),
   });
 }
 

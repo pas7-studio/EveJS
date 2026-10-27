@@ -274,7 +274,12 @@ function resolveBookmarkAnyStore(session, bookmarkID) {
   const bookmark = runtimeBookmark.bookmark || runtimeBookmark;
   // Shared (group) folders hide freshly-created bookmarks from non-creators for
   // a short window so the author can correct mistakes before others warp to it.
-  if (isBookmarkDelayed(bookmark, charID)) {
+  if (isBookmarkDelayed(bookmark, charID) && !(
+    process.env.EVEJS_COOP_EXPEDITION_FLEET_BOOKMARKS === "1" &&
+    require("../../space/coopNativeScanProof").fastFleetBookmarkAccess({
+      session,bookmarkView:runtimeBookmark,fleetRuntime
+    })
+  )) {
     log.info(
       `[Beyonce] Bookmark ${bookmarkID} is still in the shared delay window for char=${charID}`,
     );
@@ -2783,6 +2788,7 @@ class BeyonceService extends BaseService {
         followerSession.solarsystemid2 || followerSession.solarsystemid,
         0,
       );
+      if (process.env.EVEJS_COOP_FLEET_WARP_SAFETY === "1" && !require("../../space/coopFleetWarpSafety").eligible({commanderSession,followerSession,spaceRuntime})) return false;
       return !(
         commanderSystemID > 0 &&
         followerSystemID > 0 &&
@@ -2823,6 +2829,7 @@ class BeyonceService extends BaseService {
         });
       }
 
+      if (process.env.EVEJS_COOP_FLEET_WARP_SAFETY === "1") require("../../space/coopFleetWarpSafety").recordFollowerWarp({commanderSession,followerSession,spaceRuntime,result:followerResult,targetEntityID,minimumRange});
       if (followerResult && followerResult.success) {
         warpedCount += 1;
         this._notifyFleetWarpRemoteMessage(followerSession, targetEntityID);
@@ -3077,7 +3084,15 @@ class BeyonceService extends BaseService {
     const locationID = normalizeNumber(args && args[0], 0);
     const name = normalizeText(args && args[1], "");
     const comment = normalizeText(args && args[2], "");
-    const resultID = normalizeNumber(args && args[3], 0);
+    const rawScanResultID = args && args[3];
+    const resultID = process.env.EVEJS_COOP_EXPEDITION_SCAN_PROOF === "1"
+      ? (require("../../space/coopNativeScanProof").authorize({
+          session,locationID,resultID:rawScanResultID,
+          // Do not enumerate arbitrary systems from an untrusted client ID.
+          sites:locationID === normalizeNumber(session && session._space && session._space.systemID,0)
+            ? signatureRuntime.listSystemSignatureSites(locationID) : [],
+        }).siteID || 0)
+      : normalizeNumber(rawScanResultID, 0);
     const folderID = normalizeNumber(args && args[4], 0);
     const expiryMode = normalizeNumber(args && args[5], 0);
     const subfolderID = getBookmarkSubfolderID(kwargs);

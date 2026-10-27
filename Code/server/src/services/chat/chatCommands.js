@@ -323,7 +323,10 @@ const AVAILABLE_SLASH_COMMANDS = [
   "corpcreate",
   "blue",
   "commandlist",
+  "alerts",
   "commands",
+  "jobs",
+  "events",
   "deer_hunter",
   "expertsystem",
   "expertsystems",
@@ -10396,6 +10399,8 @@ function executeChatCommand(session, rawMessage, chatHub, options = {}) {
     return handledResult(chatHub, session, options, COMMANDS_HELP_TEXT);
   }
 
+  if (command === "events" || command === "alerts") { const result=require("../../space/coopWorldOpportunityBoard").handleChat({session,command,argumentText}); return handledResult(chatHub,session,options,result.message); }
+  if (command === "jobs") { const result=require("../../space/coopNpcJobBoard").handleChat({session,argumentText}); return handledResult(chatHub,session,options,result.message); }
   if (command === "motd") {
     return handledResult(chatHub, session, options, DEFAULT_MOTD_MESSAGE);
   }

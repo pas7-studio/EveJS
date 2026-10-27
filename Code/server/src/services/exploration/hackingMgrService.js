@@ -379,27 +379,37 @@ class HackingMgrService extends BaseService {
       virusInitialStrength,
       virusSlots,
     ] = normalizeCallArgs(args);
+    // COOP_EX04_HACK_START
+    const admissionGuard = process.env.EVEJS_COOP_NATIVE_HACKING_ADMISSION === "1"
+      ? require(path.join(__dirname,"../../space/coopNativeHackingAdmission"))
+        .getNativeHackingAdmission() : null;
+    const nativeAdmission = admissionGuard ?
+      admissionGuard.consume(session,{targetID,gameType,moduleTypeID}) : null;
+    if (admissionGuard && !nativeAdmission) return null;
+    // COOP_EX04_HACK_START_END
     const nowMs = Date.now();
     const target = resolveContainerTarget(targetID, session);
+    if (nativeAdmission && (!target || target.entity !== nativeAdmission.target)) return null;
     const normalizedDifficulty = Math.max(
       1,
-      roundNumber(toFiniteNumber(difficulty, 1), 6),
+      roundNumber(toFiniteNumber(nativeAdmission ? nativeAdmission.difficulty : difficulty, 1), 6),
     );
     const attempt = {
       key: getAttemptKey(session),
+      nativeAdmission,
       targetID: toPositiveInt(targetID, 0),
       target,
       gameType: toInt(
-        gameType,
+        nativeAdmission ? nativeAdmission.gameType : gameType,
         target && String(target.entity.dungeonSiteContentAnalyzer || "") === "relic"
           ? HACKING_CONSTANTS.GAMETYPE_ARCHEOLOGY
           : HACKING_CONSTANTS.GAMETYPE_HACKING,
       ),
-      moduleTypeID: toPositiveInt(moduleTypeID, 0) || null,
+      moduleTypeID: toPositiveInt(nativeAdmission ? nativeAdmission.moduleTypeID : moduleTypeID, 0) || null,
       difficulty: normalizedDifficulty,
-      virusCoherence: Math.max(1, toInt(virusInitialCoherence, 200)),
-      virusStrength: Math.max(1, toInt(virusInitialStrength, 30)),
-      virusSlots: Math.max(0, toInt(virusSlots, 3)),
+      virusCoherence: Math.max(1, toInt(nativeAdmission ? nativeAdmission.coherence : virusInitialCoherence, 200)),
+      virusStrength: Math.max(1, toInt(nativeAdmission ? nativeAdmission.strength : virusInitialStrength, 30)),
+      virusSlots: Math.max(0, toInt(nativeAdmission ? nativeAdmission.slots : virusSlots, 3)),
       virusID: 1,
       tiles: buildSyntheticBoard(normalizedDifficulty),
       completed: false,
@@ -426,6 +436,17 @@ class HackingMgrService extends BaseService {
       emitHackingTurn(session, [buildEvent(HACKING_CONSTANTS.EVENT_ACK, {})]);
       return null;
     }
+    // COOP_EX04_HACK_CONTINUATION
+    if (process.env.EVEJS_COOP_NATIVE_HACKING_ADMISSION === "1" &&
+        !require(path.join(__dirname,"../../space/coopNativeHackingAdmission"))
+          .getNativeHackingAdmission().validate(session,attempt.nativeAdmission)) {
+      ACTIVE_ATTEMPTS.delete(key);
+      if (attempt.target?.entity?.dungeonSiteContentHackingState ===
+          HACKING_CONSTANTS.HACKING_STATE_BEING_HACKED)
+        markContainerState(attempt.target,HACKING_CONSTANTS.HACKING_STATE_SECURE,Date.now());
+      return null;
+    }
+    // COOP_EX04_HACK_CONTINUATION_END
 
     const tile = attempt.tiles.find((candidate) => coordKey(candidate.coord) === coordKey(tileCoord));
     if (!tile) {
@@ -480,6 +501,10 @@ class HackingMgrService extends BaseService {
     if (!attempt || attempt.completed) {
       return null;
     }
+    // COOP_EX04_HACK_QUIT_IDENTITY
+    if (process.env.EVEJS_COOP_NATIVE_HACKING_ADMISSION === "1" &&
+        attempt.nativeAdmission?.session !== session) return null;
+    // COOP_EX04_HACK_QUIT_IDENTITY_END
     attempt.completed = true;
     const nowMs = Date.now();
     failContainerAttempt(attempt, session, nowMs);
@@ -517,6 +542,101 @@ class HackingMgrService extends BaseService {
     return this.Handle_UsedUtilityElementOnVirus([index], session);
   }
 }
+
+// EX03_NPC_HACK_SOURCE_BEGIN
+const EX03_NPC_HACK_ATTEMPTS=new Map();
+HackingMgrService.nativeNpcTurn=function nativeNpcTurn({scene,entityID,targetID,moduleID}={}){
+ const deny=reason=>({status:"BLOCKED",reason,nativeLootGranted:false});
+ const pos=x=>Number.isSafeInteger(x)&&x>0;
+ const vec=x=>x&&["x","y","z"].every(k=>typeof x[k]==="number"&&Number.isFinite(x[k]));
+ if(!pos(scene?.systemID)||!pos(entityID)||!pos(targetID)||!pos(moduleID)||
+    typeof scene.getEntityByID!=="function")return deny("EX03_HACK_CONTEXT_INVALID");
+ // Original ship, controller, fitted module and source-of-truth scene.
+ const native=require("../../space/npc/nativeNpcStore");
+ const {typeHasEffectName}=require("../fitting/liveFittingState");
+ const {resolveItemByTypeID}=require("../inventory/itemTypeRegistry");
+ let ship,target,owner,controller,modules;
+ try{
+  if(spaceRuntime.scenes?.get(scene.systemID)!==scene)
+   return deny("EX03_HACK_NATIVE_SCENE_UNAVAILABLE");
+  ship=scene.getEntityByID(entityID);target=scene.getEntityByID(targetID);
+  owner=native.getNativeEntity(entityID);
+  controller=native.getNativeController(entityID);
+  modules=native.listNativeModulesForEntity(entityID);
+ }catch{return deny("EX03_HACK_NATIVE_SOURCE_UNAVAILABLE")}
+ if(!ship||ship.itemID!==entityID||ship.kind!=="ship"||ship.nativeNpc!==true||
+    ship.session?.characterID||ship.isWarping||ship.warpState||ship.pendingWarp||
+    !vec(ship.position)||!owner||owner.entityID!==entityID||
+    owner.systemID!==scene.systemID||!pos(owner.ownerID)||
+    owner.ownerID!==ship.ownerID||owner.corporationID!==ship.corporationID||
+    !controller||controller.entityID!==entityID||
+    controller.systemID!==scene.systemID||
+    !Array.isArray(modules)||modules.length>256||
+    !target||target.itemID!==targetID||
+    target.dungeonMaterializedContainer!==true||
+    target.dungeonMaterializedSiteContent!==true||
+    !vec(target.position))return deny("EX03_HACK_PHYSICAL_AUTHORITY_MISSING");
+ const radius=Math.max(0,Number(ship.radius)||0)+Math.max(0,Number(target.radius)||0);
+ if(Math.max(0,Math.hypot(
+   ship.position.x-target.position.x,
+   ship.position.y-target.position.y,
+   ship.position.z-target.position.z)-radius)>10000)
+  return deny("EX03_HACK_NATIVE_ANALYZER_OUT_OF_RANGE");
+ const fitting=modules.filter(x=>x?.moduleID===moduleID&&
+  x.entityID===entityID&&x.ownerID===owner.ownerID&&
+  x.categoryID===7&&x.moduleState?.online===true&&
+  x.moduleState?.incapacitated!==true&&x.transient!==true);
+ if(fitting.length!==1)return deny("EX03_HACK_ANALYZER_NOT_FITTED");
+ const fitted=fitting[0];
+ if(!pos(fitted.typeID)||!typeHasEffectName(fitted.typeID,"doHacking"))
+  return deny("EX03_HACK_NATIVE_ANALYZER_EFFECT_MISSING");
+ const name=String(fitted.itemName||
+  resolveItemByTypeID(fitted.typeID)?.name||"").toLowerCase();
+ const wanted=String(target.dungeonSiteContentAnalyzer||"").toLowerCase();
+ if(!["relic","data"].includes(wanted)||
+   !(name.includes(wanted+" analyzer")||name.includes("integrated analyzer")))
+  return deny("EX03_HACK_ANALYZER_KIND_MISMATCH");
+ const key=scene.systemID+":"+entityID+":"+targetID,nowMs=Date.now();
+ let attempt=EX03_NPC_HACK_ATTEMPTS.get(key);
+ if(!attempt){
+  if(Number(target.dungeonSiteContentHackingState||0)!==0)
+   return deny("EX03_HACK_TARGET_BUSY_OR_HACKED");
+  const difficulty=Math.max(1,Math.min(50,Number(
+   target.dungeonSiteContentHackingDifficultyValue)||1));
+  attempt={target:{scene,entity:target,instanceID:Number(target.dungeonSiteInstanceID)||0},
+   targetID,tiles:buildSyntheticBoard(difficulty),startedAtMs:nowMs,step:0,
+   ownerID:owner.ownerID,moduleID,typeID:fitted.typeID};
+  EX03_NPC_HACK_ATTEMPTS.set(key,attempt);
+  markContainerState(attempt.target,HACKING_CONSTANTS.HACKING_STATE_BEING_HACKED,nowMs);
+  return {status:"NATIVE_NPC_HACK_STARTED",targetID,originalBoard:true,nativeLootGranted:false};
+ }
+ if(attempt.target.entity!==target||attempt.target.scene!==scene||
+    attempt.ownerID!==owner.ownerID||attempt.moduleID!==moduleID||
+    attempt.typeID!==fitted.typeID||
+    Number(target.dungeonSiteContentHackingState)!==HACKING_CONSTANTS.HACKING_STATE_BEING_HACKED||
+    nowMs<attempt.startedAtMs||nowMs-attempt.startedAtMs>180000){
+  EX03_NPC_HACK_ATTEMPTS.delete(key);
+  return deny("EX03_HACK_ORIGINAL_ATTEMPT_STALE");
+ }
+ // Same original board/tiles as player; bounded one blind tile per A-Life tick.
+ const turn=attempt.step===0?{x:0,y:1}:{x:1,y:0};
+ const tile=attempt.tiles.find(t=>coordKey(t.coord)===coordKey(buildCoord(turn.x,turn.y)));
+ if(!tile||!tile.hidden)return deny("EX03_HACK_BOARD_INVALID");
+ tile.hidden=false;attempt.step++;
+ if(tile.type!==HACKING_CONSTANTS.TYPE_CORE)
+  return {status:"NATIVE_NPC_HACK_PROGRESS",targetID,turn:attempt.step,
+   nativeLootGranted:false};
+ // Reuse original native hacking win and site completion transitions.
+ tile.coherence=0;
+ markContainerState(attempt.target,HACKING_CONSTANTS.HACKING_STATE_HACKED,nowMs);
+ EX03_NPC_HACK_ATTEMPTS.delete(key);
+ try{maybeCompleteAttemptSite(attempt,null,nowMs)}catch{
+  return deny("EX03_HACK_SITE_COMPLETION_UNCERTAIN");
+ }
+ return {status:"NATIVE_NPC_HACK_SUCCESS",targetID,originalBoard:true,
+  nativeLootGranted:false};
+};
+// EX03_NPC_HACK_SOURCE_END
 
 HackingMgrService._testing = {
   clearActiveAttempts() {

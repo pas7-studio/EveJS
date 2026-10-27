@@ -115,6 +115,7 @@ function createFwAdvantageGatewayService(context = {}) {
       }
 
       const solarSystemID = normalizeUint(getSystemID(requestEnvelope), 0);
+      if (process.env.EVEJS_COOP_WAR_ADVANTAGE === "1") { try { const scores = require("../../../space/coopWarAdvantage").shared().scoresFor(solarSystemID); if (scores.length) return { statusCode: 200, statusMessage: "", responseTypeName: "eve_public.faction.activity.GetSolarSystemScoresResponse", responsePayloadBuffer: buildEncodedPayload(getSolarSystemScoresResponse, buildSolarSystemScoresPayload(solarSystemID, scores)) }; } catch (error) { /* fall through to the stock empty answer */ } }
       return {
         statusCode: 200,
         statusMessage: "",

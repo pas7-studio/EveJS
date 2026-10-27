@@ -67,6 +67,7 @@ const ROW_GROUPS = {
   corporationRuntime: [
     "corporations", "alliances", "wars", "warNegotiations",
     "mutualWarInvites", "mutualWarInviteBlocks", "peaceTreaties",
+    "coopPlayerMiningShift", "coopPlayerMiningFleet", "coopPlayerMiningOreTitle", "coopPlayerMiningCorpSell", "coopPlayerMiningCorpFill",
   ],
   dungeonRuntimeState: ["instancesByID"],
   industryBlueprintState: ["records"],
@@ -782,3 +783,4 @@ module.exports = {
   getDatabasePath,
   close,
 };
+module.exports.coopAtomicNativeRows = require("../space/coopGameStoreAtomic").createSqliteAdapter(() => requireDb());

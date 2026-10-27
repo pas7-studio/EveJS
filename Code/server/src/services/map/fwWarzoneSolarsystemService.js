@@ -67,6 +67,7 @@ class FwWarzoneSolarsystemService extends BaseService {
 
   Handle_GetAllWarzonesOccupationStates(args, session) {
     log.debug("[fwWarzoneSvc] GetAllWarzonesOccupationStates called");
+    if (process.env.EVEJS_COOP_WAR_CLIENT_VIEW === "1") { try { const view = require("../../space/coopWarClientView"); const { buildKeyVal } = require("../_shared/serviceHelpers"); const factionState = require("../../services/faction/factionState"); const warzoneID = Number(process.env.EVEJS_COOP_WAR_CLIENT_WARZONE || 2); const allowed = new Set(WARZONES[warzoneID] || []); const allSystems = Number(process.env.EVEJS_COOP_FW_ALL_SYSTEMS || 0) === 1; const states = allSystems ? view.warzoneOccupationStates(view.warState(), { factionIDs: Array.from(allowed), systems: view.staticWarzoneSystems(), militiaOf: (id) => id }) : view.occupationStates(view.warState()); const entries = Object.entries(states).map(([systemID, state]) => { const owner = Number(state.ownerID), occupier = Number(state.occupierID); if (!allSystems && !allowed.has(owner) && !allowed.has(occupier)) return null; return [Number(systemID), buildKeyVal([["ownerID", owner], ["occupierID", occupier], ["contested", state.contested]])]; }).filter(Boolean); return buildDict(Object.keys(WARZONES).map((key) => [Number(key), Number(key) === warzoneID ? buildDict(entries) : buildDict([])])); } catch (error) { log.warn("[CoopWarClientView] warzones", error.message); } }
 
     // Decompiled V23.02 fwWarzoneSvc.py does:
     //   occupationStatesBySolarsystemByWarzone =
@@ -82,6 +83,7 @@ class FwWarzoneSolarsystemService extends BaseService {
 
   Handle_GetAllWarzonesOccupationStatesUncached(args, session) {
     log.debug("[fwWarzoneSvc] GetAllWarzonesOccupationStatesUncached called");
+    if (process.env.EVEJS_COOP_WAR_CLIENT_VIEW === "1") { try { const view = require("../../space/coopWarClientView"); const { buildKeyVal } = require("../_shared/serviceHelpers"); const factionState = require("../../services/faction/factionState"); const warzoneID = Number(process.env.EVEJS_COOP_WAR_CLIENT_WARZONE || 2); const allowed = new Set(WARZONES[warzoneID] || []); const allSystems = Number(process.env.EVEJS_COOP_FW_ALL_SYSTEMS || 0) === 1; const states = allSystems ? view.warzoneOccupationStates(view.warState(), { factionIDs: Array.from(allowed), systems: view.staticWarzoneSystems(), militiaOf: (id) => id }) : view.occupationStates(view.warState()); const entries = Object.entries(states).map(([systemID, state]) => { const owner = Number(state.ownerID), occupier = Number(state.occupierID); if (!allSystems && !allowed.has(owner) && !allowed.has(occupier)) return null; return [Number(systemID), buildKeyVal([["ownerID", owner], ["occupierID", occupier], ["contested", state.contested]])]; }).filter(Boolean); return buildDict(Object.keys(WARZONES).map((key) => [Number(key), Number(key) === warzoneID ? buildDict(entries) : buildDict([])])); } catch (error) { log.warn("[CoopWarClientView] warzones-uncached", error.message); } }
     return buildEmptyOccupationStatesByWarzone();
   }
 
@@ -97,6 +99,7 @@ class FwWarzoneSolarsystemService extends BaseService {
 
   Handle_GetLocalOccupationState(args, session) {
     log.debug("[fwWarzoneSvc] GetLocalOccupationState called");
+    if (process.env.EVEJS_COOP_WAR_CLIENT_VIEW === "1") { try { const view = require("../../space/coopWarClientView"); const { buildKeyVal } = require("../_shared/serviceHelpers"); const factionState = require("../../services/faction/factionState"); const warzoneID = Number(process.env.EVEJS_COOP_WAR_CLIENT_WARZONE || 2); const allowed = new Set(WARZONES[warzoneID] || []); const allSystems = Number(process.env.EVEJS_COOP_FW_ALL_SYSTEMS || 0) === 1; const states = allSystems ? view.warzoneOccupationStates(view.warState(), { factionIDs: Array.from(allowed), systems: view.staticWarzoneSystems(), militiaOf: (id) => id }) : view.occupationStates(view.warState()); const entries = Object.entries(states).map(([systemID, state]) => { const owner = Number(state.ownerID), occupier = Number(state.occupierID); if (!allSystems && !allowed.has(owner) && !allowed.has(occupier)) return null; return [Number(systemID), buildKeyVal([["ownerID", owner], ["occupierID", occupier], ["contested", state.contested]])]; }).filter(Boolean); const wanted = Number(args && args.length > 0 ? args[0] : (session && (session.solarsystemid2 || session.solarsystemid))) || 0;  const hit = entries.find(([systemID]) => systemID === wanted);  if (hit) return [wanted, hit[1]]; } catch (error) { log.warn("[CoopWarClientView] local", error.message); } }
     const solarSystemID =
       Number(
         args && args.length > 0

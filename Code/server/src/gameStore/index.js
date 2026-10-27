@@ -197,6 +197,8 @@ const SQLITE_TABLES = new Set([
   "items",
   "raffles",
   "marketEscrow",
+  "npcMarketFills", // COOP-035 durable NPC buy idempotency receipts
+  "playerMarketFills", // COOP-P2P durable native player wallet/item receipts
   // Second wave: remaining runtime tables not persistence-tested via data.json.
   "corporationRuntime",
   "alliances",
@@ -1407,3 +1409,4 @@ module.exports = {
   _flushStatsForTests: flushStats,
   _dirtyRowTrackingEnabled: DIRTY_ROWS_TRACKING,
 };
+module.exports.coopAtomicNativeRows = require("../space/coopGameStoreAtomic").createGameStoreAdapter({sqliteStore,ensureSqliteReady,ensureCached,flushTableSync,cache,dirty,flushTimers,inFlightFlushes,transientPaths,dirtyRowKeys,fullDirty,rebuildFlushBaselineFromDisk,invalidateNativeItems:mode=>{const inventory=require("../services/inventory/itemStore");return typeof inventory.coopInvalidateAfterAtomicRows==="function"&&inventory.coopInvalidateAfterAtomicRows(mode)===true;},invalidateNativeAccounts:(mode,tables)=>{if(tables.includes("characters")){const c=require("../services/character/characterState");if(typeof c.coopInvalidateAfterAtomicRows!=="function"||c.coopInvalidateAfterAtomicRows(mode)!==true)return false;}if(tables.includes("corporationRuntime")){const c=require("../services/corporation/corporationRuntimeState");if(typeof c.coopInvalidateAfterAtomicRows!=="function"||c.coopInvalidateAfterAtomicRows(mode)!==true)return false;}return true;},fatal:error=>{console.error("[COOP GameStore] POSTCOMMIT CACHE UNSAFE",error.message);process.exit(70);}});

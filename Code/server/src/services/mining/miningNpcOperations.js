@@ -1104,6 +1104,7 @@ function getNpcOreCargoItems(entity) {
 function getNpcOreCargoVolume(entity) {
   return getNpcOreCargoItems(entity).reduce((sum, entry) => {
     const quantity = Math.max(0, toInt(entry && (entry.quantity ?? entry.stacksize), 0));
+    require("../../space/coopCargoVolume").ensure(entry);
     const volume = Math.max(0, toFiniteNumber(entry && entry.volume, 0));
     return sum + (quantity * volume);
   }, 0);
@@ -1404,7 +1405,7 @@ function ensureNpcCargoStoreEntry(entity, cargoItem) {
   if (!entity || !cargoItem || toInt(cargoItem.itemID, 0) <= 0) {
     return;
   }
-  nativeNpcStore.upsertNativeCargo({
+  return nativeNpcStore.upsertNativeCargo({
     cargoID: toInt(cargoItem.itemID, 0),
     entityID: toInt(entity.itemID, 0),
     ownerID: toInt(entity.ownerID ?? entity.pilotCharacterID ?? entity.characterID, 0),
@@ -1421,7 +1422,108 @@ function ensureNpcCargoStoreEntry(entity, cargoItem) {
   });
 }
 
+// COOP_ALIFE_MINING_STRICT_CARGO_V1
+function coopAppendNpcMiningCargoStrict(entity, typeID, quantity) {
+  const good = x => Number.isSafeInteger(x) && x > 0;
+  const fail = (reason, uncertain = false) => {
+    if (uncertain && entity && typeof entity === "object")
+      entity.coopMiningCargoNeedsOperatorRepair = reason;
+    if (entity && entity.coopMiningCargoLastError !== reason) {
+      entity.coopMiningCargoLastError = reason;
+      console.warn("[CoopNativeMiningCargo] " + reason);
+      try {require("../../space/coopRuntimeProbe").observe(
+        "living-native-mining-cargo-integrity-blocked",null,
+        {spaceState:{systemID:Number(entity.systemID)||0}},
+        {status:"BLOCKED",reason,
+         entityID:Number(entity.itemID)||0,
+         operatorRepairRequired:uncertain,nativeMutation:false,
+         cargoCredited:false,iskCredited:false});
+      } catch (_) {} // Telemetry cannot authorize or alter native custody.
+    }
+    return false;
+  };
+  if (!entity || entity.coopMiningCargoNeedsOperatorRepair) return false;
+  const shipID=Number(entity.itemID);
+  const ownerID=Number(entity.ownerID ?? entity.pilotCharacterID ?? entity.characterID);
+  const oreTypeID=Number(typeID),amount=Number(quantity);
+  if (![shipID,ownerID,oreTypeID,amount].every(good) ||
+      amount > 1000000000 ||
+      (entity.nativeCargoItems!=null && !Array.isArray(entity.nativeCargoItems)))
+    return fail("NATIVE_MINING_CARGO_IDENTITY_INVALID");
+  const localCargo=Array.isArray(entity.nativeCargoItems)?entity.nativeCargoItems:[];
+  const matches=localCargo.filter(c =>
+    Number(c?.typeID)===oreTypeID && Number(c?.moduleID||0)===0);
+  if (matches.length>1) return fail("NATIVE_MINING_CARGO_DUPLICATE_LOCAL",true);
+  const previous=matches[0]||null;
+  if (previous && (!good(Number(previous.itemID)) ||
+      Number(previous.ownerID)!==ownerID ||
+      Number(previous.locationID)!==shipID ||
+      !good(Number(previous.quantity))))
+    return fail("NATIVE_MINING_CARGO_LOCAL_UNVERIFIED",true);
+  let originalRows;
+  try {originalRows=nativeNpcStore.listNativeCargoForEntity(shipID);}
+  catch (_) {return fail("NATIVE_MINING_CARGO_READ_UNKNOWN",true);}
+  if (!Array.isArray(originalRows))
+    return fail("NATIVE_MINING_CARGO_READ_INVALID",true);
+  if (previous) {
+    const matchesByID=originalRows.filter(c=>Number(c?.cargoID)===Number(previous.itemID));
+    if (matchesByID.length!==1 ||
+        Number(matchesByID[0].entityID)!==shipID ||
+        Number(matchesByID[0].ownerID)!==ownerID ||
+        Number(matchesByID[0].typeID)!==oreTypeID ||
+        Number(matchesByID[0].quantity)!==Number(previous.quantity))
+      return fail("NATIVE_MINING_CARGO_SOURCE_CONFLICT",true);
+  }
+  // Durable replay fence: if the local ship lost its stack but the
+  // native store still owns it, a new cargoID would silently duplicate ore.
+  if (!previous && originalRows.some(c=>Number(c?.typeID)===oreTypeID &&
+      Number(c?.moduleID||0)===0))
+    return fail("NATIVE_MINING_CARGO_STORE_ALREADY_HAS_TYPE",true);
+  let cargoID=previous?Number(previous.itemID):null;
+  if (!cargoID) {
+    let allocated;
+    try {allocated=nativeNpcStore.allocateCargoID({transient:entity.transient===true});}
+    catch (_) {return fail("NATIVE_MINING_CARGO_ID_ALLOCATE_UNKNOWN",true);}
+    if (!allocated?.success || !good(Number(allocated.data)))
+      return fail("NATIVE_MINING_CARGO_ID_ALLOCATE_FAILED");
+    cargoID=Number(allocated.data);
+    if (originalRows.some(c=>Number(c?.cargoID)===cargoID))
+      return fail("NATIVE_MINING_CARGO_ID_COLLISION",true);
+  }
+  const newQuantity=(previous?Number(previous.quantity):0)+amount;
+  if (!Number.isSafeInteger(newQuantity) || newQuantity>1000000000)
+    return fail("NATIVE_MINING_CARGO_QUANTITY_OVERFLOW");
+  const typeRecord=resolveItemByTypeID(oreTypeID)||{};
+  const candidate=previous?{...previous,quantity:newQuantity,stacksize:newQuantity}:{
+    itemID:cargoID,ownerID,locationID:shipID,moduleID:0,typeID:oreTypeID,
+    groupID:toInt(typeRecord.groupID,0),categoryID:toInt(typeRecord.categoryID,0),
+    quantity:newQuantity,stacksize:newQuantity,singleton:0,flagID:5,
+    itemName:String(typeRecord.name||("type "+oreTypeID)),
+    volume:Math.max(0,toFiniteNumber(typeRecord.volume,0))
+  };
+  let written;
+  try {written=ensureNpcCargoStoreEntry(entity,candidate);}
+  catch (_) {return fail("NATIVE_MINING_CARGO_WRITE_UNKNOWN",true);}
+  if (!written?.success)
+    return fail("NATIVE_MINING_CARGO_WRITE_UNCONFIRMED",true);
+  let confirmed;
+  try {
+    const rows=nativeNpcStore.listNativeCargoForEntity(shipID);
+    confirmed=Array.isArray(rows)&&rows.filter(c=>
+      Number(c?.cargoID)===cargoID&&Number(c?.entityID)===shipID&&
+      Number(c?.ownerID)===ownerID&&Number(c?.typeID)===oreTypeID&&
+      Number(c?.quantity)===newQuantity).length===1;
+  } catch (_) {confirmed=false;}
+  if (!confirmed)return fail("NATIVE_MINING_CARGO_READBACK_UNKNOWN",true);
+  if (previous){previous.quantity=newQuantity;previous.stacksize=newQuantity;}
+  else if(Array.isArray(entity.nativeCargoItems))entity.nativeCargoItems.push(candidate);
+  else entity.nativeCargoItems=[candidate];
+  return true;
+}
+
 function appendNpcMiningCargo(entity, typeID, quantity) {
+  if (process.env.EVEJS_COOP_NATIVE_MINING_CARGO_INTEGRITY === "1")
+    return coopAppendNpcMiningCargoStrict(entity, typeID, quantity);
   const numericTypeID = toInt(typeID, 0);
   const numericQuantity = Math.max(0, toInt(quantity, 0));
   if (!entity || numericTypeID <= 0 || numericQuantity <= 0) {
@@ -1492,6 +1594,11 @@ function clearNpcMiningCargo(entity) {
 }
 
 function createMiningFleetRecord(options = {}) {
+  const coopStableFleetID=process.env.EVEJS_COOP_NATIVE_MINING_FLEET_DURABLE==="1" &&
+    options.source==="startup" && Number.isSafeInteger(Number(options.coopDurableFleetID)) &&
+    Number(options.coopDurableFleetID)>0 ? Number(options.coopDurableFleetID) : 0;
+  const fleetID=coopStableFleetID||nextMiningFleetID++;
+  if(miningFleetStateByID.has(fleetID))throw Error("ALIFE09_NATIVE_FLEET_ID_COLLISION");
   const minerEntityIDs = (Array.isArray(options.minerEntityIDs) ? options.minerEntityIDs : [])
     .map((value) => normalizePositiveInteger(value, null))
     .filter(Boolean);
@@ -1503,7 +1610,7 @@ function createMiningFleetRecord(options = {}) {
     .filter(Boolean);
   const createdAtMs = Math.max(0, toInt(options.createdAtMs, Date.now()));
   const fleetRecord = {
-    fleetID: nextMiningFleetID++,
+    fleetID,
     source: String(options.source || "gm"),
     startupKey: String(options.startupKey || "").trim() || null,
     createdByCharacterID: normalizePositiveInteger(options.createdByCharacterID, 0),
@@ -1564,14 +1671,29 @@ function getMiningFleetsForSystem(systemID) {
   return fleets;
 }
 
+// A durable native NPC owns its hull through the persisted controller row, not
+// through the in-memory registry: the registry is rebuilt whenever a scene is
+// torn down, while the row survives. Dropping such an actor from the fleet
+// silently removes a live ship and the fleet mines nothing forever. Keep it
+// while the store still owns it; a destroyed NPC is removed from the store, so
+// real losses still prune normally.
+function isRetainedFleetActor(entityID) {
+  if (npcService.getControllerByEntityID(entityID)) {
+    return true;
+  }
+  return Boolean(nativeNpcStore.getNativeController(entityID));
+}
+
 function pruneMiningFleet(fleetRecord) {
   if (!fleetRecord) {
     return null;
   }
+if (process.env.EVEJS_COOP_NATIVE_MINING_SLOT_SELFHEAL === "1") { try { require("../../space/coopNativeMiningFleetDurable").healFleetActors(fleetRecord,{npcService}); } catch (_coopHealError) { console.warn("[CoopFleetSelfHeal]",_coopHealError.message); } }
+if (process.env.EVEJS_COOP_MINING_TRACE_PRUNE === "1") require("../../space/coopNativeMiningFleetDurable").noteDroppedFleetActors(fleetRecord,{npcService});
   fleetRecord.minerEntityIDs = (Array.isArray(fleetRecord.minerEntityIDs) ? fleetRecord.minerEntityIDs : [])
-    .filter((entityID) => npcService.getControllerByEntityID(entityID));
+    .filter((entityID) => isRetainedFleetActor(entityID));
   fleetRecord.haulerEntityIDs = (Array.isArray(fleetRecord.haulerEntityIDs) ? fleetRecord.haulerEntityIDs : [])
-    .filter((entityID) => npcService.getControllerByEntityID(entityID));
+    .filter((entityID) => isRetainedFleetActor(entityID));
   fleetRecord.responseEntityIDs = (Array.isArray(fleetRecord.responseEntityIDs) ? fleetRecord.responseEntityIDs : [])
     .filter((entityID) => npcService.getControllerByEntityID(entityID));
   if (fleetRecord.haulerEntityIDs.length <= 0) {
@@ -1634,7 +1756,9 @@ function spawnFleetWing(systemID, centerTarget, options = {}) {
   const profileQuery = String(options.profileQuery || "").trim();
   const originAnchor = options.originAnchor || null;
   const sharedSpawnOptions = {
-    transient: true,
+    transient: options.durableHauler === true || (options.coopDurableNative === true && process.env.EVEJS_COOP_NATIVE_MINING_FLEET_DURABLE === "1") ? false : true,
+    operatorKind: options.coopDurableNative === true && process.env.EVEJS_COOP_NATIVE_MINING_FLEET_DURABLE === "1"
+      ? "coop-mining-" + systemID + "-" + options.coopSlotIndex + "-" + options.coopRole : null,
     broadcast: false,
     skipInitialBehaviorTick: true,
     preferredTargetID: normalizePositiveInteger(options.preferredTargetID, 0),
@@ -1779,6 +1903,9 @@ function spawnMiningFleetInternal(scene, options = {}) {
       ),
     ),
     profileQuery: resolvedMinerQuery,
+    coopDurableNative: options.coopDurableNative === true,
+    coopSlotIndex: options.coopSlotIndex,
+    coopRole: "miner",
     preferredTargetID: 0,
     originAnchor,
     warpIn: true,
@@ -1808,8 +1935,12 @@ function spawnMiningFleetInternal(scene, options = {}) {
     haulerSpawnResult = spawnFleetWing(systemID, originAnchor, {
       amount: haulerAmount,
       profileQuery: resolvedHaulerQuery,
+      coopDurableNative: options.coopDurableNative === true,
+      coopSlotIndex: options.coopSlotIndex,
+      coopRole: "hauler",
       preferredTargetID: 0,
       originAnchor,
+      durableHauler: process.env.EVEJS_COOP_NPC_STATION_DELIVERY === "1",
       warpIn: false,
     });
     if (!haulerSpawnResult.success || !haulerSpawnResult.data) {
@@ -2057,6 +2188,7 @@ function triggerFleetAggression(scene, fleetRecord, options = {}) {
       0,
     ),
   );
+  if (process.env.EVEJS_COOP_PLAYER_CONSEQUENCES === "1") { try { require("../../space/coopNativeConsequences").noteMiningAggression(scene, fleetRecord, aggressorEntity, aggressionEventAtMs); } catch (_coopError) { console.warn("[CoopConsequences]", _coopError.message); } }
   const responsePlan = resolveResponsePlan(scene, fleetRecord, aggressorEntity, {
     amount: options.responseAmount,
     profileQuery: options.responseQuery,
@@ -2239,6 +2371,7 @@ function retreatFleetToOrigin(fleetRecord, options = {}) {
     if (!npcService.getControllerByEntityID(entityID)) {
       continue;
     }
+    if (require("../../space/coopMiningTripRetreatGuard").skip(fleetRecord, entityID)) { continue; }
     npcService.runtime.warpToPoint(entityID, fleetRecord.originAnchor.position, {
       forceImmediateStart: true,
       broadcastWarpStartToVisibleSessions: true,
@@ -2247,6 +2380,7 @@ function retreatFleetToOrigin(fleetRecord, options = {}) {
     });
     retreatedCount += 1;
   }
+  if (process.env.EVEJS_COOP_MINING_RETREAT_GUARD === "1") require("../../space/coopMiningTripRetreatGuard").noteRetreatHeld(fleetRecord, options.scene, entityIDs);
   fleetRecord.state = String(options.state || "retreating");
   fleetRecord.resumeAtMs = Math.max(0, toInt(options.resumeAtMs, 0));
   fleetRecord.nextThinkAtMs = 0;
@@ -2537,11 +2671,37 @@ function handleSceneCreated(scene) {
     return;
   }
 
+  // COOP_ALIFE08_DURABLE_NATIVE_MINING_STARTUP
+  if (process.env.EVEJS_COOP_NATIVE_MINING_FLEET_DURABLE === "1") {
+    return require("../../space/coopNativeMiningFleetDurable").start({
+      scene, fleetCount:resolveStartupFleetCount(),
+      ensureState:()=>ensureSceneMiningState(scene),
+      getFleets:()=>getMiningFleetsForSystem(scene.systemID),
+      spawn:(slot,wing={})=>spawnMiningFleetInternal(scene,{
+        systemID:scene.systemID, centerTarget:buildSpawnTarget(scene),
+        preferredTargetID:0, coopDurableNative:true,coopSlotIndex:slot,
+        minerAmount:wing.miners!==undefined?Math.max(0,toInt(wing.miners,0)):Math.max(1,toInt(config.miningNpcStartupFleetMinerCount,config.miningNpcFleetDefaultCount||DEFAULT_MINING_FLEET_COUNT)),
+        minerQuery:String(require("../../space/coopFleetComposition").query("miner",{gameStore:require("../../gameStore")})||String(config.miningNpcStartupFleetProfileOrPool||config.miningNpcFleetProfileOrPool||"")),
+        haulerAmount:wing.haulers!==undefined?Math.max(0,toInt(wing.haulers,0)):Math.max(0,toInt(config.miningNpcStartupFleetHaulerCount,config.miningNpcHaulerDefaultCount||DEFAULT_MINING_HAULER_COUNT)),
+        haulerQuery:String(require("../../space/coopFleetComposition").query("hauler",{gameStore:require("../../gameStore")})||String(config.miningNpcStartupHaulerProfileOrPool||config.miningNpcHaulerProfileOrPool||"")),
+      }),
+      register:(slot,spawnResult)=>createMiningFleetRecord({
+        coopDurableFleetID:Number(scene.systemID)*32+Number(slot),
+        source:"startup",startupKey:String(scene.systemID)+":"+String(slot),
+        systemID:scene.systemID,targetShipID:0,
+        minerEntityIDs:spawnResult.minerEntityIDs,
+        haulerEntityIDs:spawnResult.haulerEntityIDs,
+        originAnchor:spawnResult.originAnchor,
+      }),
+    });
+  }
   const startupKey = `${toInt(scene.systemID, 0)}:${resolveStartupFleetCount()}`;
+  if (process.env.EVEJS_COOP_CONVOY_RENEWAL === "1") { const renewal = require("../../space/coopNativeConvoyRenewal").inspect({scene,systemID:scene.systemID,slotCount:resolveStartupFleetCount(),seeded:startupSceneSeedSet.has(startupKey),fleets:getMiningFleetsForSystem(scene.systemID)}); if (!renewal.allowed) return; if (renewal.renewal) startupSceneSeedSet.delete(startupKey); }
   if (startupSceneSeedSet.has(startupKey)) {
     return;
   }
-  startupSceneSeedSet.add(startupKey);
+  if (process.env.EVEJS_COOP_MINING_STARTUP_RETRY !== "1")
+    startupSceneSeedSet.add(startupKey);
 
   const fleetCount = resolveStartupFleetCount();
   if (fleetCount <= 0) {
@@ -2551,6 +2711,9 @@ function handleSceneCreated(scene) {
   ensureSceneMiningState(scene);
   const centerTarget = buildSpawnTarget(scene);
   for (let index = 0; index < fleetCount; index += 1) {
+    if (process.env.EVEJS_COOP_MINING_STARTUP_RETRY === "1" &&
+      getMiningFleetsForSystem(scene.systemID).some(f => f.source === "startup" &&
+        f.startupKey === String(scene.systemID) + ":" + String(index + 1))) continue;
     const spawnResult = spawnMiningFleetInternal(scene, {
       systemID: scene.systemID,
       centerTarget,
@@ -2561,6 +2724,11 @@ function handleSceneCreated(scene) {
       haulerQuery: String(config.miningNpcStartupHaulerProfileOrPool || config.miningNpcHaulerProfileOrPool || ""),
     });
     if (!spawnResult.success || !spawnResult.data) {
+      if (process.env.EVEJS_COOP_MINING_STARTUP_RETRY === "1")
+        try { require("../../space/coopRuntimeProbe").observe("living-native-mining-startup-slot",
+          null,{spaceState:{systemID:scene.systemID}},
+          {status:"FAILED",fleetSlot:index+1,error:String(spawnResult.errorMsg||"NATIVE_SPAWN_FAILED").slice(0,120)}); }
+        catch (_coopError) { console.warn("[CoopMiningRetry]",_coopError.message); }
       continue;
     }
     createMiningFleetRecord({
@@ -2580,7 +2748,18 @@ function handleSceneCreated(scene) {
         spawnResult.data.haulerSpawnResult.data &&
         spawnResult.data.haulerSpawnResult.data.selectionName,
     });
+    if (process.env.EVEJS_COOP_MINING_STARTUP_RETRY === "1")
+      try { require("../../space/coopRuntimeProbe").observe("living-native-mining-startup-slot",
+        null,{spaceState:{systemID:scene.systemID}},
+        {status:"SEEDED",fleetSlot:index+1,
+         miners:(spawnResult.data.minerEntityIDs||[]).length,
+         haulers:(spawnResult.data.haulerEntityIDs||[]).length}); }
+      catch (_coopError) { console.warn("[CoopMiningRetry]",_coopError.message); }
   }
+  if (process.env.EVEJS_COOP_MINING_STARTUP_RETRY === "1" &&
+    Array.from({length:fleetCount},(_,i)=>String(scene.systemID)+":"+String(i+1)).every(key=>
+      getMiningFleetsForSystem(scene.systemID).some(f=>f.source==="startup" && f.startupKey===key)))
+    startupSceneSeedSet.add(startupKey);
 }
 
 function deactivateMiningModulesForEntity(scene, entity, hooks, reason = "state") {
@@ -2678,7 +2857,79 @@ function completeHaulCycle(scene, fleetRecord, now) {
     if (!entity) {
       continue;
     }
-    hauledVolumeM3 += clearNpcMiningCargo(entity);
+    hauledVolumeM3 += process.env.EVEJS_COOP_NATIVE_HAUL_CARGO === "1" ? require("../../space/coopNativeHaulCargo").transferCargo(scene, fleetRecord, entity) : clearNpcMiningCargo(entity);
+  }
+  if (process.env.EVEJS_COOP_NATIVE_HAUL_CARGO === "1") {
+    // A haul that moved NOTHING is not a loaded fleet. The old code flipped to
+    // "loaded" regardless, so a hauler still out of range sent the fleet to the
+    // station with an empty hold (measured on the work stack: lastHauledVolumeM3
+    // 0, living-native-haul-delivered NO_CARGO, over and over). Stay in the SAME
+    // haul and let the warp finish: re-entering mining restarted the warp every
+    // few seconds and the hauler never closed 99 km (measured). Only after a long
+    // unproductive wait is the warp re-issued.
+    if (!(hauledVolumeM3 > 0)) {
+      const attempts = Number(fleetRecord.coopEmptyHaulAttempts || 0) + 1;
+      fleetRecord.coopEmptyHaulAttempts = attempts;
+      if (attempts >= 120) {
+        fleetRecord.coopEmptyHaulAttempts = 0;
+        fleetRecord.state = "mining";
+        fleetRecord.nextThinkAtMs = now + 2000;
+        require("../../space/coopRuntimeProbe").observe("living-haul-empty-reissue", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), attempts });
+        return;
+      }
+      fleetRecord.state = "hauling";
+      fleetRecord.haulCompleteAtMs = now + 5000;
+      fleetRecord.nextThinkAtMs = fleetRecord.haulCompleteAtMs;
+      // The stock warp lands the hauler near the ASTEROID (750 m radius) while the
+      // miner orbits that rock kilometres away, so the 2 500 m transfer range was
+      // never reached (measured: 35 km - 130 km). Send the hauler to the miner
+      // itself, but RARELY: a warp takes ~24 s even at x5, so re-issuing it every
+      // 10 s restarted the very warp it was waiting for (measured: range never
+      // closed). Once per two minutes, plus the first failure of a haul.
+      if (attempts === 1 || attempts % 24 === 0) {
+        try {
+          const minerID = toInt((fleetRecord.minerEntityIDs || [])[0], 0);
+          const haulerID = toInt((fleetRecord.haulerEntityIDs || [])[0], 0);
+          const miner = minerID && scene.getEntityByID ? scene.getEntityByID(minerID) : null;
+          if (haulerID && miner && miner.position) {
+            // Measured 2026-10-27 on the work stack: the hauler sat 24 km - 90 km from its
+            // own miner, every warp answered WARP_DISTANCE_TOO_CLOSE, and the orbit
+            // fallback left it drifting AWAY from the miner (57 km -> 90 km between two
+            // retries). Warp only beyond the native warp minimum, otherwise FOLLOW the
+            // moving miner at sub-warp speed, and record which order was really taken.
+            const npcRuntime = require("../../space/npc/npcRuntime");
+            const hauler = scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
+            const hp = hauler && hauler.position, mp = miner.position;
+            const gap = hp ? Math.round(Math.sqrt(Math.pow(Number(hp.x) - Number(mp.x), 2) + Math.pow(Number(hp.y) - Number(mp.y), 2) + Math.pow(Number(hp.z) - Number(mp.z), 2))) : null;
+            let approach = {status: "NO_HAULER_ENTITY", gap};
+            if (hauler) {
+              if (gap !== null && gap > 150000 && typeof npcRuntime.warpToEntity === "function") {
+                const warpResult = npcRuntime.warpToEntity(haulerID, minerID, { forceImmediateStart: false, broadcastWarpStartToVisibleSessions: true });
+                approach = warpResult && warpResult.success === true
+                  ? {status: "WARPED_TO_MINER", gap}
+                  : {status: "WARP_REFUSED", gap, nativeReason: String((warpResult && warpResult.errorMsg) || "").slice(0, 48)};
+              }
+              if (approach.status !== "WARPED_TO_MINER") {
+                const order = typeof npcRuntime.follow === "function"
+                  ? npcRuntime.follow(haulerID, minerID, 500)
+                  : (typeof npcRuntime.orbit === "function" ? npcRuntime.orbit(haulerID, minerID, 500) : null);
+                approach = {...approach, gap, status: order && order.success === true ? "FOLLOWING_MINER" : "FOLLOW_REFUSED", nativeReason: String((order && order.errorMsg) || approach.nativeReason || "").slice(0, 48)};
+              }
+            }
+            require("../../space/coopRuntimeProbe").observe("living-haul-approach-issued", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), haulerID, minerID, ...approach });
+          }
+        } catch (_coopApproachError) { console.warn("[CoopHaulApproach]", _coopApproachError.message); }
+      }
+      require("../../space/coopRuntimeProbe").observe("living-haul-empty-retry", null, { spaceState: { systemID: fleetRecord.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), attempts });
+      return;
+    }
+    fleetRecord.coopEmptyHaulAttempts = 0;
+    fleetRecord.state = "loaded";
+    fleetRecord.loadedUntilMs = now + Math.max(30000, Math.min(240000, Number(process.env.EVEJS_COOP_HAULER_HOLD_MS || 120000)));
+    fleetRecord.lastHauledVolumeM3 = hauledVolumeM3;
+    fleetRecord.lastHauledAtMs = now;
+    fleetRecord.nextThinkAtMs = fleetRecord.loadedUntilMs;
+    return;
   }
   const ingressDurationMs = Math.max(
     250,
@@ -2706,6 +2957,7 @@ function completeHaulCycle(scene, fleetRecord, now) {
 }
 
 function shouldTriggerHauling(scene, fleetRecord, noAsteroidsRemain = false, now = Date.now()) {
+  try{require("../../space/coopNpcRefineryTick").tick({systemID:Number(scene&&scene.systemID)||0,stationID:Number(fleetRecord&&fleetRecord.stationID)||0,fleetID:Number(fleetRecord&&fleetRecord.fleetID)||0,gameStore:require("../../gameStore"),marketRoot:process.env.EVEJS_COOP_NPC_MARKET_ROOT||process.env.EVEJS_COOP_NPC_MARKET_DIR||""});}catch(_coopRefineError){}
   if (!scene || !fleetRecord || fleetRecord.haulerEntityIDs.length <= 0) {
     return false;
   }
@@ -2716,6 +2968,7 @@ function shouldTriggerHauling(scene, fleetRecord, noAsteroidsRemain = false, now
     return false;
   }
   const cargoState = getFleetCargoState(scene, fleetRecord);
+  require("../../space/coopMiningFillCap").apply(scene, fleetRecord, cargoState);
   const thresholdRatio = Math.max(
     0.01,
     Math.min(
@@ -2733,6 +2986,7 @@ function shouldTriggerHauling(scene, fleetRecord, noAsteroidsRemain = false, now
 }
 
 function tickMiningFleet(scene, fleetRecord, now, hooks) {
+  if (process.env.EVEJS_COOP_HAUL_CARGO_ADOPTION === "1") { try { require("../../space/coopHaulCargoAdoption").adopt(scene, fleetRecord); } catch (_coopAdoptError) { console.warn("[CoopHaulCargoAdoption]", _coopAdoptError.message); } }
   if (!scene || !fleetRecord || !hooks) {
     return;
   }
@@ -2745,6 +2999,8 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
     return;
   }
   fleetRecord.nextThinkAtMs = now + thinkIntervalMs;
+  require("../../space/coopMiningTrace").noteTick(fleetRecord,scene,now,thinkIntervalMs);
+  if (process.env.EVEJS_COOP_MINING_DEMAND_GOVERNOR === "1" && !fleetRecord.coopStationArrival && String(fleetRecord.state || "") === "mining") { try { if (require("../../space/coopMiningDemandGovernor").serverGovernor().hold(scene, fleetRecord)) { return; } } catch (_coopDemandError) { console.warn("[CoopMiningDemandGovernor]", _coopDemandError.message); } }
 
   const latestAggression = getLatestFleetAggression(scene, fleetRecord, now);
   if (
@@ -2787,14 +3043,54 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
     fleetRecord.resumeAtMs = 0;
   }
 
+  if (process.env.EVEJS_COOP_PLAYER_NPC_MINING_COMPANY === "1" && require("../../space/coopPlayerMiningFleetTick").beforeTick({scene,fleetRecord,now,hooks,startHaul:()=>startHaulCycle(scene,fleetRecord,now,hooks),deactivate:()=>deactivateMiningModulesForFleet(scene,fleetRecord,hooks,"player-mining-shift"),retreat:()=>retreatFleetToOrigin(fleetRecord,{state:"retreating",scene,hooks,reason:"player-mining-shift"})})===true) return;
   if (fleetRecord.state === "hauling") {
     if (now >= toFiniteNumber(fleetRecord.haulCompleteAtMs, 0)) {
       completeHaulCycle(scene, fleetRecord, now);
     }
     return;
   }
+  if (fleetRecord.state === "loaded") {
+    if (now < toFiniteNumber(fleetRecord.loadedUntilMs, 0)) return;
+    const ingressMs = Math.max(250, toFiniteNumber(config.miningNpcWarpIngressDurationMs, DEFAULT_MINING_WARP_INGRESS_DURATION_MS));
+    if (process.env.EVEJS_COOP_NPC_STATION_DELIVERY === "1") {
+      require("../../space/coopNativeStationArrival").routeFromHaul(scene, fleetRecord, npcService.runtime, now, ingressMs);
+      // A station trip is a PHYSICAL trip. Falling straight through to the
+      // native return-home transition made the fleet enter "haulereturn" with
+      // no active trip, where checkReturn could only report ROUTE_NOT_STARTED
+      // forever: the ore was never delivered and the fleet never mined again.
+      const settled = require("../../space/coopNativeStationArrival").checkReturn(scene, fleetRecord, now);
+      const delivered = settled.terminal === true && (settled.status === "DELIVERED" || settled.status === "NO_CARGO");
+      if (!delivered) { fleetRecord.nextThinkAtMs = now + 1000; return; }
+      require("../../space/coopRuntimeProbe").observe("living-native-haul-delivered", null, { spaceState: { systemID: scene.systemID } }, { fleetID: toInt(fleetRecord.fleetID, 0), status: String((settled && settled.status) || ""), stationID: toInt(settled && settled.stationID, 0) });
+      fleetRecord.haulerNextArrivalAtMs = now + getHaulerRepeatDelayMs();
+      fleetRecord.state = "mining";
+      fleetRecord.haulerReturnAtMs = 0;
+      fleetRecord.nextThinkAtMs = now + 1000;
+      return;
+    } else if (fleetRecord.originAnchor && fleetRecord.originAnchor.position) {
+      for (const entityID of fleetRecord.haulerEntityIDs || []) {
+        npcService.runtime.warpToPoint(entityID, fleetRecord.originAnchor.position, {
+          forceImmediateStart: true, broadcastWarpStartToVisibleSessions: true,
+          visibilitySuppressMs: 250, ingressDurationMs: ingressMs
+        });
+      }
+    }
+    fleetRecord.haulerNextArrivalAtMs = now + getHaulerRepeatDelayMs();
+    fleetRecord.state = "haulereturn";
+    fleetRecord.haulerReturnAtMs = now + ingressMs;
+    fleetRecord.nextThinkAtMs = fleetRecord.haulerReturnAtMs;
+    return;
+  }
   if (fleetRecord.state === "haulereturn") {
-    if (now >= toFiniteNumber(fleetRecord.haulerReturnAtMs, 0)) {
+    if (process.env.EVEJS_COOP_NPC_STATION_DELIVERY === "1") {
+      const arrival = require("../../space/coopNativeStationArrival").checkReturn(scene, fleetRecord, now);
+      if (arrival.terminal === true) {
+        fleetRecord.state = "mining";
+        fleetRecord.haulerReturnAtMs = 0;
+      } else { fleetRecord.nextThinkAtMs = now + 1000; }
+    } else if (now >= toFiniteNumber(fleetRecord.haulerReturnAtMs, 0)) {
+      if (process.env.EVEJS_COOP_NATIVE_HAUL_CARGO === "1" && process.env.EVEJS_COOP_NPC_STATION_DELIVERY !== "1") require("../../space/coopNativeHaulCargo").unloadCargo(scene, fleetRecord);
       fleetRecord.state = "mining";
       fleetRecord.haulerReturnAtMs = 0;
     }
@@ -2838,7 +3134,9 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
 
   for (const minerEntityID of Array.isArray(fleetRecord.minerEntityIDs) ? fleetRecord.minerEntityIDs : []) {
     const minerEntity = scene.getEntityByID(minerEntityID);
+    if (minerEntity) require("../../space/coopStuckWarpRecovery").release(minerEntity, scene);
     if (!minerEntity || minerEntity.mode === "WARP" || minerEntity.pendingWarp) {
+      require("../../space/coopMiningTrace").note("MINER_NOT_IN_SCENE_OR_WARPING",{fleetID:toInt(fleetRecord&&fleetRecord.fleetID,0),systemID:toInt(scene&&scene.systemID,0),minerID:toInt(minerEntityID,0),found:Boolean(minerEntity),mode:String((minerEntity&&minerEntity.mode)||""),pendingWarp:Boolean(minerEntity&&minerEntity.pendingWarp)});
       continue;
     }
 
@@ -2853,6 +3151,7 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
       }))
       .filter((entry) => entry.effectRecord);
     if (miningModules.length <= 0) {
+      require("../../space/coopMiningTrace").note("NO_MINING_MODULE",{fleetID:toInt(fleetRecord&&fleetRecord.fleetID,0),systemID:toInt(scene&&scene.systemID,0),minerID:toInt(minerEntity.itemID,0)});
       continue;
     }
 
@@ -2862,6 +3161,7 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
       miningModules[0].effectRecord,
     );
     if (!primarySnapshot) {
+      require("../../space/coopMiningTrace").note("NO_MINING_SNAPSHOT",{fleetID:toInt(fleetRecord&&fleetRecord.fleetID,0),systemID:toInt(scene&&scene.systemID,0),minerID:toInt(minerEntity.itemID,0),moduleTypeID:toInt(miningModules[0].moduleItem&&miningModules[0].moduleItem.typeID,0)});
       continue;
     }
 
@@ -2876,6 +3176,7 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
     );
     if (!targetEntity) {
       delete assignmentMap[toInt(minerEntity.itemID, 0)];
+require("../../space/coopMiningTrace").noteNoMineableTarget(fleetRecord,scene,minerEntity,availableTargetEntries,claimCounts);
       continue;
     }
     const targetEntityID = toInt(targetEntity.itemID, 0);
@@ -2885,13 +3186,16 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
     );
 
     const distanceToTarget = hooks.getSurfaceDistance(minerEntity, targetEntity);
+    require("../../space/coopMiningTrace").noteTargetSelected(fleetRecord,scene,minerEntity,targetEntity,miningModules,hooks);
     const engagementRangeMeters = getMiningEngagementRangeMeters(
       scene,
       minerEntity,
       primarySnapshot,
       rangeBufferMeters,
     );
+      if (require("../../space/coopMiningBeltReturn").ensure(scene, fleetRecord, minerEntity, targetEntity, {orbitDistanceMeters, engagementRangeMeters, now, ingressDurationMs: Math.max(250, toFiniteNumber(config.miningNpcWarpIngressDurationMs, DEFAULT_MINING_WARP_INGRESS_DURATION_MS)), warp: (shipID, point, warpOptions) => npcService.runtime.warpToPoint(shipID, point, warpOptions)})) continue;
     if (distanceToTarget > engagementRangeMeters) {
+      require("../../space/coopMiningTrace").note("TARGET_OUT_OF_RANGE",{fleetID:toInt(fleetRecord&&fleetRecord.fleetID,0),systemID:toInt(scene&&scene.systemID,0),minerID:toInt(minerEntity.itemID,0),distanceMeters:Math.round(distanceToTarget),engagementMeters:Math.round(engagementRangeMeters)});
       syncMiningApproachOrder(
         scene,
         minerEntity,
@@ -2909,6 +3213,7 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
       hooks,
     );
     if (!targetLockResult || targetLockResult.success !== true) {
+      require("../../space/coopMiningTrace").note("TARGET_LOCK_FAILED",{fleetID:toInt(fleetRecord&&fleetRecord.fleetID,0),systemID:toInt(scene&&scene.systemID,0),minerID:toInt(minerEntity.itemID,0),errorMsg:String((targetLockResult&&targetLockResult.errorMsg)||"NONE")});
       syncMiningApproachOrder(
         scene,
         minerEntity,
@@ -2930,11 +3235,13 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
         ? minerEntity.activeModuleEffects.get(toInt(entry.moduleItem.itemID, 0))
         : null;
       if (activeEffect && toInt(activeEffect.targetID, 0) !== toInt(targetEntity.itemID, 0)) {
+require("../../space/coopMiningTrace").noteTargetMismatch(fleetRecord,scene,minerEntity,entry,activeEffect,targetEntity);
         scene.deactivateGenericModule(pseudoSession, entry.moduleItem.itemID, {
           reason: "target",
         });
         continue;
       }
+      if (!activeEffect) { require("../../space/coopMiningActivate").activate({scene,pseudoSession,minerEntity,entry,targetEntity,fleetRecord}); continue; }
       if (!activeEffect) {
       scene.activateGenericModule(pseudoSession, entry.moduleItem, entry.effectRecord.name, {
         targetID: targetEntity.itemID,

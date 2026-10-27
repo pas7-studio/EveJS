@@ -60,13 +60,14 @@ function isCharacterOwner(session, ownerID) {
 }
 
 function isCorporationOwner(session, ownerID) {
-  return getSessionCorporationID(session) === toInt(ownerID, 0);
+  return getSessionCorporationID(session) === toInt(ownerID, 0) && (!(process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1") || require("../../space/coopPlayerCorporationAccess").isMember(session, ownerID));
 }
 
 function canSeeCorporationBlueprints(session, ownerID) {
   if (!isCorporationOwner(session, ownerID)) {
     return false;
   }
+  if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1") return require("../../space/coopPlayerCorporationAccess").canBlueprint(session, ownerID);
   const corpRole = normalizeRoleValue(session && session.corprole);
   return (corpRole & CORP_BLUEPRINT_VIEW_MASK) !== 0n;
 }
@@ -76,7 +77,7 @@ function hasCorporationIndustryJobAccess(session, ownerID) {
     return false;
   }
   const corpRole = normalizeRoleValue(session && session.corprole);
-  return (corpRole & ROLE_FACTORY_MANAGER) === ROLE_FACTORY_MANAGER;
+  return (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1" ? require("../../space/coopPlayerCorporationAccess").canIndustry(session, ownerID) : (corpRole & ROLE_FACTORY_MANAGER) === ROLE_FACTORY_MANAGER);
 }
 
 function canViewOwnerLocation(session, ownerID, locationID, flagID) {
@@ -89,6 +90,7 @@ function canViewOwnerLocation(session, ownerID, locationID, flagID) {
   if (toInt(flagID, 0) === ITEM_FLAG_CORP_DELIVERIES) {
     return hasCorporationIndustryJobAccess(session, ownerID);
   }
+  if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1") return require("../../space/coopPlayerCorporationAccess").canView(session, ownerID, locationID, flagID);
   const queryRole = CORP_HANGAR_QUERY_ROLE_BY_FLAG[toInt(flagID, 0)];
   if (!queryRole) {
     return hasCorporationIndustryJobAccess(session, ownerID);
@@ -107,6 +109,7 @@ function canTakeFromOwnerLocation(session, ownerID, locationID, flagID) {
   if (toInt(flagID, 0) === ITEM_FLAG_CORP_DELIVERIES) {
     return hasCorporationIndustryJobAccess(session, ownerID);
   }
+  if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1") return require("../../space/coopPlayerCorporationAccess").canTake(session, ownerID, locationID, flagID);
   const takeRole = CORP_HANGAR_TAKE_ROLE_BY_FLAG[toInt(flagID, 0)];
   if (!takeRole) {
     return hasCorporationIndustryJobAccess(session, ownerID);
@@ -121,6 +124,7 @@ function canUseCorporationWallet(session, ownerID, accountKey) {
   if (!isCorporationOwner(session, ownerID)) {
     return false;
   }
+  if (process.env.EVEJS_COOP_PLAYER_CORP_ACCESS === "1") return require("../../space/coopPlayerCorporationAccess").canWallet(session, ownerID, accountKey);
   const normalizedAccountKey = toInt(accountKey, 1000);
   if (toInt(session && session.corpAccountKey, 1000) === normalizedAccountKey) {
     return true;

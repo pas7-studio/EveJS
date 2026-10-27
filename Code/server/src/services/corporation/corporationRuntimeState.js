@@ -1582,3 +1582,4 @@ module.exports = {
     resetRuntimeCaches,
   },
 };
+module.exports.coopInvalidateAfterAtomicRows = mode => { if(mode==="probe") return true; if(mode!=="commit") return false; resetRuntimeCaches(); return true; };

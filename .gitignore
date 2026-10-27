@@ -1,1 +1,5 @@
 [Tt]mp/
+# Local overlay backups written by scripts/patch-evejs-coop.cjs (pas7) 
+*.bak-*
+*.bak-overlay-*
+

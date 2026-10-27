@@ -358,6 +358,17 @@ function normalizeMissionRecord(record, agentID, fallbackMissionSequence) {
     objectiveMode: normalizeText(record.objectiveMode, "dungeon"),
     objectiveCompleted: toBoolean(record.objectiveCompleted, false),
     gmCompleted: toBoolean(record.gmCompleted, false),
+    coopSharedDungeon: record.coopSharedDungeon &&
+      toPositiveInteger(record.coopSharedDungeon.sourceInstanceID, 0) > 0 &&
+      toPositiveInteger(record.coopSharedDungeon.ownerID, 0) > 0 &&
+      toPositiveInteger(record.coopSharedDungeon.agentID, 0) === normalizedAgentID &&
+      String(record.coopSharedDungeon.contentID) === String(contentID) &&
+      normalizeText(record.coopSharedDungeon.missionTemplateID, "") === missionTemplateID
+        ? {
+            sourceInstanceID: toPositiveInteger(record.coopSharedDungeon.sourceInstanceID, 0),
+            ownerID: toPositiveInteger(record.coopSharedDungeon.ownerID, 0),
+            agentID: normalizedAgentID, contentID, missionTemplateID,
+          } : null,
     offeredAtFileTime: normalizeText(
       record.offeredAtFileTime,
       currentFileTimeString(),

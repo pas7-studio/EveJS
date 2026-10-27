@@ -740,7 +740,7 @@ function resolveMiningActivation(scene, entity, moduleItem, effectRecord, option
 
 function appendNpcCargo(entity, typeID, quantity) {
   const miningNpcOperations = require("./miningNpcOperations");
-  miningNpcOperations.appendNpcMiningCargo(entity, typeID, quantity);
+  return miningNpcOperations.appendNpcMiningCargo(entity, typeID, quantity);
 }
 
 function applyCrystalVolatility(entity, moduleItem, snapshot, efficiency = 1) {
@@ -864,6 +864,7 @@ function executeMiningCycle(
   const targetID = toInt(effectState.targetID, 0);
   const targetEntity = scene.getEntityByID(targetID);
   const mineableState = getMineableState(scene, targetID);
+  require("../../space/coopMiningTrace").noteCycleAttempt(scene, entity, effectState, {targetID, found: Boolean(targetEntity), remaining: mineableState && mineableState.remainingQuantity, locked: getTargetsForEntity(scene, entity).includes(targetID)}, cycleBoundaryMs);
   if (!targetEntity || !mineableState || mineableState.remainingQuantity <= 0) {
     return { success: false, stopReason: "target" };
   }
@@ -976,8 +977,39 @@ function executeMiningCycle(
     return { success: false, stopReason: "cargo" };
   }
 
+  // COOP_ALIFE_NATIVE_MINING_CONSERVATION_V1
+  const coopStrictNative = isNativeNpcEntity(entity) &&
+    process.env.EVEJS_COOP_NATIVE_MINING_CYCLE_CONSERVATION === "1";
+  let coopStrictDelta = null;
+  if (coopStrictNative) {
+    const conserved = (process.env.EVEJS_COOP_NATIVE_MINING_CYCLE_ATOMIC === "1" ? require("../../space/coopNativeMiningAtomic") : require("../../space/coopNativeMiningCycleConservation")).settle({
+      scene,entity,targetEntity,mineableState,miningResult,transferredQuantity,cycleBoundaryMs,
+      debit: () => applyMiningDelta(scene,targetEntity,
+        miningResult.normalQuantity,miningResult.wastedQuantity,{
+          broadcast:true,nowMs:cycleBoundaryMs,sourceEntity:entity,moduleItem,
+          quantityAdded:transferredQuantity,amountWasted:miningResult.wastedQuantity,
+          amountCritBonus:miningResult.criticalHitQuantity,
+          hasRewards:miningResult.rewardedQuantity>0,
+          requireNativeMiningPersistence:true,
+        }),
+      credit: () => appendNpcCargo(entity,mineableState.yieldTypeID,transferredQuantity),
+      moduleItem,
+      commitScene: () => applyMiningDelta(scene,targetEntity,
+        transferredQuantity,miningResult.wastedQuantity,{
+          broadcast:true,nowMs:cycleBoundaryMs,sourceEntity:entity,moduleItem,
+          quantityAdded:transferredQuantity,amountWasted:miningResult.wastedQuantity,
+          amountCritBonus:miningResult.criticalHitQuantity,
+          hasRewards:miningResult.rewardedQuantity>0,
+          coopNativeAtomicCommitConfirmed:true,
+        }),
+      readState: () => getMineableState(scene,targetID),
+    });
+    if (!conserved.success)
+      return {success:false,stopReason:conserved.stopReason||"cargo"};
+    coopStrictDelta = conserved.deltaResult;
+  }
   if (isNativeNpcEntity(entity)) {
-    appendNpcCargo(entity, mineableState.yieldTypeID, transferredQuantity);
+    if (!coopStrictNative) appendNpcCargo(entity, mineableState.yieldTypeID, transferredQuantity);
   } else {
     const grantResult = grantItemsToCharacterLocation(
       resolveEntityCharacterID(entity),
@@ -1000,7 +1032,7 @@ function executeMiningCycle(
     }
   }
 
-  const deltaResult = applyMiningDelta(
+  const deltaResult = coopStrictDelta || applyMiningDelta(
     scene,
     targetEntity,
     miningResult.normalQuantity,

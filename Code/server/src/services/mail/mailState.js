@@ -1108,7 +1108,15 @@ function emptyTrash(characterID) {
   return { success: true, mutated, changedMessageIDs };
 }
 
+// COOP_CHAT39_MAIL_NATIVE_BEGIN
+// Unknown native mail flush cannot be reported as delivered. Further sends
+// stay blocked until the original persistent mail table is reconciled.
+let coopChat39MailCommitUncertain=false;
+// COOP_CHAT39_MAIL_NATIVE_END
 function sendMail(options = {}) {
+  const coopChat39Strict=process.env.EVEJS_COOP_SOCIAL_NATIVE_GUARDS === "1";
+  if(coopChat39Strict&&coopChat39MailCommitUncertain)
+    return {success:false,errorMsg:"MAIL_NATIVE_COMMIT_UNCERTAIN"};
   const senderID = toPositiveInteger(options.senderID, 0);
   const explicitCharacterIDs = normalizeCharacterRecipientIDs(options.toCharacterIDs);
   const toListID = options.toListID == null
@@ -1126,7 +1134,7 @@ function sendMail(options = {}) {
     Math.trunc(normalizeNumber(options.statusMask, 0)),
   );
 
-  const state = getMutableState();
+  const state = coopChat39Strict ? cloneValue(getMutableState()) : getMutableState();
   const resolvedRecipients = buildDeliveryRecipients(
     state,
     explicitCharacterIDs,
@@ -1186,6 +1194,15 @@ function sendMail(options = {}) {
   const writeResult = persistState(state);
   if (!writeResult || !writeResult.success) {
     return { success: false, errorMsg: "WRITE_ERROR" };
+  }
+  if(coopChat39Strict){
+    let flushed=false;
+    try{const result=repo.flushTableSync(MAIL_TABLE);flushed=Boolean(result&&result.success===true);}
+    catch(_error){flushed=false;}
+    if(!flushed){
+      coopChat39MailCommitUncertain=true;
+      return {success:false,errorMsg:"MAIL_NATIVE_COMMIT_UNCERTAIN"};
+    }
   }
 
   for (const characterID of recipientCharacterIDs) {

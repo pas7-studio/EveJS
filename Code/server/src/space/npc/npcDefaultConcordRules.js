@@ -271,7 +271,9 @@ function buildConfiguredConcordStartupRules(authoredRules = []) {
 
   const signature = buildSignature(authoredRules);
   if (signature === cachedSignature) {
-    return cachedRules.map((rule) => cloneValue(rule));
+    // structuredClone is the same deep copy without a JSON round-trip; this line
+    // ran for every scene tick that asks for the startup rules.
+    return structuredClone(cachedRules);
   }
 
   const { gateCoveredSystems, stationCoveredSystems } = collectAuthoredCoverage(

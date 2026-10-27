@@ -219,7 +219,34 @@ function getBacklogCacheEntry(roomName) {
   return entries.map((entry) => cloneValue(entry));
 }
 
+// COOP_CHAT39_SOCIAL_NATIVE_BEGIN
+// The native DB is the sole backlog source. Never publish from an unflushed
+// in-memory room cache; unknown flush outcome requires operator inspection.
+let coopChat39BacklogCommitUncertain=false;
+function coopChat39WriteBacklogEntries(roomName,entries=[]){
+ if(coopChat39BacklogCommitUncertain)return false;
+ const normalizedRoomName=normalizeString(roomName,"").trim();
+ if(!normalizedRoomName)return false;
+ const normalizedEntries=(Array.isArray(entries)?entries:[]).filter(Boolean).map(cloneValue);
+ const snapshot=cloneValue(getBacklogState());
+ if(normalizedEntries.length) snapshot.entriesByRoomName[normalizedRoomName]=normalizedEntries;
+ else delete snapshot.entriesByRoomName[normalizedRoomName];
+ let persisted=false;
+ try{persisted=writeRuntimeTable(CHAT_BACKLOG_TABLE,snapshot,{flush:true})===true;}
+ catch(_error){persisted=false;}
+ if(!persisted){
+  coopChat39BacklogCommitUncertain=true;
+  return false;
+ }
+ backlogStateCache=snapshot;
+ if(normalizedEntries.length)
+  backlogCache.set(normalizedRoomName,normalizedEntries.map(cloneValue));
+ else backlogCache.delete(normalizedRoomName);
+ return true;
+}
+// COOP_CHAT39_SOCIAL_NATIVE_END
 function writeBacklogEntries(roomName, entries = []) {
+  if (process.env.EVEJS_COOP_SOCIAL_NATIVE_GUARDS === "1") return coopChat39WriteBacklogEntries(roomName,entries);
   const normalizedRoomName = normalizeString(roomName, "").trim();
   if (!normalizedRoomName) {
     return false;
@@ -663,7 +690,12 @@ function appendBacklogEntry(roomName, entry, options = {}) {
   nextEntries.push(nextEntry);
   const trimmedEntries =
     limit > 0 ? nextEntries.slice(-limit) : nextEntries;
-  writeBacklogEntries(normalizedRoomName, trimmedEntries);
+  const persisted=writeBacklogEntries(normalizedRoomName, trimmedEntries);
+  if(process.env.EVEJS_COOP_SOCIAL_NATIVE_GUARDS === "1"&&persisted!==true){
+    const error=new Error("CHAT_NATIVE_BACKLOG_COMMIT_UNCERTAIN");
+    error.code="CHAT_NATIVE_BACKLOG_COMMIT_UNCERTAIN";
+    throw error;
+  }
   return true;
 }
 

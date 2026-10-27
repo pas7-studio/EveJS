@@ -5173,6 +5173,7 @@ function spawnEncounterPlan(scene, instance, siteEntity, encounterPlan, options 
     label: encounterPlan.label,
     notes: encounterPlan.notes,
   }, { nowMs });
+  try { require("../../space/coopMissionWavePacing").onWaveSpawn({ scene, instance, plan: encounterPlan, spawned: spawnResult.data.spawned, nowMs, totalWaves }, { mergeSpawnState: dungeonRuntime.mergeSpawnState, hasSpawned: (key) => { const live = dungeonRuntime.getInstance(instance.instanceID) || instance; const state = live && live.spawnState && live.spawnState.encounterStatesByKey && live.spawnState.encounterStatesByKey[key]; return Math.max(0, Number(state && state.spawnedAtMs) || 0) > 0; }, trimCompletion: (instanceID, keys, at) => dungeonRuntime.mergeObjectiveState(instanceID, { counters: { total_waves: keys.length }, metadata: { completionEncounterKeys: keys, totalWaves: keys.length } }, { nowMs: at }), sessionFor: (characterID) => require("../chat/sessionRegistry").getSessions().find((entry) => Number(entry && entry.characterID) === Number(characterID)), missionUpdates: (characterID) => require("../agent/agentMissionRuntime").getMissionInfoItems(characterID, Number(instance && instance.metadata && instance.metadata.agentID) || 0, {}) }); } catch (error) { console.warn("[CoopMissionWave]", error.message); }
   sendEncounterTriggerNotifications(scene, instance, encounterPlan, {
     ...options,
     nowMs,
@@ -5846,11 +5847,26 @@ function syncAgentMissionForCompletedDungeonObjective(instance, options = {}) {
       agentMissionRuntime &&
       typeof agentMissionRuntime.syncMissionRecordForDungeonInstance === "function"
     ) {
-      return agentMissionRuntime.syncMissionRecordForDungeonInstance(instance, {
+      const originalMission = agentMissionRuntime.syncMissionRecordForDungeonInstance(instance, {
         notifyTracker: true,
         notifyMissionChange: false,
         nowMs: options.nowMs,
       });
+      if (originalMission && originalMission.objectiveCompleted === true &&
+        process.env.EVEJS_COOP_FLEET_MISSION_SHARE === "1") {
+        try {
+          const event = require("../../space/coopFleetDungeonCredit").observe({
+            instance, missionRuntime: agentMissionRuntime,
+            fleetRuntime: require("../fleets/fleetRuntime"),
+            spaceRuntime: require("../../space/runtime"),
+            sessions: require("../chat/sessionRegistry").getSessions()
+          });
+          if (event.status === "TWO_PLAYER_NATIVE_DUNGEON_OBJECTIVE_CREDITED")
+            require("../../space/coopRuntimeProbe").observe(
+              "coop-fleet-dungeon-objective", null, null, event);
+        } catch (error) { console.warn("[CoopDungeonObjective]",error.message); }
+      }
+      return originalMission;
     }
   } catch (_error) {
     return null;

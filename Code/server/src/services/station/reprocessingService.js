@@ -479,6 +479,7 @@ function buildSplitAwareReprocessingQuotesForItems(session, itemReferences = [],
 }
 
 function materializeOversizedSelectionsForReprocess(session, itemIDs = [], quoteOptions = {}) {
+  if (process.env.EVEJS_COOP_PLAYER_ORE_ATOMIC === "1") return require(path.join(__dirname, "../../space/coopPlayerOreReprocessing")).materializeWithoutSplit(session, itemIDs);
   const contextResult = resolveReprocessingContext(session);
   if (!contextResult.success || !contextResult.data) {
     return contextResult;

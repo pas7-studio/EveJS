@@ -59,6 +59,7 @@ function resolveNativeNpcReloadSources(entity, chargeTypeID) {
 }
 
 function canUseVirtualNativeNpcReloadReserve(entity, moduleItem, chargeTypeID) {
+  if (require("../coopNpcAmmoConservation").isStrict(entity)) return false;
   return Boolean(
     isNativeNpcEntity(entity) &&
     moduleItem &&

@@ -68,8 +68,15 @@ services:
       EVEJS_REDSHIFT_MONITOR_HOST: 0.0.0.0
       EVEJS_XMPP_CONNECT_HOST: localhost
       EVEJS_XMPP_SERVER_BIND_HOST: 0.0.0.0
+      EVEJS_COOP_COURIER_OBSERVE: "1"
+      EVEJS_COOP_COURIER_DISPATCH: "1"
+      EVEJS_COOP_ADMIN_BRIDGE: "1"
     volumes:
       - evejs-data:/var/lib/evejs
+      # Character/corporation portraits are rendered by the client at creation
+      # time and written here. Without this volume every container recreate
+      # silently drops them and all portraits fall back to images/hi.jpg.
+      - evejs-images:/app/server/src/_secondary/image/generated
       - ./server/certs:/app/server/certs
       - ./server/src/_secondary/express/certs:/app/server/src/_secondary/express/certs
     ports:
@@ -89,3 +96,5 @@ services:
 volumes:
   evejs-data:
     name: evejs-data
+  evejs-images:
+    name: evejs-images

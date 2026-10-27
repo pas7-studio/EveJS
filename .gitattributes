@@ -1,0 +1,7 @@
+# ENDINGS ------------------------------------------------------------------
+# Windows-native launchers keep CRLF in the worktree; everything the Linux
+# container runs stays LF. Code/.gitattributes owns the container paths.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh  text eol=lf

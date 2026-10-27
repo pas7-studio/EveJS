@@ -152,7 +152,7 @@ class AchievementTrackerMgrService extends BaseService {
         characterRecord.achievementState &&
         characterRecord.achievementState.hasEverWarped,
     );
-    return persistedValue ?? true;
+    return persistedValue ?? (process.env.EVEJS_COOP_NPE_NATIVE_SAFETY === "1" ? false : true);
   }
 
   Handle_GetCompletedAchievementsAndClientEventCount(args, session) {
@@ -162,11 +162,11 @@ class AchievementTrackerMgrService extends BaseService {
     const state = resolveAchievementState(session);
     const eventEntries = normalizeDictEntries(
       state && (state.eventDict || state.eventCounts || state.clientEventCounts),
-      GOLDEN_LOGIN_EVENT_COUNT_ENTRIES,
+      process.env.EVEJS_COOP_NPE_NATIVE_SAFETY === "1" ? [] : GOLDEN_LOGIN_EVENT_COUNT_ENTRIES,
     );
     const completedEntries = normalizeDictEntries(
       state && (state.completedDict || state.completedAchievements),
-      GOLDEN_LOGIN_COMPLETED_ACHIEVEMENT_ENTRIES,
+      process.env.EVEJS_COOP_NPE_NATIVE_SAFETY === "1" ? [] : GOLDEN_LOGIN_COMPLETED_ACHIEVEMENT_ENTRIES,
     );
     return buildDict([
       ["eventDict", buildDict(eventEntries)],

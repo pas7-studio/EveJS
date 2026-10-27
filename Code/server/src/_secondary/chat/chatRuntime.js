@@ -775,6 +775,17 @@ function isChannelAdmin(session, record) {
 
 function getChannelAccessFailure(session, record, options = {}) {
   const characterID = getCharacterID(session);
+  if (process.env.EVEJS_COOP_SOCIAL_NATIVE_GUARDS === "1" && ["corp","alliance","fleet"].includes(record?.type)) {
+    const proof=require(path.join(__dirname,"../../space/coopSocialRoomAuthority")).verifyScopedRoom({
+      session,record,
+      getCharacter:require(path.join(__dirname,"../../services/character/characterState")).getCharacterRecord,
+      getCorporation:require(path.join(__dirname,"../../services/corporation/corporationState")).getCorporationRecord,
+      getAlliance:require(path.join(__dirname,"../../services/corporation/corporationState")).getAllianceRecord,
+      getAllianceMembers:require(path.join(__dirname,"../../services/corporation/corporationState")).getAllianceCorporationIDs,
+      getFleetForCharacter:require(path.join(__dirname,"../../services/fleets/fleetRuntime")).getFleetForCharacter
+    });
+    if(!proof.ok)return "native_membership_unverified";
+  }
   const corporationID = getCorporationID(session);
   const allianceID = getAllianceID(session);
   const warFactionID = getWarFactionID(session);

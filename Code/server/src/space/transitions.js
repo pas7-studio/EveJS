@@ -1753,6 +1753,7 @@ function completeStargateJump(
           },
     });
   }
+  require("./coopSessionPresence").schedule(session, moveResult.data, "stargate");
   queuePostSpaceAttachFittingHydration(session, moveResult.data && moveResult.data.itemID, {
     inventoryBootstrapPending: false,
     hydrationProfile: "stargate",
@@ -2057,6 +2058,7 @@ function undockSession(session, options = {}) {
         excludedSession: session,
       });
     }
+    require("./coopSessionPresence").schedule(session, moveResult.data, "undock");
     queuePostSpaceAttachFittingHydration(session, moveResult.data.itemID, {
       inventoryBootstrapPending: false,
       hydrationProfile: "undock",
@@ -2395,6 +2397,7 @@ function restoreSpaceSession(session) {
     universeSiteReconcileReason: "space-login",
   });
   const attachElapsedMs = Date.now() - attachStartedAtMs;
+  require("./coopRuntimeProbe").observe("space-login-attach", session, activeShip, { attached: Boolean(shipEntity) });
   if (typeof spaceRuntime.recordSessionJumpTimingTrace === "function") {
     spaceRuntime.recordSessionJumpTimingTrace(session, "space-login-restore-attached", {
       shipID: Number(activeShip.itemID) || 0,
@@ -2418,6 +2421,7 @@ function restoreSpaceSession(session) {
   }
 
   const hydrationQueuedAtMs = Date.now();
+  require("./coopSessionPresence").schedule(session, activeShip, "login");
   queuePostSpaceAttachFittingHydration(session, activeShip.itemID, {
     // Direct login-in-space issues one early ship-inventory List(flag=None)
     // before the HUD stabilizes. Let invbroker suppress only that first call;
@@ -3005,6 +3009,7 @@ function jumpSessionViaStargate(session, fromStargateID, toStargateID) {
       errorMsg: "STARGATE_NOT_FOUND",
     };
   }
+  if (process.env.EVEJS_COOP_POCHVEN_CONDUIT_GUARD === "1" && !require("./coopPochvenConduit").allowJump({session,sourceGate,destinationGate,worldData,getRawStanding:require("../services/character/standingRuntime").getCharacterRawStanding,activeShip:getActiveShipRecord(session.characterID),resolveItemByTypeID:require("../services/inventory/itemTypeRegistry").resolveItemByTypeID})) return {success:false,errorMsg:"POCHVEN_CONDUIT_ACCESS_DENIED"};
   if (!beginTransition(session, "stargate-jump", sourceGate.itemID)) {
     return {
       success: false,

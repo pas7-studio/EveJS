@@ -466,6 +466,10 @@ function noteDamage(attackerEntity, targetEntity, appliedDamage, options = {}) {
   ledger.attackers[attackerKey] = currentEntry;
   ledger.damageTaken = toFiniteNumber(ledger.damageTaken, 0) + damageAmount;
   ledger.lastUpdatedAtMs = whenMs;
+  if (process.env.EVEJS_COOP_PLAYER_DAMAGE_EVIDENCE === "1") {
+    try { require("../coopPlayerCombatWitness").note(attackerEntity, targetEntity, damageAmount); }
+    catch (error) { console.warn("[CoopPlayerCombatWitness]", error.message); }
+  }
   ledger.solarSystemID = toPositiveInt(
     targetEntity.systemID,
     toPositiveInt(ledger.solarSystemID, null),
@@ -905,6 +909,18 @@ function recordKillmailFromDestruction(targetEntity, destroyResult, options = {}
       options.attackerEntity || null,
       whenMs,
     );
+  }
+  if (process.env.EVEJS_COOP_FACTION_WAR_NATIVE_OBJECTIVES === "1" &&
+      record && toPositiveInt(record.killID, 0) > 0 &&
+      String(targetEntity.kind || "").toLowerCase() === "structure") {
+    try {
+      require("../coopWarNativeStructureCombatProof").noteNativeStructureKill({
+        targetEntity, destroyResult, record,
+        attackerEntity: options.attackerEntity || null,
+      });
+    } catch (error) {
+      console.warn("[CoopWarStructureCombat] witness", error.message);
+    }
   }
   ledgersByVictim.delete(ledgerKey);
   return record;

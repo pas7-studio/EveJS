@@ -291,6 +291,8 @@ class MachoNetService extends BaseService {
         ["alphaInjectorMgr", null],
         ["nonDiminishingInjectionMgr", null],
         ["contractMgr", null],
+        ...(process.env.EVEJS_COOP_NATIVE_CONTRACTS === "1"
+          ? [["contractProxy", null]] : []),
         ["blueprintManager", null],
         ["facilityManager", null],
         ["industryManager", null],

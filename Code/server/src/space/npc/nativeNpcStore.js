@@ -55,6 +55,15 @@ function cloneValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// Root-shape normalisation used to deep-clone and stringify the whole NPC root on
+// every single read (62.7% + 24.0% of server CPU). The shape only needs verifying
+// once per table until this module writes to it, so remember the verified tables.
+const rootShapeVerified = new Set();
+
+function invalidateRootShape(tableName) {
+  rootShapeVerified.delete(tableName);
+}
+
 function invalidateControllerCache() {
   controllerCache.all = null;
   controllerCache.bySystem.clear();
@@ -79,6 +88,9 @@ function readRoot(tableName) {
 }
 
 function ensureRootShape(tableName) {
+  if (rootShapeVerified.has(tableName)) {
+    return readRoot(tableName);
+  }
   const currentRoot = readRoot(tableName);
   const result = database.read(tableName, "/");
   const existingRoot = result.success && result.data && typeof result.data === "object"
@@ -88,23 +100,31 @@ function ensureRootShape(tableName) {
   if (!existingRoot || JSON.stringify(existingRoot) !== JSON.stringify(normalizedRoot)) {
     database.write(tableName, "/", normalizedRoot);
   }
+  rootShapeVerified.add(tableName);
   return normalizedRoot;
 }
 
 function writeRoot(tableName, root, options = {}) {
+  invalidateRootShape(tableName);
   return database.write(tableName, "/", root, options);
 }
 
+function rootShapeReady(tableName) {
+  if (rootShapeVerified.has(tableName)) return;
+  ensureRootShape(tableName);
+}
+
 function readCollection(tableName, key) {
-  const root = ensureRootShape(tableName);
-  const collection = root && typeof root === "object" && root[key] && typeof root[key] === "object"
-    ? root[key]
+  rootShapeReady(tableName);
+  const result = database.read(tableName, `/${key}`);
+  const collection = result.success && result.data && typeof result.data === "object"
+    ? result.data
     : {};
   return cloneValue(collection);
 }
 
 function writeCollectionRow(tableName, collectionKey, rowID, value, options = {}) {
-  ensureRootShape(tableName);
+  rootShapeReady(tableName);
   return database.write(
     tableName,
     `/${collectionKey}/${String(rowID)}`,
@@ -114,7 +134,7 @@ function writeCollectionRow(tableName, collectionKey, rowID, value, options = {}
 }
 
 function removeCollectionRow(tableName, collectionKey, rowID) {
-  ensureRootShape(tableName);
+  rootShapeReady(tableName);
   return database.remove(tableName, `/${collectionKey}/${String(rowID)}`);
 }
 
@@ -139,6 +159,7 @@ function allocateID(tableName, counterKey, options = {}) {
   const nextID = Math.max(
     toPositiveInt(root && root[counterKey], 0),
     toPositiveInt(ROOT[tableName] && ROOT[tableName][counterKey], 0),
+    Number.isSafeInteger(transientCounters[tableName]) ? transientCounters[tableName] : 0,
   );
   const updatedRoot = {
     ...root,
@@ -154,6 +175,8 @@ function allocateID(tableName, counterKey, options = {}) {
       errorMsg: writeResult.errorMsg || "NPC_NATIVE_ID_ALLOCATE_FAILED",
     };
   }
+  if (Number.isSafeInteger(transientCounters[tableName]))
+    transientCounters[tableName] = Math.max(transientCounters[tableName], nextID + 1);
   return {
     success: true,
     data: nextID,
@@ -584,9 +607,10 @@ function buildNativeWreckContents(wreckID) {
     customInfo: String(itemRecord && itemRecord.customInfo || ""),
     volume: Number(itemRecord && itemRecord.volume || 0),
     moduleState: cloneValue(itemRecord && itemRecord.moduleState || null),
-  }));
+  })).concat(process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK==="1" ?
+    require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:require(path.join(__dirname, "./nativeNpcStore")),gameStore:database}).list({wreckID:normalizedWreckID}) : []);
 }
-
+// EX03B18_NATIVE_WRECK_CONTENTS
 module.exports = {
   TABLE,
   allocateEntityID,
@@ -602,6 +626,7 @@ module.exports = {
   listNativeModulesForEntity,
   upsertNativeModule,
   removeNativeModule,
+  listNativeCargo,
   listNativeCargoForEntity,
   upsertNativeCargo,
   removeNativeCargo,

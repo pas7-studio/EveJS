@@ -100,6 +100,7 @@ function indexCharacterSession(session) {
   removeFromIndex(session);
   if (characterID > 0) {
     addToIndex(session, characterID);
+    if (process.env.EVEJS_COOP_NPC_BUY_NOTIFY_CATCHUP === "1") setImmediate(() => { if (isLiveSession(session) && resolveSessionCharacterID(session) === characterID) Promise.resolve().then(() => require("../../space/coopNpcMarketCompletionNotify").notifyPendingSellerOnLogin(characterID)).catch(error => console.warn("[CoopMarketSellerCatchup]", error.message)); });
   }
 }
 

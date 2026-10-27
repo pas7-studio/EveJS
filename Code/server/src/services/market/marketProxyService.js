@@ -1454,6 +1454,9 @@ function filterMarketRowsByAccessibleStructureMarket(
   stationKeys = ["station_id", "stationID"],
 ) {
   return ensureArray(rows).filter((row) => {
+    // CH24+31 PERSONAL_MARKET_CORP_SELL_HIDDEN: stock character market NEVER owns corporate stock.
+    if (String(row?.source || "").toLowerCase() === "coop-corporation" &&
+        process.env.EVEJS_COOP_PLAYER_NPC_MINING_CORP_PUBLIC_MARKET !== "1") return false;
     const stationID = normalizePositiveInteger(
       stationKeys
         .map((key) => row && row[key])
@@ -1519,15 +1522,25 @@ async function applyExpiredOrderEvent(event) {
   }
 
   const orderID = normalizeOrderId(order && order.order_id);
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1") require("../../space/coopPlayerMarketSettlementFence").assertClear(orderID);
   const orderRow = getOwnerOrderResponseOrder(order);
   const ownerID = normalizePositiveInteger(order && order.owner_id, 0);
   if (!ownerID || normalizeBoolean(order && order.is_corp)) {
     return;
   }
 
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_RESERVE === "1" && normalizeBoolean(orderRow && orderRow.bid) && process.env.EVEJS_COOP_PLAYER_MARKET_BUY_REFUND !== "1") throw Error("P2P_BUY_RESERVE_EXPIRY_REQUIRES_AUDITED_SETTLEMENT");
   if (normalizeBoolean(orderRow && orderRow.bid)) {
+    if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_REFUND === "1") {
+      await require("../../space/coopPlayerMarketBuyRefundRuntime").expire({client:marketDaemonClient,order});
+      const acct=require("../account/walletState");
+      acct.notifyCharacterWalletChange(ownerID,acct.getCharacterWallet(ownerID));
+      notifyOwnOrdersChanged(ownerID,[{...order,state:"expired"}],ORDER_REASON_EXPIRED);
+      return;
+    }
     const escrowRecord = getEscrowRecord(orderID);
     if (escrowRecord && getEscrowType(escrowRecord) === "buy") {
+      if (process.env.EVEJS_COOP_MARKET_CANCEL_CUSTODY === "1" && true) require("../../space/coopMarketCancelCustody").assertMatchingBuyEscrow({order:order,escrow:escrowRecord});
       const stationID = normalizePositiveInteger(orderRow && orderRow.station_id, 0);
       creditCharacterWallet(
         ownerID,
@@ -1545,12 +1558,14 @@ async function applyExpiredOrderEvent(event) {
     }
   } else {
     const escrowRecord = getEscrowRecord(orderID);
+    const coopSellProof = process.env.EVEJS_COOP_MARKET_SELL_CUSTODY === "1" ? require("../../space/coopMarketSellCustody").assertSellEscrow({order:order,escrow:escrowRecord,items:listEscrowItemsForOrder(orderID,ownerID),hangarFlag:ITEM_FLAGS.HANGAR}) : null;
     if (escrowRecord && getEscrowType(escrowRecord) === "sell") {
       moveEscrowItemsBackToSeller(
         orderID,
         ownerID,
         normalizePositiveInteger(orderRow && orderRow.station_id, 0),
       );
+      if (coopSellProof) require("../../space/coopMarketSellCustody").assertSellReturned({proof:coopSellProof,remainingItems:listEscrowItemsForOrder(orderID,ownerID),findItemById});
       removeEscrowRecord(orderID);
     }
   }
@@ -1567,6 +1582,7 @@ function applyCancelledStructureMarketOrder(order) {
   }
 
   const orderID = normalizeOrderId(order && order.order_id);
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1") require("../../space/coopPlayerMarketSettlementFence").assertClear(orderID);
   const orderRow = getOwnerOrderResponseOrder(order);
   const ownerID = normalizePositiveInteger(order && order.owner_id, 0);
   const isCorp = normalizeBoolean(order && order.is_corp);
@@ -1575,8 +1591,10 @@ function applyCancelledStructureMarketOrder(order) {
     return false;
   }
 
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_RESERVE === "1" && normalizeBoolean(orderRow && orderRow.bid)) throw Error("P2P_BUY_RESERVE_STATION_CANCEL_REQUIRES_AUDITED_SETTLEMENT");
   if (normalizeBoolean(orderRow && orderRow.bid)) {
     const escrowRecord = getEscrowRecord(orderID);
+    if (process.env.EVEJS_COOP_MARKET_CANCEL_CUSTODY === "1" && true) require("../../space/coopMarketCancelCustody").assertMatchingBuyEscrow({order:order,escrow:escrowRecord});
     const refundAmount = escrowRecord && getEscrowType(escrowRecord) === "buy"
       ? roundIsk(escrowRecord.escrowAmount)
       : computeOrderValue(orderRow && orderRow.price, orderRow && orderRow.vol_remaining);
@@ -1594,7 +1612,9 @@ function applyCancelledStructureMarketOrder(order) {
     );
     removeEscrowRecord(orderID);
   } else {
+    const coopSellProof = process.env.EVEJS_COOP_MARKET_SELL_CUSTODY === "1" ? require("../../space/coopMarketSellCustody").assertSellEscrow({order:order,escrow:getEscrowRecord(orderID),items:listEscrowItemsForOrder(orderID,ownerID),hangarFlag:ITEM_FLAGS.HANGAR}) : null;
     moveEscrowItemsBackToSeller(orderID, ownerID, stationID);
+    if (coopSellProof) require("../../space/coopMarketSellCustody").assertSellReturned({proof:coopSellProof,remainingItems:listEscrowItemsForOrder(orderID,ownerID),findItemById});
     removeEscrowRecord(orderID);
   }
 
@@ -1620,6 +1640,7 @@ async function cancelStructureMarketOrdersForServiceLoss(structure, options = {}
     };
   }
 
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1") require("../../space/coopPlayerMarketSettlementFence").assertStationClear(stationID);
   const quietDaemonUnavailable = options && options.quietDaemonUnavailable === true;
   const daemonCallOptions = quietDaemonUnavailable
     ? { suppressConnectFailureLog: true }
@@ -1788,12 +1809,14 @@ async function fetchCharacterOrders(characterID) {
 }
 
 function syncOpenBuyEscrowRecords(ownerOrders = []) {
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_RESERVE === "1") return; // Unfunded Rust rows must not reconstruct GameStore escrow
   for (const ownerOrder of ensureArray(ownerOrders)) {
     const state = String(ownerOrder && ownerOrder.state ? ownerOrder.state : "open").toLowerCase();
     const orderRow = getOwnerOrderResponseOrder(ownerOrder);
     if (state !== "open" || !normalizeBoolean(orderRow && orderRow.bid)) {
       continue;
     }
+    if (process.env.EVEJS_COOP_MARKET_CANCEL_CUSTODY === "1" && true) require("../../space/coopMarketCancelCustody").assertMatchingBuyEscrow({order:ownerOrder,escrow:getEscrowRecord(normalizeOrderId(getOwnerOrderResponseOrder(ownerOrder).order_id))});
     upsertBuyEscrowRecord(ownerOrder);
   }
 }
@@ -1962,10 +1985,15 @@ async function matchSellOrdersForBuyer({
   currentSolarSystemID,
   chargeBuyerWallet = true,
 } = {}) {
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1" && process.env.EVEJS_COOP_RUST_P2P_CLAIM !== "1") throw Error("P2P_RUST_EXCLUSIVE_CLAIM_REQUIRED");
+  if (process.env.EVEJS_COOP_RUST_P2P_CLAIM === "1" && process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE !== "1") throw Error("P2P_RUST_NATIVE_SETTLEMENT_FENCE_REQUIRED");
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1" && process.env.EVEJS_COOP_PLAYER_MARKET_FILL_GUARD !== "1") throw Error("P2P_SETTLEMENT_REQUIRES_PLAYER_FILL_GUARD");
   const book = await marketDaemonClient.call("GetOrders", {
     region_id: regionID,
     type_id: typeID,
   });
+  if (process.env.EVEJS_COOP_RUST_P2P_CLAIM === "1" && process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC !== "1") throw Error("P2P_ATOMIC_REQUIRED_WITH_RUST_CLAIMS");
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC === "1" && (process.env.EVEJS_COOP_NATIVE_ATOMIC_ROWS !== "1" || process.env.EVEJS_COOP_RUST_P2P_CLAIM !== "1" || process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE !== "1" || process.env.EVEJS_COOP_PLAYER_MARKET_FILL_GUARD !== "1")) throw Error("P2P_ATOMIC_ALL_NATIVE_FLAGS_REQUIRED");
   const typeLabel = getMarketTypeLabel(typeID);
 
   let remainingQuantity = normalizePositiveInteger(requestedQuantity, 0);
@@ -2004,7 +2032,47 @@ async function matchSellOrdersForBuyer({
       continue;
     }
 
+
+    // COOP-035 native NPC corporate seller branch: never use character-seller wallet.
+    if (String(sellOrder?.source || "").toLowerCase() === "coop-npc") {
+      if (process.env.EVEJS_COOP_NATIVE_NPC_CORP_SETTLEMENT !== "1" ||
+          process.env.EVEJS_COOP_NATIVE_NPC_CORP_SETTLEMENT_PROOF !== "1" ||
+          process.env.EVEJS_COOP_NATIVE_ATOMIC_ROWS !== "1" ||
+          !chargeBuyerWallet || remainingQuantity < availableQuantity) continue;
+      const npcPurchase = await require("../../space/coopNpcCorporateBuyRuntime").buyFromOrder({
+        session, sellOrder, quantity: availableQuantity,
+      });
+      if (npcPurchase?.status !== "PURCHASED") {
+        throw Error("NPC_CORPORATE_MARKET_BUY_BLOCKED:" + String(npcPurchase?.error || npcPurchase?.status));
+      }
+      totalSpent = roundIsk(totalSpent + npcPurchase.grossCents / 100);
+      totalBought += availableQuantity;
+      remainingQuantity -= availableQuantity;
+      continue;
+    }
+    // COOP-035 END
+    // CH24+31 PERSONAL_MARKET_CORP_SELL_DENIED: no debit on previously reserved buy orders.
+    if (String(sellOrder?.source || "").toLowerCase() === "coop-corporation" &&
+        (process.env.EVEJS_COOP_PLAYER_NPC_MINING_CORP_PUBLIC_MARKET !== "1" ||
+         chargeBuyerWallet !== true)) continue;
     const tradedQuantity = Math.min(remainingQuantity, availableQuantity);
+    // CH24+31 NATIVE_CORP_MARKET_BUY_ROUTE: corporate stock never falls through to personal FillOrder.
+    if (String(sellOrder?.source || "").toLowerCase() === "coop-corporation") {
+      const nativeCorp = require(path.join(__dirname, "../../integration/coopPlayerMiningCorporateMarketRuntime"));
+      const purchased = await nativeCorp.buyFromOrder({session, sellOrder,
+        quantity:tradedQuantity,maxUnitPriceCents:Math.round(Number(maxPrice || 0) * 100)});
+      if (purchased?.status !== "CORP_SELL_FILL_RELEASED" ||
+          purchased.filledQuantity !== tradedQuantity ||
+          !Number.isSafeInteger(purchased.verifiedGrossCents) ||
+          purchased.verifiedGrossCents <= 0) {
+        throwWrappedUserError("CustomInfo", {info:
+          "Corporation ore transaction was not confirmed. Review the market before retrying."});
+      }
+      remainingQuantity -= tradedQuantity;
+      totalBought += tradedQuantity;
+      totalSpent = roundIsk(totalSpent + purchased.verifiedGrossCents / 100);
+      continue;
+    }
     const destinationStationID = normalizePositiveInteger(
       sellOrder && sellOrder.station_id,
       currentStationID,
@@ -2020,6 +2088,8 @@ async function matchSellOrdersForBuyer({
     let purchaseCounterpartyID =
       marketCounterpartyOwnerID || destinationStationID;
     let buyerWalletResult = null;
+    let coopPlayerSellProof = null;
+    let coopPlayerSellIrreversible = false;
 
     try {
       if (isSeedSellOrder) {
@@ -2061,7 +2131,42 @@ async function matchSellOrdersForBuyer({
             info: `Market sell order ${normalizeOrderId(sellOrder && sellOrder.order_id)} is missing escrow state.`,
           });
         }
+        if (process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC === "1") {
+          const fullEscrowItems=listEscrowItemsForOrder(sellOrder && sellOrder.order_id,sellerCharacterID);
+          let escrowSum=0;
+          if (!chargeBuyerWallet||tradedQuantity<=0||fullEscrowItems.length<1||fullEscrowItems.length>10000) throw Error("P2P_ATOMIC_ESCROW_STACK_SET_REQUIRED");
+          for(const original of fullEscrowItems){
+            if(original?.singleton!==0||!Number.isSafeInteger(original?.stacksize)||original.stacksize<=0||!Number.isSafeInteger(escrowSum+original.stacksize)) throw Error("P2P_ATOMIC_ESCROW_STACK_QUANTITY_INVALID");
+            escrowSum+=original.stacksize;
+          }
+          if(escrowSum!==availableQuantity) throw Error("P2P_ATOMIC_ESCROW_TOTAL_NOT_MATCHED");
+        }
         purchaseCounterpartyID = sellerCharacterID;
+        coopPlayerSellProof = process.env.EVEJS_COOP_PLAYER_MARKET_FILL_GUARD === "1" ? require("../../space/coopPlayerMarketFill").checkSellMatch({order:playerSellOrder,bookRow:sellOrder,escrow:escrowRecord,items:listEscrowItemsForOrder(sellOrder && sellOrder.order_id,sellerCharacterID),buyerCharacterID,tradedQuantity,price:orderPrice}) : null;
+        if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1" && !chargeBuyerWallet) throw Error("P2P_SETTLEMENT_RESERVED_BUY_ORDER_CROSSING_UNSUPPORTED");
+        const coopPlayerSellTicket = coopPlayerSellProof && process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1" ? require("../../space/coopPlayerMarketSettlementFence").begin(coopPlayerSellProof,{chargeBuyerWallet}) : null;
+        if (coopPlayerSellTicket) await require("../../space/coopPlayerMarketRustClaim").claim({ticket:coopPlayerSellTicket,proof:coopPlayerSellProof,client:marketDaemonClient});
+        if (process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC === "1" && coopPlayerSellTicket) {
+          const nativeTax=computeSalesTaxAmount(buildCharacterMarketContext(null,sellerCharacterID,destinationStationID),grossCost);
+          const physical=listEscrowItemsForOrder(sellOrder && sellOrder.order_id,sellerCharacterID);
+          const result=await require("../../space/coopPlayerMarketAtomicRuntime").settleSell({ticket:coopPlayerSellTicket,proof:coopPlayerSellProof,tax:nativeTax,sourceItemIDs:physical.map(x=>x.itemID),client:marketDaemonClient});
+          const delivered=[];
+          const receiptItems=result.receipt.deliveries??[{itemID:result.receipt.itemID,quantity:result.receipt.quantity}];
+          for(const physicalReceipt of receiptItems){
+            const item=findItemById(physicalReceipt.itemID);
+            if(!item||item.ownerID!==buyerCharacterID||item.locationID!==destinationStationID||item.quantity!==physicalReceipt.quantity||item.stacksize!==physicalReceipt.quantity) throw Error("P2P_ATOMIC_POST_COMMIT_INVENTORY_VIEW_UNSAFE");
+            delivered.push({item});
+          }
+          notifyBuyerDelivery(buyerCharacterID,delivered);
+          const nativeWallet=require("../account/walletState");
+          nativeWallet.notifyCharacterWalletChange(buyerCharacterID,nativeWallet.getCharacterWallet(buyerCharacterID));
+          nativeWallet.notifyCharacterWalletChange(sellerCharacterID,nativeWallet.getCharacterWallet(sellerCharacterID));
+          notifyOwnOrdersChanged(sellerCharacterID,[{...playerSellOrder,row:{...getOwnerOrderResponseOrder(playerSellOrder),vol_remaining:coopPlayerSellProof.volumeAfter,price:orderPrice},state:coopPlayerSellProof.volumeAfter===0?"filled":"open"}],coopPlayerSellProof.volumeAfter===0?ORDER_REASON_FILLED:ORDER_REASON_PARTIAL);
+          totalSpent=roundIsk(totalSpent+grossCost);
+          totalBought+=tradedQuantity;
+          remainingQuantity-=tradedQuantity;
+          continue;
+        }
         if (chargeBuyerWallet) {
           buyerWalletResult = debitCharacterWallet(
             buyerCharacterID,
@@ -2094,6 +2199,7 @@ async function matchSellOrdersForBuyer({
               ? 1
               : normalizePositiveInteger(escrowItem && escrowItem.stacksize, 0);
           const moveQuantity = Math.min(escrowRemaining, itemQuantity);
+          if (coopPlayerSellProof) coopPlayerSellIrreversible = true;
           const moveResult = moveItemToLocation(
             escrowItem.itemID,
             destinationStationID,
@@ -2125,11 +2231,13 @@ async function matchSellOrdersForBuyer({
         }
 
         notifyBuyerDelivery(buyerCharacterID, buyerChanges);
-        const fillResponse = await marketDaemonClient.call("FillOrder", {
+        const fillResponse = coopPlayerSellTicket ? await require("../../space/coopPlayerMarketRustClaim").finalize({ticket:coopPlayerSellTicket,proof:coopPlayerSellProof,client:marketDaemonClient}) : await marketDaemonClient.call("FillOrder", {
           order_id: normalizeOrderId(sellOrder && sellOrder.order_id),
           fill_quantity: tradedQuantity,
         });
+        if (coopPlayerSellProof) require("../../space/coopPlayerMarketFill").assertFillAck({proof:coopPlayerSellProof,ack:fillResponse});
         const grossAmount = roundIsk(orderPrice * tradedQuantity);
+        if (coopPlayerSellTicket) require("../../space/coopPlayerMarketSettlementFence").confirmRust(coopPlayerSellTicket,fillResponse);
         const sellerMarketContext = buildCharacterMarketContext(
           null,
           sellerCharacterID,
@@ -2218,6 +2326,7 @@ async function matchSellOrdersForBuyer({
             remainingQuantity: fillResponse.vol_remaining,
             updatedAt: new Date().toISOString(),
           });
+        if (coopPlayerSellTicket) require("../../space/coopPlayerMarketSettlementFence").complete(coopPlayerSellTicket,{salesTax});
         }
       }
       if (String(sellOrder && sellOrder.source || "").toLowerCase() === "seed") {
@@ -2239,6 +2348,7 @@ async function matchSellOrdersForBuyer({
         });
       }
     } catch (error) {
+      if (coopPlayerSellIrreversible) buyerWalletResult = null;
       if (buyerWalletResult) {
         creditCharacterWallet(
           buyerCharacterID,
@@ -2280,11 +2390,16 @@ async function matchBuyOrdersForSeller({
   sourceItemID,
   sourceOrderId,
 } = {}) {
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1" && process.env.EVEJS_COOP_RUST_P2P_CLAIM !== "1") throw Error("P2P_RUST_EXCLUSIVE_CLAIM_REQUIRED");
+  if (process.env.EVEJS_COOP_RUST_P2P_CLAIM === "1" && process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE !== "1") throw Error("P2P_RUST_NATIVE_SETTLEMENT_FENCE_REQUIRED");
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1" && process.env.EVEJS_COOP_PLAYER_MARKET_FILL_GUARD !== "1") throw Error("P2P_SETTLEMENT_REQUIRES_PLAYER_FILL_GUARD");
   const book = await marketDaemonClient.call("GetOrders", {
     region_id: regionID,
     type_id: typeID,
   });
 
+  if (process.env.EVEJS_COOP_RUST_P2P_CLAIM === "1" && process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC !== "1") throw Error("P2P_ATOMIC_REQUIRED_WITH_RUST_CLAIMS");
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC === "1" && (process.env.EVEJS_COOP_NATIVE_ATOMIC_ROWS !== "1" || process.env.EVEJS_COOP_RUST_P2P_CLAIM !== "1" || process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE !== "1" || process.env.EVEJS_COOP_PLAYER_MARKET_FILL_GUARD !== "1")) throw Error("P2P_ATOMIC_ALL_NATIVE_FLAGS_REQUIRED");
   let remainingQuantity = normalizePositiveInteger(requestedQuantity, 0);
   let totalSold = 0;
   let totalGross = 0;
@@ -2349,7 +2464,32 @@ async function matchBuyOrdersForSeller({
       buyOrder && buyOrder.station_id,
       stationID,
     );
+    if (process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC === "1" && !isSeedBuyOrder) {
+      if(process.env.EVEJS_COOP_PLAYER_MARKET_BUY_RESERVE !== "1") throw Error("P2P_ATOMIC_PREPAID_BUY_RESERVE_NOT_YET_PROVEN");
+      if(sourceOrderId && normalizeOrderId(sourceOrderId)!=="0") throw Error("P2P_BUY_PAY_LINKED_ORDER_CROSSING_UNSUPPORTED");
+      const physical=findItemById(sourceItemID);
+      require("../../space/coopPlayerMarketBuySettlement").preflightOriginal({order:playerBuyOrder,bookRow:buyOrder,escrow:getEscrowRecord(buyOrder && buyOrder.order_id),sellerCharacterID,fillableQuantity,price:orderPrice,sourceItem:physical,sourceStationID:stationID});
+    }
+    const coopPlayerBuyProof = !isSeedBuyOrder && process.env.EVEJS_COOP_PLAYER_MARKET_FILL_GUARD === "1" ? require("../../space/coopPlayerMarketFill").checkBuyMatch({order:playerBuyOrder,bookRow:buyOrder,escrow:getEscrowRecord(buyOrder && buyOrder.order_id),sellerCharacterID,fillableQuantity,price:orderPrice,sourceItem:sourceOrderId?null:findItemById(sourceItemID),sourceOrder:sourceOrderId && normalizeOrderId(sourceOrderId)!=="0" ? await fetchOrderById(sourceOrderId) : null,sourceEscrow:sourceOrderId?getEscrowRecord(sourceOrderId):null,sourceItems:sourceOrderId?listEscrowItemsForOrder(sourceOrderId,sellerCharacterID):null,sourceStationID:stationID,hangarFlag:ITEM_FLAGS.HANGAR}) : null;
     const sellerInventoryChanges = [];
+    if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1" && !isSeedBuyOrder && sourceOrderId && normalizeOrderId(sourceOrderId)!=="0") throw Error("P2P_SETTLEMENT_DOUBLE_ORDER_CROSSING_UNSUPPORTED");
+    const coopPlayerBuyTicket = coopPlayerBuyProof && process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1" ? require("../../space/coopPlayerMarketSettlementFence").begin(coopPlayerBuyProof,{chargeBuyerWallet:false}) : null;
+    if (coopPlayerBuyTicket) await require("../../space/coopPlayerMarketRustClaim").claim({ticket:coopPlayerBuyTicket,proof:coopPlayerBuyProof,client:marketDaemonClient});
+    if (process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC === "1" && !isSeedBuyOrder && coopPlayerBuyTicket) {
+      const grossPaid=roundIsk(orderPrice*fillableQuantity);
+      const originalTax=computeSalesTaxAmount(sellerMarketContext,grossPaid);
+      const completed=await require("../../space/coopPlayerMarketAtomicRuntime").settleBuy({ticket:coopPlayerBuyTicket,proof:coopPlayerBuyProof,sourceItemID,tax:originalTax,client:marketDaemonClient});
+      const delivery=findItemById(completed.receipt.itemID);
+      if(!delivery||delivery.ownerID!==buyerCharacterID||delivery.typeID!==typeID||delivery.locationID!==destinationStationID||delivery.quantity!==fillableQuantity||delivery.stacksize!==fillableQuantity) throw Error("P2P_BUY_PAY_POST_RELEASE_NATIVE_CUSTODY_INVALID");
+      notifyBuyerDelivery(buyerCharacterID,[{item:delivery}]);
+      const nativeWallet=require("../account/walletState");
+      nativeWallet.notifyCharacterWalletChange(sellerCharacterID,nativeWallet.getCharacterWallet(sellerCharacterID));
+      notifyOwnOrdersChanged(buyerCharacterID,[{...playerBuyOrder,row:{...getOwnerOrderResponseOrder(playerBuyOrder),vol_remaining:coopPlayerBuyProof.volumeAfter,price:orderPrice},state:completed.release.state}],completed.release.state==="filled"?ORDER_REASON_FILLED:ORDER_REASON_PARTIAL);
+      totalSold+=fillableQuantity;
+      totalGross=roundIsk(totalGross+grossPaid);
+      remainingQuantity-=fillableQuantity;
+      continue;
+    }
     let destinationChanges = [];
 
     if (normalizePositiveInteger(sourceOrderId, 0) > 0) {
@@ -2444,11 +2584,13 @@ async function matchBuyOrdersForSeller({
       notifyBuyerDelivery(buyerCharacterID, destinationChanges);
     }
 
-    const fillResponse = await marketDaemonClient.call("FillOrder", {
+    const fillResponse = coopPlayerBuyTicket ? await require("../../space/coopPlayerMarketRustClaim").finalize({ticket:coopPlayerBuyTicket,proof:coopPlayerBuyProof,client:marketDaemonClient}) : await marketDaemonClient.call("FillOrder", {
       order_id: normalizeOrderId(buyOrder && buyOrder.order_id),
       fill_quantity: fillableQuantity,
     });
+    if (coopPlayerBuyProof) require("../../space/coopPlayerMarketFill").assertFillAck({proof:coopPlayerBuyProof,ack:fillResponse});
     const grossAmount = roundIsk(orderPrice * fillableQuantity);
+    if (coopPlayerBuyTicket) require("../../space/coopPlayerMarketSettlementFence").confirmRust(coopPlayerBuyTicket,fillResponse);
     const stationMarketOwnerID = getMarketCounterpartyOwnerID(
       destinationStationID,
     );
@@ -2539,6 +2681,7 @@ async function matchBuyOrdersForSeller({
             vol_remaining: fillResponse.vol_remaining,
           },
         });
+      if (coopPlayerBuyTicket) require("../../space/coopPlayerMarketSettlementFence").complete(coopPlayerBuyTicket,{salesTax});
       }
     }
 
@@ -2575,6 +2718,7 @@ async function executeBuyRequest({
     normalizePositiveInteger(minVolume, 1),
   );
   const typeLabel = getMarketTypeLabel(typeID);
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_RESERVE === "1" && (process.env.EVEJS_COOP_PLAYER_MARKET_ATOMIC !== "1" || process.env.EVEJS_COOP_NATIVE_ATOMIC_ROWS !== "1" || process.env.EVEJS_COOP_RUST_P2P_CLAIM !== "1" || process.env.EVEJS_COOP_PLAYER_MARKET_FILL_GUARD !== "1" || process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE !== "1")) throw Error("P2P_BUY_RESERVE_ALL_GUARDS_REQUIRED");
   ensureValidPrice(normalizedPrice);
   ensureValidDuration(normalizedDuration);
   ensureValidMinVolume(normalizedQuantity, normalizedMinVolume);
@@ -2609,6 +2753,22 @@ async function executeBuyRequest({
     `Placing a buy order for ${typeLabel}`,
   );
 
+  if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_RESERVE === "1" && normalizedDuration>0) {
+    require("../../space/coopPlayerMarketBuyReserve").assertExisting(openOrders,characterID);
+    if(getStructureMarketLocation(stationID)) throw Error("P2P_BUY_RESERVE_STRUCTURE_OWNER_CREDIT_UNSUPPORTED");
+    const placement=await require("../../space/coopPlayerMarketBuyReserveRuntime").place({
+      client:marketDaemonClient,
+      quote:{buyerID:characterID,stationID,typeID,price:normalizedPrice,
+        quantity:normalizedQuantity,minVolume:normalizedMinVolume,
+        durationDays:normalizedDuration,orderRange:normalizeInteger(orderRange,RANGE_STATION),
+        brokerFee:brokerFeeUpperBound,sccSurcharge:sccSurchargeUpperBound}
+    });
+    const account=require("../account/walletState");
+    account.notifyCharacterWalletChange(characterID,account.getCharacterWallet(characterID));
+    notifyOwnOrdersChanged(characterID,[placement.order],ORDER_REASON_CREATED);
+    return {boughtQuantity:0,totalSpent:0,createdOrder:placement.order,
+      remainingQuantity:normalizedQuantity};
+  }
   const matchResult = await matchSellOrdersForBuyer({
     session,
     buyerCharacterID: characterID,
@@ -3191,6 +3351,7 @@ class MarketProxyService extends BaseService {
 
   Handle_GetMarketGroups() {
     log.debug("[MarketProxy] GetMarketGroups");
+    if (process.env.EVEJS_COOP_MARKET_CATALOG === "1") return require("../../space/coopMarketCatalog").getMarketGroups({read:()=>require("../_shared/referenceData").readStaticRows("itemTypes"),buildRowset,rowsetName:ROWSET_NAME});
     return buildRowset(
       [
         "parentGroupID",
@@ -3782,6 +3943,7 @@ class MarketProxyService extends BaseService {
 
   async Handle_CancelCharOrder(args, session) {
     const orderID = normalizeOrderId(args && args.length > 0 ? args[0] : 0);
+    if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1") require("../../space/coopPlayerMarketSettlementFence").assertClear(orderID);
     log.debug(`[MarketProxy] CancelCharOrder order=${orderID}`);
 
     try {
@@ -3791,14 +3953,27 @@ class MarketProxyService extends BaseService {
       if (String(order && order.state ? order.state : "open").toLowerCase() !== "open") {
         return null;
       }
+      if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_RESERVE === "1" && normalizeBoolean(orderRow && orderRow.bid) && process.env.EVEJS_COOP_PLAYER_MARKET_BUY_REFUND !== "1") throw Error("P2P_BUY_RESERVE_CANCEL_REQUIRES_AUDITED_SETTLEMENT");
       const stationID = normalizePositiveInteger(orderRow && orderRow.station_id, 0);
       ensureStructureMarketServiceAccess(session, stationID);
+      if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_REFUND === "1" && normalizeBoolean(orderRow && orderRow.bid)) {
+        await require("../../space/coopPlayerMarketBuyRefundRuntime").cancel({client:marketDaemonClient,order});
+        const ownerID=normalizePositiveInteger(order && order.owner_id,0);
+        const acct=require("../account/walletState");
+        acct.notifyCharacterWalletChange(ownerID,acct.getCharacterWallet(ownerID));
+        notifyOwnOrdersChanged(ownerID,[{...order,state:"cancelled"}],ORDER_REASON_CANCELLED);
+        return null;
+      }
+      const coopSellProof = process.env.EVEJS_COOP_MARKET_SELL_CUSTODY === "1" && !normalizeBoolean(orderRow && orderRow.bid) ? require("../../space/coopMarketSellCustody").assertSellEscrow({order:order,escrow:getEscrowRecord(orderID),items:listEscrowItemsForOrder(orderID,normalizePositiveInteger(order && order.owner_id,0)),hangarFlag:ITEM_FLAGS.HANGAR}) : null;
+      if (process.env.EVEJS_COOP_MARKET_CANCEL_CUSTODY === "1" && normalizeBoolean(orderRow && orderRow.bid)) require("../../space/coopMarketCancelCustody").assertMatchingBuyEscrow({order:order,escrow:getEscrowRecord(orderID)});
       const cancelResponse = await marketDaemonClient.call("CancelOrder", {
         order_id: orderID,
       });
 
+      if (process.env.EVEJS_COOP_MARKET_CANCEL_CUSTODY === "1" && true) require("../../space/coopMarketCancelCustody").assertCancelledAck({ack:cancelResponse,orderID});
       if (normalizeBoolean(orderRow && orderRow.bid) && cancelResponse && cancelResponse.invalidated) {
         const escrowRecord = getEscrowRecord(orderID);
+        if (process.env.EVEJS_COOP_MARKET_CANCEL_CUSTODY === "1" && true) require("../../space/coopMarketCancelCustody").assertMatchingBuyEscrow({order:order,escrow:escrowRecord});
         const refundAmount = escrowRecord && getEscrowType(escrowRecord) === "buy"
           ? roundIsk(escrowRecord.escrowAmount)
           : computeOrderValue(orderRow && orderRow.price, orderRow && orderRow.vol_remaining);
@@ -3818,11 +3993,13 @@ class MarketProxyService extends BaseService {
       }
 
       if (!normalizeBoolean(orderRow && orderRow.bid)) {
+        if (coopSellProof) require("../../space/coopMarketCancelCustody").assertCancelledAck({ack:cancelResponse,orderID});
         moveEscrowItemsBackToSeller(
           orderID,
           normalizePositiveInteger(order && order.owner_id, 0),
           normalizePositiveInteger(orderRow && orderRow.station_id, 0),
         );
+        if (coopSellProof) require("../../space/coopMarketSellCustody").assertSellReturned({proof:coopSellProof,remainingItems:listEscrowItemsForOrder(orderID,normalizePositiveInteger(order && order.owner_id,0)),findItemById});
         removeEscrowRecord(orderID);
       }
 
@@ -3961,6 +4138,17 @@ class MarketProxyService extends BaseService {
       `[MarketProxy] PlaceMultiSellOrder char=${characterID} count=${itemList.length} duration=${durationDays}`,
     );
 
+    // CH24+31 NATIVE_CORP_MARKET_SELL_ROUTE: useCorp authorizes our original corporate custody path ONLY.
+    if (useCorp && process.env.EVEJS_COOP_PLAYER_NPC_MINING_CORP_PUBLIC_MARKET === "1") {
+      const nativeCorp = require(path.join(__dirname, "../../integration/coopPlayerMiningCorporateMarketRuntime"));
+      const result = await nativeCorp.sellFromEntries({session,
+        itemList:itemList.map(marshalObjectToPlainObject),durationDays});
+      if (result?.status !== "CORPORATE_SELL_PUBLISHED") {
+        throwWrappedUserError("CustomInfo", {info:
+          "Corporate SELL was not confirmed. Check corporation market records; do not blindly retry."});
+      }
+      return true;
+    }
     assertPersonalMarketOnly(useCorp);
     if (!characterID || itemList.length === 0) {
       return false;
@@ -4029,6 +4217,7 @@ class MarketProxyService extends BaseService {
     const orderID = normalizeOrderId(args && args[0]);
     const newPrice = roundIsk(args && args[1]);
 
+    if (process.env.EVEJS_COOP_PLAYER_MARKET_SETTLEMENT_FENCE === "1") require("../../space/coopPlayerMarketSettlementFence").assertClear(orderID);
     log.debug(`[MarketProxy] ModifyCharOrder order=${orderID} price=${newPrice}`);
 
     ensureValidPrice(newPrice);
@@ -4037,6 +4226,7 @@ class MarketProxyService extends BaseService {
       await processPendingExpiryEvents({ forceSweep: true });
       const order = await loadCharacterOrderOrThrow(session, orderID);
       const orderRow = getOwnerOrderResponseOrder(order);
+      if (process.env.EVEJS_COOP_PLAYER_MARKET_BUY_RESERVE === "1" && normalizeBoolean(orderRow && orderRow.bid)) throw Error("P2P_BUY_RESERVE_MODIFY_REQUIRES_AUDITED_SETTLEMENT");
       if (String(order && order.state ? order.state : "open").toLowerCase() !== "open") {
         return null;
       }

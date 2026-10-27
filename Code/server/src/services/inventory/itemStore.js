@@ -4218,7 +4218,199 @@ function writeItemCustomInfo(itemID, customInfo, options = {}) {
   return repo.write(ITEMS_TABLE, `/${String(itemID)}/customInfo`, customInfo, options);
 }
 
+// COOP_NATIVE_REFINERY_ATOMIC_BEGIN
+function refineNpcWarehouseOreAtomic(plan) {
+  ensureMigrated();
+  const positive=value=>Number.isSafeInteger(value)&&value>0;
+  const ownerID=Number(plan&&plan.ownerID),stationID=Number(plan&&plan.stationID);
+  const oreItemID=Number(plan&&plan.oreItemID),oreTypeID=Number(plan&&plan.oreTypeID);
+  const originalQuantity=Number(plan&&plan.originalQuantity);
+  const consumeQuantity=Number(plan&&plan.consumeQuantity),leftOvers=Number(plan&&plan.leftOvers);
+  const operationID=String(plan&&plan.operationID||"");
+  if(![ownerID,stationID,oreItemID,oreTypeID,originalQuantity,consumeQuantity].every(positive)||
+    !Number.isSafeInteger(leftOvers)||leftOvers<0||
+    consumeQuantity+leftOvers!==originalQuantity||
+    !/^coop-refine:v1:[0-9]+:[0-9]+$/.test(operationID)||
+    operationID!=="coop-refine:v1:"+oreItemID+":"+originalQuantity||
+    !Array.isArray(plan&&plan.outputs)||plan.outputs.length<1||plan.outputs.length>16)
+    return {success:false,errorMsg:"REFINERY_INVALID_PLAN"};
+  const outputs=plan.outputs;
+  const seen=new Set();
+  for(const out of outputs){
+    if(!positive(Number(out.typeID))||!positive(Number(out.quantity))||
+       Number(out.quantity)>CLIENT_INVENTORY_STACK_LIMIT||seen.has(Number(out.typeID))||
+       toNumber(getItemMetadata(out.typeID).groupID,0)<=0)
+      return {success:false,errorMsg:"REFINERY_INVALID_OUTPUT"};
+    seen.add(Number(out.typeID));
+  }
+  const items=JSON.parse(JSON.stringify(readItems()));
+  const rawSource=items[String(oreItemID)];
+  // Validate the ORIGINAL item row before normalization can canonicalize a
+  // conflicting physical stack. Refining must not consume virtual quantity.
+  if(!rawSource||rawSource.quantity!==originalQuantity||
+     rawSource.stacksize!==originalQuantity)
+    return {success:false,errorMsg:"REFINERY_SOURCE_STACK_UNVERIFIED"};
+  const source=normalizeInventoryItem(rawSource);
+  const prefix=operationID+":mineral:";
+  if(Object.values(items).some(x=>x&&String(x.customInfo||"").startsWith(prefix)))
+    return {success:false,errorMsg:"REFINERY_ALREADY_MUTATED_RECONCILE"};
+  if(!source||source.ownerID!==ownerID||source.locationID!==stationID||
+     source.flagID!==ITEM_FLAGS.HANGAR||source.singleton!==0||
+     source.typeID!==oreTypeID||source.quantity!==originalQuantity||
+     !/^coop-warehouse:v1:cargo:[0-9]+$/.test(String(source.customInfo||"")))
+    return {success:false,errorMsg:"REFINERY_SOURCE_CHANGED"};
+  const created=[];
+  if(leftOvers){
+    items[String(oreItemID)]=buildInventoryItem({...source,quantity:leftOvers,stacksize:leftOvers,singleton:0});
+  }else delete items[String(oreItemID)];
+  for(const out of outputs){
+    const id=nextItemID(ownerID,items,null);
+    if(!positive(id)||items[String(id)])return {success:false,errorMsg:"REFINERY_ITEM_ID_CONFLICT"};
+    const item=buildInventoryItem({itemID:id,typeID:Number(out.typeID),ownerID,
+      locationID:stationID,flagID:ITEM_FLAGS.HANGAR,quantity:Number(out.quantity),
+      stacksize:Number(out.quantity),singleton:0,
+      customInfo:prefix+Number(out.typeID)});
+    if(!item||item.itemID!==id||item.typeID!==Number(out.typeID)||
+       item.ownerID!==ownerID||item.locationID!==stationID||
+       item.flagID!==ITEM_FLAGS.HANGAR||item.singleton!==0||
+       item.quantity!==Number(out.quantity)||item.stacksize!==Number(out.quantity)||
+       item.customInfo!==prefix+Number(out.typeID))
+      return {success:false,errorMsg:"REFINERY_OUTPUT_MISMATCH"};
+    items[String(id)]=item;
+    created.push({itemID:id,typeID:item.typeID,quantity:item.quantity,customInfo:item.customInfo});
+  }
+  if(!writeItems(items))return {success:false,errorMsg:"REFINERY_ITEMS_WRITE_UNCERTAIN"};
+  // GameStore writes go through a deferred cache; a successful write() is NOT durable.
+  const sync=repo.flushTableSync(ITEMS_TABLE);
+  if(!sync||sync.success!==true)return {success:false,errorMsg:"REFINERY_ITEMS_FLUSH_UNCERTAIN"};
+  return {success:true,data:{oreItemID,originalQuantity,consumeQuantity,leftOvers,created}};
+}
+// COOP_NATIVE_REFINERY_ATOMIC_END
+// COOP_NATIVE_WAREHOUSE_ITEM_BEGIN
+function findWarehouseItem({cargoID}={}) {
+  if(!Number.isSafeInteger(Number(cargoID))||Number(cargoID)<=0)
+    throw Error("WAREHOUSE_CARGO_ID_INVALID");
+  ensureMigrated();
+  const tag="coop-warehouse:v1:cargo:"+String(cargoID);
+  const matches=Object.values(readItems()).filter(x=>x&&x.customInfo===tag);
+  if(matches.length>1)throw Error("WAREHOUSE_DUPLICATE_NATIVE_ITEM_TAG");
+  return matches[0]?cloneValue(matches[0]):null;
+}
+function grantUniqueNpcDepotItem({ownerID,stationID,typeID,quantity,cargoID}={}) {
+  ensureMigrated();
+  const valid=v=>Number.isSafeInteger(Number(v))&&Number(v)>0;
+  if(![ownerID,stationID,typeID,quantity,cargoID].every(valid)||
+    Number(quantity)>CLIENT_INVENTORY_STACK_LIMIT)
+    return {success:false,errorMsg:"INVALID_NATIVE_WAREHOUSE_GRANT"};
+  const tag="coop-warehouse:v1:cargo:"+String(cargoID);
+  const all=readItems(),matches=Object.values(all).filter(x=>x&&x.customInfo===tag);
+  if(matches.length>1)return {success:false,errorMsg:"DUPLICATE_NATIVE_WAREHOUSE_TAG"};
+  if(matches.length===1){
+    const item=matches[0];
+    if(Number(item.ownerID)!==Number(ownerID)||Number(item.locationID)!==Number(stationID)||
+       Number(item.flagID)!==ITEM_FLAGS.HANGAR||Number(item.typeID)!==Number(typeID)||
+       Number(item.quantity)!==Number(quantity)||Number(item.singleton)!==0)
+      return {success:false,errorMsg:"NATIVE_WAREHOUSE_TAG_COLLISION"};
+    return {success:true,data:{itemID:item.itemID,existing:true}};
+  }
+  const type=resolveItemTypeReference({typeID:Number(typeID)});
+  if(!type || Number(type.typeID)!==Number(typeID) || shouldItemDefaultToSingleton(type))
+    return {success:false,errorMsg:"WAREHOUSE_CARGO_TYPE_INVALID"};
+  const item=buildInventoryItem({itemID:nextItemID(Number(ownerID),all,null),
+    typeID:Number(typeID),ownerID:Number(ownerID),locationID:Number(stationID),
+    flagID:ITEM_FLAGS.HANGAR,quantity:Number(quantity),stacksize:Number(quantity),
+    singleton:0,customInfo:tag});
+  // No merge with pre-existing stacks; receipt tag survives restarts.
+  all[String(item.itemID)]=item;
+  if(!writeItems(all,{indexDelta:{upsertedIDs:[item.itemID],removedIDs:[]}}))
+    return {success:false,errorMsg:"WAREHOUSE_ITEM_WRITE_FAILED"};
+  return {success:true,data:{itemID:item.itemID,existing:false}};
+}
+// COOP_NATIVE_WAREHOUSE_ITEM_END
+// COOP_PLAYER_ORE_ATOMIC_BEGIN
+function coopPlayerOreReprocessAtomic(plan) {
+  ensureMigrated();
+  const pos=x=>Number.isSafeInteger(Number(x))&&Number(x)>0;
+  const nonneg=x=>Number.isSafeInteger(Number(x))&&Number(x)>=0;
+  const itemID=Number(plan&&plan.itemID),ownerID=Number(plan&&plan.characterID);
+  const stationID=Number(plan&&plan.stationID),typeID=Number(plan&&plan.typeID);
+  const originalQuantity=Number(plan&&plan.originalQuantity);
+  const consumed=Number(plan&&plan.consumeQuantity);
+  const leftover=Number(plan&&plan.leftOvers);
+  const operationID=String(plan&&plan.operationID||"");
+  if(![itemID,ownerID,stationID,typeID,originalQuantity,consumed].every(pos)||
+     !nonneg(leftover)||consumed+leftover!==originalQuantity||
+     operationID!=="coop-player-ore-v1-"+ownerID+"-"+itemID+"-"+originalQuantity+"-"+typeID||
+     !Array.isArray(plan?.outputs)||plan.outputs.length<1||plan.outputs.length>16)
+    return {success:false,errorMsg:"PLAYER_ORE_INVALID_NATIVE_PLAN"};
+  const outputs=plan.outputs,types=new Set();
+  for(const entry of outputs){
+    const t=Number(entry.typeID),q=Number(entry.quantity);
+    const meta=pos(t)?getItemMetadata(t):null;
+    if(!pos(t)||!pos(q)||q>CLIENT_INVENTORY_STACK_LIMIT||types.has(t)||
+       !meta||!pos(meta.groupID)||!pos(meta.categoryID))
+      return {success:false,errorMsg:"PLAYER_ORE_INVALID_MATERIAL"};
+    types.add(t);
+  }
+  // Clone BEFORE mutation. Failed writes do not silently alter cached items.
+  const current=readItems();
+  const nativeSource=normalizeInventoryItem(current[String(itemID)]);
+  if(!nativeSource||Number(nativeSource.itemID)!==itemID||
+     Number(nativeSource.ownerID)!==ownerID||
+     Number(nativeSource.locationID)!==stationID||
+     Number(nativeSource.flagID)!==ITEM_FLAGS.HANGAR||
+     Number(nativeSource.typeID)!==typeID||
+     Number(nativeSource.singleton)!==0||
+     Number(nativeSource.quantity)!==originalQuantity||
+     Number(nativeSource.stacksize)!==originalQuantity)
+    return {success:false,errorMsg:"PLAYER_ORE_SOURCE_CHANGED"};
+  const prefix=operationID+":mineral:";
+  if(Object.values(current).some(v=>v&&String(v.customInfo||"").startsWith(prefix)))
+    return {success:false,errorMsg:"PLAYER_ORE_ALREADY_MUTATED"};
+  const items=JSON.parse(JSON.stringify(current));
+  const inputChanges=[],outputChanges=[],created=[];
+  if(leftover){
+    const after=buildInventoryItem({...nativeSource,quantity:leftover,stacksize:leftover,singleton:0});
+    items[String(itemID)]=after;
+    inputChanges.push({item:after,previousData:cloneValue(nativeSource),removed:false});
+  }else{
+    // Keep original source ID reserved until every new material ID is allocated.
+    inputChanges.push({item:buildRemovedItemNotificationState(nativeSource),
+      previousData:cloneValue(nativeSource),removed:true});
+  }
+  const characterRecord=readCharacters()[String(ownerID)]||null;
+  for(const out of outputs){
+    const newID=nextItemID(ownerID,items,characterRecord);
+    if(!pos(newID)||items[String(newID)])
+      return {success:false,errorMsg:"PLAYER_ORE_ITEM_ID_CONFLICT"};
+    const t=Number(out.typeID),q=Number(out.quantity);
+    const material=buildInventoryItem({itemID:newID,ownerID,typeID:t,
+      locationID:stationID,flagID:ITEM_FLAGS.HANGAR,singleton:0,
+      quantity:q,stacksize:q,customInfo:prefix+t});
+    if(material.itemID!==newID||material.ownerID!==ownerID||
+       material.typeID!==t||material.quantity!==q)
+      return {success:false,errorMsg:"PLAYER_ORE_MATERIAL_CONSTRUCTION_FAILED"};
+    items[String(newID)]=material;
+    created.push({itemID:newID,typeID:t,quantity:q});
+    outputChanges.push({item:material,
+      previousData:{itemID:newID,ownerID,locationID:0,flagID:0,quantity:0,stacksize:0},
+      removed:false});
+  }
+  if(!leftover)delete items[String(itemID)];
+  if(!writeItems(items))return {success:false,errorMsg:"PLAYER_ORE_NATIVE_ITEMS_WRITE_UNCERTAIN"};
+  const flush=repo.flushTableSync(ITEMS_TABLE);
+  if(!flush||flush.success!==true)return {success:false,errorMsg:"PLAYER_ORE_NATIVE_FLUSH_UNCERTAIN"};
+  return {success:true,data:{operationID,itemID,consumed,leftover,created,
+    inputChanges,outputChanges}};
+}
+// COOP_PLAYER_ORE_ATOMIC_END
 module.exports = {
+  findWarehouseItem,
+  grantUniqueNpcDepotItem,
+  coopPlayerOreReprocessAtomic,
+  refineNpcWarehouseOreAtomic,
+  transferCoopManifestAtomically: (trade,roots,active) => require("../../space/coopNativeTradeAtomic").commitNative({trade,roots,activeShipIDs:active,readItems,writeItems,normalizeInventoryItem,buildInventoryItem,indexDeltaFromChanges,cloneValue,readCharacters,flushItems:()=>repo.flushTableSync(ITEMS_TABLE)}),
+  recoverCoopTradeStaging: (changes)=>require("../../space/coopNativeTradeCustody").applyRecovery({changes,readItems,writeItems,normalizeInventoryItem,buildInventoryItem,indexDeltaFromChanges,cloneValue,flushItems:()=>repo.flushTableSync(ITEMS_TABLE)}),
   writeItemCustomInfo,
   validateItemIndexIntegrity,
   _itemIndexSnapshotForTest,
@@ -4294,3 +4486,4 @@ module.exports = {
   getInventoryItemUnitVolume,
   getItemMutationVersion,
 };
+if (process.env.EVEJS_COOP_NATIVE_ATOMIC_ROWS === "1") module.exports.coopInvalidateAfterAtomicRows = mode => { if(mode === "probe") return true; itemIndexesDirty = true; itemIndexesCache = null; itemIndexKeys = new Map(); reservedItemIDBatch = []; itemMutationVersion += 1; return true; };

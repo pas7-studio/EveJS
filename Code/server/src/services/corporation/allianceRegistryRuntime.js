@@ -419,6 +419,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_UpdateAlliance(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"UpdateAlliance",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromArgs(args, session);
     const previousAlliance = buildAllianceSummary(allianceID);
     updateAllianceRecord(allianceID, {
@@ -434,6 +435,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_UpdateApplication(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"UpdateApplication",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const corporationID = normalizePositiveInteger(args && args[0], null);
     const applicationText = normalizeText(args && args[1], "");
@@ -497,6 +499,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_GMForceAcceptApplication(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"GMForceAcceptApplication",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const corporationID = normalizePositiveInteger(args && args[0], null);
     const runtime = getAllianceRuntime(allianceID) || {};
@@ -515,6 +518,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_DeclareExecutorSupport(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"DeclareExecutorSupport",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const chosenExecutorCorporationID = normalizePositiveInteger(args && args[0], null);
     const supporterCorporationID = normalizePositiveInteger(
@@ -535,6 +539,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_DeleteMember(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"DeleteMember",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const corporationID = normalizePositiveInteger(args && args[0], null);
     const previousMember = buildAllianceMemberSnapshot(allianceID, corporationID);
@@ -569,6 +574,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_AddAllianceContact(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"AddAllianceContact",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const contactID = normalizePositiveInteger(args && args[0], null);
     const relationshipID = normalizeInteger(args && args[1], 0);
@@ -583,10 +589,12 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_EditAllianceContact(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"EditAllianceContact",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     return this.Handle_AddAllianceContact(args, session);
   }
 
   Handle_RemoveAllianceContacts(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"RemoveAllianceContacts",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const contactIDs = extractList(args && args[0]);
     updateAllianceRuntime(allianceID, (runtime) => {
@@ -599,6 +607,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_EditContactsRelationshipID(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"EditContactsRelationshipID",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const contactIDs = extractList(args && args[0]);
     const relationshipID = normalizeInteger(args && args[1], 0);
@@ -629,6 +638,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_CreateLabel(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"CreateLabel",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const name = normalizeText(args && args[0], "");
     const color = normalizeInteger(args && args[1], 0);
@@ -647,6 +657,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_DeleteLabel(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"DeleteLabel",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const labelKey = toLabelKey(args && args[0], null);
     updateAllianceRuntime(allianceID, (runtime) => {
@@ -660,6 +671,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_EditLabel(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"EditLabel",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const labelKey = toLabelKey(args && args[0], null);
     updateAllianceRuntime(allianceID, (runtime) => {
@@ -674,6 +686,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_AssignLabels(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"AssignLabels",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const contactIDs = extractList(args && args[0]);
     const labelMask = toLabelKey(args && args[1], "0");
@@ -694,6 +707,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_RemoveLabels(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"RemoveLabels",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const contactIDs = extractList(args && args[0]);
     const labelMask = toLabelKey(args && args[1], "0");
@@ -739,6 +753,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_AddBulletin(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"AddBulletin",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const title = normalizeText(args && args[0], "");
     const body = normalizeText(args && args[1], "");
@@ -772,6 +787,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_UpdateBulletin(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"UpdateBulletin",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     return this.Handle_AddBulletin(
       [
         args && args[1],
@@ -784,6 +800,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_DeleteBulletin(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"DeleteBulletin",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const bulletinID = normalizePositiveInteger(args && args[0], null);
     updateAllianceRuntime(allianceID, (runtime) => {
@@ -796,6 +813,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_UpdateBulletinOrder(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"UpdateBulletinOrder",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const newOrder = extractList(args && args[0]);
     updateAllianceRuntime(allianceID, (runtime) => {
@@ -824,6 +842,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_SetRelationship(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"SetRelationship",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const relationship = normalizeInteger(args && args[0], 0);
     const toID = normalizePositiveInteger(args && args[1], null);
@@ -837,6 +856,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_DeleteRelationship(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"DeleteRelationship",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const toID = normalizePositiveInteger(args && args[0], null);
     const previousRelationship = buildAllianceRelationshipSnapshot(allianceID, toID);
@@ -855,6 +875,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_SetPrimeHour(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"SetPrimeHour",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const hour = normalizeInteger(args && args[0], 0);
     const previousAlliance = buildAllianceSummary(allianceID);
@@ -876,6 +897,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_SetCapitalSystem(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"SetCapitalSystem",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const solarSystemID = normalizePositiveInteger(args && args[0], null);
     const previousAlliance = buildAllianceSummary(allianceID);
@@ -885,6 +907,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_CancelCapitalSystemTransition(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"CancelCapitalSystemTransition",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromSession(session);
     const previousAlliance = buildAllianceSummary(allianceID);
     cancelSovereigntyCapitalTransition(allianceID);
@@ -941,6 +964,7 @@ class AllianceRegistryRuntimeService extends BaseService {
   }
 
   Handle_DeclareWarAgainst(args, session) {
+    if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitAlliance({action:"DeclareWarAgainst",session,args,readCharacter:getCharacterRecord,readCorporation:getCorporationRecord,readMember:require("./corporationRuntimeState").getCorporationMember,readAlliance:getAllianceRecord,readAllianceMembers:getAllianceCorporationIDs,readAllianceRuntime:getAllianceRuntime,readStructure:require("../structure/structureState").getStructureByID}).ok) return require(path.join(__dirname, "../../common/machoErrors")).throwWrappedUserError("CrpAccessDenied",{reason:"Native alliance authority not verified"});
     const allianceID = resolveAllianceIDFromArgs([], session);
     const againstID = normalizePositiveInteger(args && args[0], null);
     const warHQ = normalizePositiveInteger(args && args[1], null);

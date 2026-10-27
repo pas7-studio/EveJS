@@ -255,6 +255,7 @@ function consumeInventoryItemForDeployment(session, itemID) {
 }
 
 function requireValidDeploymentSession(session) {
+  if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitStructure({action:"deploy",session,readCharacter:require("../character/characterState").getCharacterRecord,readCorporation:require("../corporation/corporationState").getCorporationRecord,readMember:require("../corporation/corporationRuntimeState").getCorporationMember}).ok) throwWrappedUserError("CrpAccessDenied",{reason:"Native corporate owner or role not verified"});
   if (!session || !normalizePositiveInteger(session.characterID || session.charid, null)) {
     throwWrappedUserError("CustomNotify", {
       notify: "Select a character before deploying a structure.",
@@ -295,6 +296,7 @@ function requireValidDeploymentSession(session) {
 }
 
 function requireStructureManagementSession(session, structure) {
+  if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitStructure({action:"manage",session,readCharacter:require("../character/characterState").getCharacterRecord,readCorporation:require("../corporation/corporationState").getCorporationRecord,readMember:require("../corporation/corporationRuntimeState").getCorporationMember,structure}).ok) throwWrappedUserError("CrpAccessDenied",{reason:"Native corporate owner or role not verified"});
   if (!session || !normalizePositiveInteger(session.characterID || session.charid, null)) {
     throwWrappedUserError("CustomNotify", {
       notify: "Select a character before managing a structure.",
@@ -329,6 +331,7 @@ function requireStructureManagementSession(session, structure) {
 }
 
 function requireStructureDecommissionSession(session, structure) {
+  if (process.env.EVEJS_COOP_STRUCTURE_ALLIANCE_GUARD === "1" && !require(path.join(__dirname, "../../space/coopStructureAllianceAuthority")).admitStructure({action:"decommission",session,readCharacter:require("../character/characterState").getCharacterRecord,readCorporation:require("../corporation/corporationState").getCorporationRecord,readMember:require("../corporation/corporationRuntimeState").getCorporationMember,structure}).ok) throwWrappedUserError("CrpAccessDenied",{reason:"Native corporate owner or role not verified"});
   if (!session || !normalizePositiveInteger(session.characterID || session.charid, null)) {
     throwWrappedUserError("CustomNotify", {
       notify: "Select a character before decommissioning a structure.",

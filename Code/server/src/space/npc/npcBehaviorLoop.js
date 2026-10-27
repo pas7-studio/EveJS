@@ -1396,6 +1396,7 @@ function isFriendlyCombatTarget(entity, target) {
   }
 
   if (sourceClass === "npc" && targetClass === "npc") {
+    if ((process.env.EVEJS_COOP_RIVAL_NPC_COMBAT === "1" || process.env.EVEJS_COOP_FACTION_WAR_COMBAT === "1") && require("../coopNpcHostility").allowsNativeEngagement(entity, target)) return false;
     const sourceController = getControllerByEntityID(
       toPositiveInt(entity && entity.itemID, 0),
     );
@@ -1427,6 +1428,7 @@ function isFriendlyCombatTarget(entity, target) {
   if (sourceClass === "concord") {
     return targetClass === "concord";
   }
+  if (sourceClass === "npc" && targetClass === "player" && process.env.EVEJS_COOP_FACTION_WAR_COMBAT === "1") { try { const coopMilitia = require("../coopMilitiaWarPlayer").npcPlayerVerdict(entity, target); if (coopMilitia.status === "ENEMY_MILITIA") return false; if (coopMilitia.status !== "NOT_WAR_SHIP") return true; } catch (_coopError) { console.warn("[CoopMilitiaWarPlayer]", _coopError.message); } }
   if (sourceClass === "npc") {
     return targetClass === "npc";
   }
@@ -3279,6 +3281,7 @@ function clearNpcCombatState(scene, entity, controller, options = {}) {
   if (options.deactivatePropulsion !== false) {
     deactivateNpcPropulsion(scene, entity);
   }
+  if (options.clearTargets !== false) { let coopMining=false; try { coopMining=require("../coopMiningTargetGuard").keepTargetLock(entity)===true; } catch (_coopError) { console.warn("[CoopMiningLockGuard]", _coopError.message); } if (coopMining) options = {...options, clearTargets: false}; }
   if (options.clearTargets !== false) {
     clearNpcTargetLocks(scene, entity);
   }
@@ -3705,6 +3708,7 @@ function syncNpcWeapons(scene, entity, target) {
         chargeTypeID: toPositiveInt(entityMissileSource.chargeTypeID, 0),
       }));
       if (launchResult && launchResult.success) {
+        try { require("../coopNpcWeaponEvidence").noteVerified(scene, entity, target, {kind:"missile-launch", chargeTypeID:entityMissileSource.chargeTypeID}); } catch (_coopError) { console.warn("[CoopWeaponEvidence]", _coopError.message); }
         entity.npcEntityMissileState.nextLaunchAtMs = now + entityMissileSource.durationMs;
       }
     }
@@ -3779,6 +3783,7 @@ function syncNpcWeapons(scene, entity, target) {
       });
       continue;
     }
+    if (!require("../coopNpcWeaponAmmoGate").check({entity,moduleItem,bankModuleIDs}).allowed) { if (activeEffect) scene.deactivateGenericModule(pseudoSession, activeEffect.moduleID || moduleItem.itemID, { reason: "npc-ammo-empty", deferUntilCycle: false }); continue; }
     if (activeEffect) {
       logNpcCombatDebug("npc.weapons.module-already-active", () => ({
         entity: summarizeNpcCombatEntity(entity),
@@ -3814,6 +3819,7 @@ function syncNpcWeapons(scene, entity, target) {
         deferInitialCycleMs: getNpcInitialModuleCycleDelayMs(entity, moduleItem, 1),
       },
     );
+    if (activationOutcome && activationOutcome.success) { try { require("../coopNpcWeaponEvidence").noteVerified(scene, entity, target, {kind:"module-activation", moduleID:moduleItem.itemID}); } catch (_coopError) { console.warn("[CoopWeaponEvidence]", _coopError.message); } }
     logNpcCombatDebug("npc.weapons.module-activate", () => ({
       entity: summarizeNpcCombatEntity(entity),
       target: summarizeNpcCombatEntity(target),
@@ -4474,6 +4480,7 @@ function tickController(scene, controller, now) {
 }
 
 function tickScene(scene, now) {
+  sweepSessionlessCapacitors(scene, now);
   if (!scene) {
     return;
   }
@@ -4513,6 +4520,7 @@ function tickScene(scene, now) {
     if (toFiniteNumber(controller.nextThinkAtMs, 0) > now) {
       continue;
     }
+    advanceSessionlessCapacitor(scene.getEntityByID(controller.entityID), now);
     tickController(scene, controller, now);
     processed += 1;
   }
@@ -4547,6 +4555,7 @@ function tickControllersByEntityID(scene, entityIDs, now) {
     if (toFiniteNumber(controller.nextThinkAtMs, 0) > now) {
       continue;
     }
+    advanceSessionlessCapacitor(scene.getEntityByID(controller.entityID), now);
     tickController(scene, controller, now);
   }
 }
@@ -4644,6 +4653,114 @@ function noteIncomingAggression(entityID, attackerEntityID, now = Date.now(), op
     success: true,
     data: controller,
   };
+}
+
+// CCP non-linear capacitor recharge (dC/dt = (10*Cmax/tau)*(sqrt(r)-r)) for a
+// native NPC that has no session. runtime.js advances capacitor only inside
+// active module cycle bookkeeping, so an idle NPC never recovered and a
+// cap-hungry module could activate exactly once. The same curve is used, with
+// the 1% floor CCP keeps so a fully drained ship still recovers.
+// The recharge rate is a property of the HULL, not of the code path that
+// spawned the ship. Patch 0002 fills it in nativeNpcService, which co-op mining
+// fleets never pass through, so those hulls kept tau = 0 and never recovered a
+// single capacitor unit ("NOT_ENOUGH_CAPACITOR" every cycle). Resolve it lazily
+// here instead of duplicating the rule in every spawner.
+let resolveNpcRechargeRate = null;
+function npcRechargeRateOf(entity) {
+  const declared = toFiniteNumber(entity.capacitorRechargeRate, 0);
+  if (declared > 0) {
+    return declared;
+  }
+  try {
+    if (!resolveNpcRechargeRate) {
+      resolveNpcRechargeRate = require(path.join(
+        __dirname,
+        "../../services/fitting/liveFittingState",
+      )).getTypeAttributeValue;
+      if (typeof resolveNpcRechargeRate !== "function") {
+        resolveNpcRechargeRate = null;
+        return 0;
+      }
+    }
+    const resolved = toFiniteNumber(
+      resolveNpcRechargeRate(toFiniteNumber(entity.typeID, 0), "rechargeRate"),
+      0,
+    );
+    if (resolved > 0) {
+      entity.capacitorRechargeRate = resolved;
+      if (entity.passiveDerivedState && typeof entity.passiveDerivedState === "object") {
+        entity.passiveDerivedState.capacitorRechargeRate = resolved;
+      }
+    }
+    return resolved;
+  } catch (_error) {
+    return 0;
+  }
+}
+
+// A capacitor belongs to the SHIP, not to an NPC controller. The advance above
+// only runs for controllers whose next think is due, and co-op mining hulls
+// have no such controller: live evidence showed tau set (125-187 s) and
+// reAt = 0 forever, so their charge only ever fell. Recharge every sessionless
+// ship in the scene, the way CCP recharges every ship, at most once a second.
+let lastSessionlessCapacitorSweepAtMs = 0;
+function sweepSessionlessCapacitors(scene, now) {
+  if (!scene || typeof scene.getDynamicEntities !== "function") {
+    return;
+  }
+  const at = Number(now);
+  if (!Number.isFinite(at) || at - lastSessionlessCapacitorSweepAtMs < 1000) {
+    return;
+  }
+  lastSessionlessCapacitorSweepAtMs = at;
+  for (const entity of scene.getDynamicEntities()) {
+    if (entity && entity.kind === "ship" && !entity.session) {
+      advanceSessionlessCapacitor(entity, at);
+    }
+  }
+}
+
+function advanceSessionlessCapacitor(entity, now) {
+  if (!entity || entity.kind !== "ship" || entity.session) {
+    return;
+  }
+  const capacity = toFiniteNumber(entity.capacitorCapacity, 0);
+  const tauMs = npcRechargeRateOf(entity);
+  if (capacity <= 0 || tauMs <= 0 || !Number.isFinite(Number(now))) {
+    return;
+  }
+  // capacitorRechargedAtMs is a shared, client-visible stamp that other paths
+  // also refresh, so measuring our own dt against it collapsed the advance to a
+  // few milliseconds per call: measured 0.00009/s of charge against 0.0048/s
+  // expected, and the fleet starved at 2% capacitor. Keep a private stamp for
+  // the interval this function is responsible for.
+  const previousAtMs = toFiniteNumber(
+    entity.coopCapacitorAdvancedAtMs !== undefined
+      ? entity.coopCapacitorAdvancedAtMs
+      : entity.capacitorRechargedAtMs,
+    0,
+  );
+  entity.coopCapacitorAdvancedAtMs = now;
+  entity.capacitorRechargedAtMs = now;
+  if (previousAtMs <= 0 || now <= previousAtMs) {
+    return;
+  }
+  const dtSeconds = Math.min(5000, now - previousAtMs) / 1000;
+  const tauSeconds = tauMs / 1000;
+  let ratio = Math.min(1, Math.max(0, toFiniteNumber(entity.capacitorChargeRatio, 1)));
+  if (ratio >= 1) {
+    return;
+  }
+  const steps = Math.max(1, Math.ceil(dtSeconds));
+  const stepSeconds = dtSeconds / steps;
+  for (let step = 0; step < steps && ratio < 1; step += 1) {
+    const bounded = Math.max(0.01, ratio);
+    ratio += ((10 / tauSeconds) * (Math.sqrt(bounded) - bounded)) * stepSeconds;
+  }
+  entity.capacitorChargeRatio = Math.min(1, Math.max(0, ratio));
+  if (entity.conditionState && typeof entity.conditionState === "object") {
+    entity.conditionState.charge = entity.capacitorChargeRatio;
+  }
 }
 
 module.exports = {

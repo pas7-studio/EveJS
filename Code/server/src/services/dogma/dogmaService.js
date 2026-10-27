@@ -7959,6 +7959,14 @@ class DogmaService extends BaseService {
     if (isAnalyzerActivation && analyzerHackingContext && analyzerHackingContext.success === true) {
       const contextData = analyzerHackingContext.data || {};
       try {
+        // COOP_EX04_DOGMA_START
+        if (process.env.EVEJS_COOP_NATIVE_HACKING_ADMISSION === "1") {
+          const result = require(path.join(__dirname,
+            "../../space/coopNativeHackingAdmission"))
+            .getNativeHackingAdmission().issue(session, contextData);
+          if (result.status !== "ISSUED") throw Error("COOP_HACKING_NATIVE_ADMISSION_REJECTED");
+        }
+        // COOP_EX04_DOGMA_END
         const hackingMgr = new HackingMgrService();
         hackingMgr.Handle_StartNewGameInstance(
           [

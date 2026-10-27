@@ -384,7 +384,7 @@ function resolveIndustryJobTimeSeconds(
     requiredSkillModifier;
   return Math.max(
     1,
-    Math.round(totalSeconds),
+    Math.round(require("../../space/coopIndustryPacing").adjust(totalSeconds, activityID, INDUSTRY_ACTIVITY.MANUFACTURING)),
   );
 }
 

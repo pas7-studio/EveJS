@@ -2498,6 +2498,17 @@ function evaluateMissionProgress(characterID, missionRecord) {
     return nextRecord;
   }
 
+  if (nextRecord.objectiveMode === OBJECTIVE_TYPE_DUNGEON &&
+    nextRecord.coopSharedDungeon &&
+    normalizePositiveInteger(nextRecord.coopSharedDungeon.sourceInstanceID, 0) > 0 &&
+    normalizePositiveInteger(nextRecord.coopSharedDungeon.agentID, 0) ===
+      normalizePositiveInteger(nextRecord.agentID, 0) &&
+    String(nextRecord.coopSharedDungeon.contentID) === String(nextRecord.contentID) &&
+    String(nextRecord.coopSharedDungeon.missionTemplateID || "") ===
+      String(nextRecord.missionTemplateID || "")) {
+    nextRecord.objectiveCompleted = true;
+    return nextRecord;
+  }
   if (nextRecord.objectiveMode === OBJECTIVE_TYPE_TRANSPORT) {
     const progress = getCourierProgress(characterID, nextRecord);
     const requiredQuantity = Math.max(1, normalizeInteger(nextRecord.cargo && nextRecord.cargo.quantity, 1));
@@ -5645,6 +5656,64 @@ function removeOfferFromJournal(characterID, agentID) {
   return null;
 }
 
+function shareCoopDungeonObjective(peerID, agentID, ownerID, sourceInstanceID) {
+  const peer = normalizePositiveInteger(peerID, 0);
+  const owner = normalizePositiveInteger(ownerID, 0);
+  const agent = normalizePositiveInteger(agentID, 0);
+  const instanceID = normalizePositiveInteger(sourceInstanceID, 0);
+  if (!peer || !owner || peer === owner || !agent || !instanceID)
+    return { success: false, errorMsg: "INVALID_NATIVE_COOP_MISSION" };
+  const nativeInstance = dungeonRuntime.getInstance(instanceID);
+  const state = nativeInstance && nativeInstance.objectiveState;
+  const originalOwner = normalizePositiveInteger(
+    nativeInstance && nativeInstance.ownership && nativeInstance.ownership.missionOwnerCharacterID, 0) ||
+    normalizePositiveInteger(nativeInstance && nativeInstance.metadata && nativeInstance.metadata.missionCharacterID, 0);
+  const instanceAgent = normalizePositiveInteger(
+    nativeInstance && nativeInstance.metadata && nativeInstance.metadata.missionAgentID, 0);
+  if (!state || (String(state.state || "").toLowerCase() !== "completed" &&
+    !(Number(state.completedAtMs) > 0)) || originalOwner !== owner || instanceAgent !== agent)
+    return { success: false, errorMsg: "SOURCE_DUNGEON_NOT_COMPLETED" };
+  const leaderMission = getMissionRecord(owner, agent);
+  const wingmanMission = getMissionRecord(peer, agent);
+  if (!leaderMission || !wingmanMission ||
+    leaderMission.runtimeStatus !== "accepted" ||
+    wingmanMission.runtimeStatus !== "accepted" ||
+    leaderMission.objectiveMode !== OBJECTIVE_TYPE_DUNGEON ||
+    wingmanMission.objectiveMode !== OBJECTIVE_TYPE_DUNGEON ||
+    leaderMission.objectiveCompleted !== true ||
+    leaderMission.gmCompleted === true || wingmanMission.gmCompleted === true ||
+    normalizePositiveInteger(leaderMission.dungeonInstanceID, 0) !== instanceID ||
+    String(leaderMission.contentID) !== String(wingmanMission.contentID) ||
+    String(leaderMission.missionTemplateID || "") !== String(wingmanMission.missionTemplateID || "") ||
+    normalizePositiveInteger(leaderMission.missionSystemID, 0) !==
+      normalizePositiveInteger(wingmanMission.missionSystemID, 0))
+    return { success: false, errorMsg: "NATIVE_MISSION_CONTEXT_CHANGED" };
+  if (wingmanMission.objectiveCompleted === true)
+    return { success: true, alreadyCompleted: true };
+  const result = mutateCharacterState(peer, (characterState) => {
+    const existing = characterState.missionsByAgentID[String(agent)];
+    if (!existing || existing.runtimeStatus !== "accepted" ||
+      existing.objectiveMode !== OBJECTIVE_TYPE_DUNGEON ||
+      existing.missionSequence !== wingmanMission.missionSequence ||
+      existing.gmCompleted === true ||
+      String(existing.contentID) !== String(leaderMission.contentID) ||
+      String(existing.missionTemplateID || "") !== String(leaderMission.missionTemplateID || ""))
+      return null;
+    if (existing.coopSharedDungeon && existing.coopSharedDungeon.sourceInstanceID === instanceID)
+      return { alreadyCompleted: true };
+    existing.coopSharedDungeon = { sourceInstanceID: instanceID,
+      agentID: agent, ownerID: owner, contentID: existing.contentID,
+      missionTemplateID: existing.missionTemplateID };
+    existing.objectiveCompleted = true;
+    existing.lastUpdatedAtMs = Date.now();
+    return { shared: true };
+  });
+  if (!result || !result.success || !result.data || result.data.shared !== true)
+    return { success: false, errorMsg: "NATIVE_COOP_OBJECTIVE_WRITE_FAILED" };
+  notifyMissionTrackerUpdate(peer, agent);
+  notifyMissionChange(peer, AGENT_MISSION_MODIFIED, agent);
+  return { success: true, data: { agentID: agent, sourceInstanceID: instanceID } };
+}
 function setMissionObjectiveCompleted(characterID, agentID) {
   return mutateCharacterState(characterID, (characterState) => {
     const missionRecord = characterState.missionsByAgentID[String(agentID)];
@@ -6025,6 +6094,7 @@ function doAgentAction(characterID, agentID, actionID = null) {
     if (replayTicks > 0) {
       return { success: true, data: buildCooldownConversation(replayUntilFileTime) };
     }
+    if (process.env.EVEJS_COOP_MISSION_JOIN === "1") require("../../space/coopFleetMissionJoin").offer({characterID:normalizedCharacterID,agentRecord,fleetRuntime:require("../fleets/fleetRuntime"),sessions:sessionRegistry.getSessions(),getMissionRecord,getClientMissionRecord,offerSpecificMission,getDockedLocationID:require("../structure/structureLocation").getDockedLocationID,isMissionOfferAllowedForAgent,canUseAgent,getReplayUntilFileTime,resolveReplayRemainingTicks});
     const offerResult = offerMission(normalizedCharacterID, agentRecord);
     const offeredPayload = offerResult.success ? offerResult.data : null;
     if (!offeredPayload || offeredPayload.kind === "cooldown") {
@@ -6192,5 +6262,6 @@ module.exports = {
   markMissionObjectiveComplete,
   notifyStorylineOfferLifecycleChange,
   removeOfferFromJournal,
+  shareCoopDungeonObjective,
   syncMissionRecordForDungeonInstance,
 };

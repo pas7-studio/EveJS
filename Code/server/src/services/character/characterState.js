@@ -4670,3 +4670,4 @@ module.exports._testing = {
     characterRecordCache.clear();
   },
 };
+module.exports.coopInvalidateAfterAtomicRows = mode => { if(mode==="probe") return true; if(mode!=="commit") return false; characterRecordCache.clear(); return true; };

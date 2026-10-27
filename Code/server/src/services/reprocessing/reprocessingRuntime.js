@@ -981,6 +981,7 @@ function resolveReprocessingOutputTarget(session, context, sampleItem, options =
 }
 
 function reprocessItems(session, options = {}) {
+  if (process.env.EVEJS_COOP_PLAYER_ORE_ATOMIC === "1") return require(path.join(__dirname, "../../space/coopPlayerOreReprocessing")).reprocess(session, options);
   const itemReferences = Array.isArray(options.itemIDs) ? options.itemIDs : [];
   const fromLocationID = toInt(options.fromLocationID, 0);
   const contextResult = resolveReprocessingContext(session);

@@ -981,6 +981,17 @@ function emitProbeScanStoppedNotification(session, scanResult) {
     Array.isArray(scanResult.results) ? scanResult.results : [],
     Array.isArray(scanResult.absentTargets) ? scanResult.absentTargets : [],
   ]);
+  // Only the genuine completed RequestScans callback can write proof.
+  if (process.env.EVEJS_COOP_EXPEDITION_SCAN_PROOF === "1" &&
+      scanResult._coopNativeProbeOrigin) {
+    try {
+      require("../../space/coopNativeScanProof").record({
+        session,scanResult,origin:scanResult._coopNativeProbeOrigin,
+        sites:signatureRuntime.listSystemSignatureSites(
+          scanResult._coopNativeProbeOrigin.systemID),
+      });
+    } catch (error) { console.warn("[CoopScanProof]",error.message); }
+  }
 }
 
 function clearPendingProbeScanStop(session) {
@@ -1836,6 +1847,11 @@ class ScanMgrService extends BaseService {
             scanBonuses: resolveCharacterProbeScanBonuses(characterID),
           },
         );
+      // Origin is marked on the internal server scan object, never on RPC args.
+      if (process.env.EVEJS_COOP_EXPEDITION_SCAN_PROOF === "1")
+        Object.defineProperty(scanResult,"_coopNativeProbeOrigin",{
+          value:{characterID,systemID,shipID:getSessionShipID(session)},enumerable:false,configurable:false
+        });
       emitProbeScanLifecycleNotifications(session, scanResult, {
         startedAtFileTime: currentFileTime(),
         durationMs: scanResult.durationMs,

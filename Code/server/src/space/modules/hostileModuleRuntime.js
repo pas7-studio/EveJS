@@ -1405,15 +1405,30 @@ function executeHostileModuleCycle({
 }
 
 function getEntityWarpScrambleStatus(entity) {
-  const passiveValue = getEntityPassiveAttributeValue(entity, ATTRIBUTE_WARP_SCRAMBLE_STATUS, NaN);
-  if (Number.isFinite(passiveValue)) {
-    return roundNumber(passiveValue, 6);
-  }
   const targetState = ensureTargetHostileState(entity, false);
-  return targetState ? roundNumber(targetState.warpScrambleStatus, 6) : 0;
+  const liveStatus = targetState ? roundNumber(targetState.warpScrambleStatus, 6) : 0;
+  const passiveValue = getEntityPassiveAttributeValue(entity, ATTRIBUTE_WARP_SCRAMBLE_STATUS, NaN);
+  // The passive attribute is a baseline (retail hulls carry -2), not a verdict.
+  // A live scrambler/disruptor effect adds to it, so reporting the passive value
+  // alone made every hull that carries the attribute permanently unscramblable:
+  // measured -2 on a Venture while a fitted Warp Disruptor was really active on
+  // it, so a real warp point could never stop a real warp.
+  if (liveStatus > 0) {
+    return roundNumber(
+      (Number.isFinite(passiveValue) ? passiveValue : 0) + liveStatus,
+      6,
+    );
+  }
+  return Number.isFinite(passiveValue) ? roundNumber(passiveValue, 6) : liveStatus;
 }
 
 function isEntityWarpScrambled(entity) {
+  // Any live point or scrambler on the target IS a scramble, whatever the hull's
+  // passive baseline says: the negative baseline always won before this.
+  const targetState = ensureTargetHostileState(entity, false);
+  if (targetState && roundNumber(targetState.warpScrambleStatus, 6) > 0) {
+    return true;
+  }
   return getEntityWarpScrambleStatus(entity) > 0;
 }
 
