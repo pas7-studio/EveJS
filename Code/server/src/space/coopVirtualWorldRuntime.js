@@ -1,4 +1,5 @@
 ﻿"use strict";
+const jsonFileCache = require("./coopJsonFileCache");
 // Optional background driver of virtual world; no NPC ships materialized.
 let world=null,timer=null,combatTimer=null,bridge=null,gateTravelDirector=null,nativeGateTransfer=null,nativeMarketTrader=null,nativeMarketTickRunning=false,nativeMarketBlocked=false,economy=null,lossBridge=null,factionDirector=null,patrolDirector=null,patrolNavigator=null,civilianOrders=null,life=null,identityRegistry=null,raidDirector=null,huntPolicy=null,tacticsDirector=null,pveSiteDefenseDirector=null,pveWaveReinforcementsDirector=null,pveObjectiveDoctrineDirector=null,pveNativeBossDirector=null,activityDirector=null,combatEvidenceDirector=null,stockCombatEvidenceDirector=null,warpPointDirector=null,nativeGunRange=null;
 const observedNpcIDs=new Set();
@@ -2437,9 +2438,9 @@ function advanceNativeSalvageRivals(){
      throw Error("SALVAGE_RIVAL_MANIFEST_DIRECTORY_UNTRUSTED");
     const found=[];
     for(const name of names){
-     const raw=fs.readFileSync(path.join(dir,name),"utf8");
-     if(raw.length>131072)throw Error("SALVAGE_RIVAL_WITNESS_TOO_LARGE");
-     const rec=JSON.parse(raw);
+     let rec;
+     try{rec=jsonFileCache.readJsonFile(path.join(dir,name),{maxBytes:131072});}
+     catch(error){if(String(error?.message)==="JSON_FILE_TOO_LARGE")throw Error("SALVAGE_RIVAL_WITNESS_TOO_LARGE");throw error;}
      if(rec?.v!==1||rec.manifestKey!==name.slice(0,-5)||
       !Array.isArray(rec.rows))throw Error("SALVAGE_RIVAL_WITNESS_INVALID");
      if(rec.systemID===systemID)found.push(rec);
@@ -4866,7 +4867,7 @@ function confirmedNativeNpcWreck(systemID,npcID,wreckID,destroyedShip=null){
   const fs=require("node:fs");
   const linksFile=process.env.EVEJS_COOP_IDENTITY_FILE||"/var/lib/evejs/coop-npc-links.json";
   let registry;
-  try{registry=JSON.parse(fs.readFileSync(linksFile,"utf8"));}
+  try{registry=jsonFileCache.readJsonFile(linksFile,{clone:true});}
   catch(error){if(error.code==="ENOENT")registry={links:{}};else throw error;}
   const link=Object.values(registry?.links||{}).find(x=>
    Number(x.entityID)===Number(npcID)&&Number(x.systemID)===Number(systemID));
