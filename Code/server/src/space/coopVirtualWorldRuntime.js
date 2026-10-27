@@ -7,7 +7,7 @@ const visitedSystems=new Set();
 // FW-013B: last published raid-diagnose shape per system (never every tick).
 const raidDiagnose=new Map();
 const initializedNativeMiningScenes=new WeakSet();
-let warFleetRegistry=null,warBattleDirector=null,warEngagement=null,warPosture=null,warLossReconcile=null,warGarrison=null,warMobilizer=null,warGateStaging=null,warGateHandoff=null,warRecoverySocket=null,warDemobilizer=null,warCasualtyLedger=null,warObjectiveDirector=null,warOpening=null,warRelief=null,gateStagingSkipKey=null,followOrderReason=null;
+let warCaptureByForce=null,warFleetRegistry=null,warBattleDirector=null,warEngagement=null,warPosture=null,warLossReconcile=null,warGarrison=null,warMobilizer=null,warGateStaging=null,warGateHandoff=null,warRecoverySocket=null,warDemobilizer=null,warCasualtyLedger=null,warObjectiveDirector=null,warOpening=null,warRelief=null,gateStagingSkipKey=null,followOrderReason=null;
 // Native wreck IDs this process confirmed (and, after a restart, the durable
 // casualty ledger): the only proof that a registered warship is really gone.
 const destroyedNativeShips=new Set();
@@ -2064,7 +2064,25 @@ function start(){
   runPhase("native-faction-war-assault",advanceNativeWarAssault);
   runPhase("native-faction-war-gate-staging",advanceNativeWarGateStaging);
   runPhase("native-faction-war-sovereignty-projection",advanceNativeWarSovereigntyProjection);
-  runPhase("native-faction-war-battle",advanceNativeWarCombat);
+  // FW-035: a system flips military controller when its defending garrison is
+// really destroyed - a verified defender wreck plus zero live defender hulls,
+// sustained for 60 s - through the same authoritative war core.
+function advanceNativeWarCaptureByForce(){
+ const api=require("./coopWarCaptureByForce");
+ if(process.env.EVEJS_COOP_WAR_CAPTURE_BY_FORCE!=="1")return warSkip("capture-by-force","FLAG_OFF");
+ if(!warCaptureByForce)warCaptureByForce=api.createWarCaptureByForce({
+  gameStore:require("../gameStore")
+ });
+ const result=warCaptureByForce.tick();
+ if(result.captured.length)require("./coopRuntimeProbe").observe(
+  "living-native-war-capture-by-force",null,null,{
+   status:result.status,events:result.captured,
+   evidence:"NATIVE_WRECK_AND_EMPTY_DEFENDER_ONLY"});
+ else if(result.skips.length)warSkip("capture-by-force",
+  String(result.skips[0].reason||result.status));
+}
+runPhase("native-faction-war-battle",advanceNativeWarCombat);
+ runPhase("native-faction-war-capture-by-force",advanceNativeWarCaptureByForce);
   runPhase("native-faction-war-objectives",advanceNativeWarObjectives);
   runPhase("native-ammo-observe",observeNativeAmmoConsumption);
   runPhase("native-wreck-claim-reconcile",advanceNativeWreckClaimReconcile);

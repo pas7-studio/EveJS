@@ -39,6 +39,10 @@
       # Project the authoritative war state into the client map + FW front tab.
       EVEJS_COOP_WAR_CLIENT_VIEW: '1'
       EVEJS_COOP_FW_ALL_SYSTEMS: '0'
+      # Temporary: capture every service call shape so the faction-warfare window's
+      # exact requests are measured instead of guessed.
+      EVEJS_SERVICE_CALL_SHAPE_CAPTURE: '1'
+      EVEJS_SERVICE_CALL_SHAPE_CAPTURE_PATH: '/var/lib/evejs/service-call-shapes.jsonl'
       EVEJS_COOP_FACTION_WAR: '1'
       EVEJS_COOP_FACTION_WAR_FLEETS: '1'
       EVEJS_COOP_FACTION_WAR_MOBILIZE: '1'
@@ -79,6 +83,9 @@
       # FW-033: refill a side of an active assault through the sanctioned
       # spawn_war_fleet path (real doctrine, real native hull, real free pilot).
       EVEJS_COOP_WAR_GARRISON: '1'
+      # FW-035: a system flips military controller when its defending garrison is
+      # really destroyed (verified wrecks + zero live defenders, sustained 60 s).
+      EVEJS_COOP_WAR_CAPTURE_BY_FORCE: '1'
       # FW-034: the client's advantage panel (victory points + fw-advantage
       # gateway scores) derived from real wrecks and real hulls instead of an
       # empty state source that made the tab spin forever.
@@ -110,6 +117,10 @@
       EVEJS_COOP_NPC_AMMO_DURABLE_CYCLE: '1'
       EVEJS_COOP_NPC_BANK_ATOMIC: '1'
       EVEJS_COOP_NPC_BANK_OUTCOME_WITNESS: '1'
+      # Agent-mission waves 2..N spawn with an empty triggerMessages list: announce the
+      # real wave and cap the chain so a level-1 mission is not 24-67 hulls for 165k ISK.
+      EVEJS_COOP_MISSION_WAVE_NOTIFY: '1'
+      EVEJS_COOP_MISSION_WAVE_CAP: '3'
       EVEJS_COOP_NATIVE_MINING: '1'
       EVEJS_COOP_MINING_STARTUP_RETRY: '1'
       EVEJS_COOP_NATIVE_MINING_SLOT_RECONCILE: '1'
