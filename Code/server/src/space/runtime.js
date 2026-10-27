@@ -19677,6 +19677,12 @@ function advanceMovement(entity, scene, deltaSeconds, now) {
     case "STOP":
       return applyDesiredVelocity(entity, entity.direction, 0, deltaSeconds);
     case "GOTO":
+      // CH-COOP: a native NPC whose destination is further than a solar system is not
+      // travelling anywhere - it is flying a "straight for ever" sentinel. See
+      // space/coopNpcRunawayGoto.js for the measured case.
+      if (require("./coopNpcRunawayGoto").apply(entity) === true) {
+        return { changed: true };
+      }
       return advanceGotoMovement(entity, deltaSeconds);
     case "FOLLOW":
       return advanceFollowMovement(
