@@ -379,7 +379,11 @@ function executeRequest(request) {
   if (action === "war_diagnose") {
     try {
       const runtimeWorld = require("./coopVirtualWorldRuntime" + siblingSuffix);
-      return { ok: true, mobilization: runtimeWorld.diagnoseMobilization() };
+      // FW-036: "can this border be fought at all" is a measurement, not a guess.
+      let navy = null;
+      try { navy = runtimeWorld.diagnoseNavy(); }
+      catch (error) { navy = { status: "UNAVAILABLE", reason: String(error && error.message || error) }; }
+      return { ok: true, mobilization: runtimeWorld.diagnoseMobilization(), navy };
     } catch (error) {
       return { ok: false, error: "diagnose failed: " + String(error && error.message || error) };
     }
