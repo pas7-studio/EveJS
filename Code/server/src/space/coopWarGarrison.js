@@ -15,12 +15,25 @@ const enabled = env => env.EVEJS_COOP_FACTION_WAR === "1" &&
   env.EVEJS_COOP_WAR_GARRISON === "1";
 const pos = x => Number.isSafeInteger(x) && x > 0;
 const pilot = x => typeof x === "string" && /^coop-pilot-[0-9]{3,}$/.test(x);
+// N5: a replacement navy costs money the faction really earned.
+//
+// Measured: a garrison bought a fresh hull every cooldown forever, so the
+// defending side of an ASSAULT never held zero live hulls long enough and the
+// force-based capture (FW-035) could only ever answer DEFENDER_STILL_PRESENT.
+// It also meant an endless supply of free warships nobody paid for.
+//
+// The gate is a predicate over the FW-005B campaign chest
+// (`coopWarChestFunding`), the one component that moves only ISK a real seeded
+// market fill really paid to an NPC pilot. No commitment for this faction in
+// this campaign = no replacement hull, and the refusal names that exactly.
+const fundedGate = env => env.EVEJS_COOP_WAR_GARRISON_FUNDED === "1";
 
 function createWarGarrison({
   readWarState,
   registry,
   listFreePilots,
   spawnFleet,
+  chestCommitment = null,
   isHullLive = null,
   clock = () => Date.now(),
   env = process.env,
@@ -33,6 +46,7 @@ function createWarGarrison({
     !registry || typeof registry.snapshot !== "function" ||
     typeof clock !== "function" ||
     (isHullLive !== null && typeof isHullLive !== "function") ||
+    (chestCommitment !== null && typeof chestCommitment !== "function") ||
     !Number.isInteger(garrisonSize) || garrisonSize < 1 || garrisonSize > 6 ||
     !Number.isSafeInteger(cooldownMs) || cooldownMs < 10000 ||
     !Number.isInteger(maxSpawnsPerTick) || maxSpawnsPerTick < 1 || maxSpawnsPerTick > 2
@@ -90,6 +104,25 @@ function createWarGarrison({
           skips.push({ campaignID: campaign.campaignID, systemID, factionID, reason: "GARRISON_COOLDOWN", missing });
           continue;
         }
+        if (fundedGate(env)) {
+          let funding = null;
+          try {
+            funding = typeof chestCommitment === "function"
+              ? chestCommitment({ factionID, warID: campaign.warID, campaignID: campaign.campaignID })
+              : null;
+          } catch (_error) { funding = null; }
+          if (!funding || funding.status !== "FUNDED") {
+            // Retry after the same cooldown so an unfunded front costs one
+            // journal read per cooldown, not one per tick.
+            nextAt.set(key, now + cooldownMs);
+            skips.push({
+              campaignID: campaign.campaignID, systemID, factionID, missing,
+              reason: String(funding && funding.reason || "GARRISON_CHEST_UNAVAILABLE").slice(0, 80),
+              chestStatus: String(funding && funding.status || "UNAVAILABLE").slice(0, 40),
+            });
+            continue;
+          }
+        }
         const commanderPilotID = free.shift();
         if (!commanderPilotID) {
           skips.push({ campaignID: campaign.campaignID, systemID, factionID, reason: "NO_FREE_PILOT_IDENTITY", missing });
@@ -121,4 +154,4 @@ function createWarGarrison({
   return Object.freeze({ tick });
 }
 
-module.exports = { createWarGarrison, enabled };
+module.exports = { createWarGarrison, enabled, fundedGate };

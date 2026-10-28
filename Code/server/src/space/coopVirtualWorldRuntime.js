@@ -874,6 +874,22 @@ function advanceNativeWarGarrison(){
  if(!warGarrison)warGarrison=garrison.createWarGarrison({
   readWarState:()=>warStateStore().read(),
   registry:nativeWarFleetRegistry(),
+  // N5: a replacement hull must be paid for by the campaign chest, which only
+  // ever holds ISK a real market fill paid to an NPC pilot (FW-005B). An unfunded
+  // front stops buying navies, which is the only way a force-captured system
+  // ever holds zero live defender hulls for the full sustain window (FW-035).
+  chestCommitment:({factionID,warID,campaignID})=>{
+   try{
+    const snapshot=warChestStore().snapshot();
+    if(!snapshot||snapshot.status!=="OK")
+     return {status:"UNAVAILABLE",reason:"GARRISON_CHEST_UNAVAILABLE"};
+    const entry=(snapshot.committed||[]).find(e=>
+     Number(e.factionID)===Number(factionID)&&e.warID===warID&&
+     e.campaignID===campaignID&&Number(e.totalCents)>0);
+    if(!entry)return {status:"UNFUNDED",reason:"GARRISON_CHEST_EMPTY"};
+    return {status:"FUNDED",totalCents:Number(entry.totalCents),journalID:entry.journalID};
+   }catch(_error){return {status:"UNAVAILABLE",reason:"GARRISON_CHEST_UNAVAILABLE"}}
+  },
   // A hull destroyed or despawned without a confirmed wreck keeps its custody
   // row (absence is never destruction), but its identity must not stay bound to
   // a ghost: that starved the garrison of commanders and froze the war with
