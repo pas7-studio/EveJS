@@ -3,6 +3,11 @@
 // the original accepted corporate quote, and a true active native player fleet
 // can prove attendance. The witness never moves ISK or changes native cargo.
 const fs=require("node:fs"),path=require("node:path");
+// Windows cannot fsync a directory, and FlushFileBuffers is refused on a
+// handle opened read-only. Swallow only those platform errno values so the
+// deployed Linux container still proves durability and a real lost ACK throws.
+const platformFsync=(io,fd)=>{try{io.fsyncSync(fd)}catch(e){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}};
 const pos=n=>Number.isSafeInteger(n)&&n>0;
 const keyOK=x=>typeof x==="string"&&/^\d+-\d+-\d+$/.test(x);
 const same=(x,y)=>Array.isArray(x)&&Array.isArray(y)&&x.length===y.length&&
@@ -66,17 +71,12 @@ function createDepartureWitness({root,io=fs,clock=()=>Date.now()}={}){
   // a new departure from the current NPC/pilot positions.
   const prior=read(manifestKey,booking);
   if(prior.status!=="VERIFIED_NATIVE_ESCORT_DEPARTURE")return prior;
- // Windows cannot fsync a directory, and FlushFileBuffers is refused on a
- // handle opened read-only, so the durability re-read is unavailable there.
- // The deployed container is Linux and still does the real fsync.
-  if(process.platform==="win32")return read(manifestKey,booking);
   let fd,dirfd;
   try{
-   fd=io.openSync(filename(manifestKey),"r");io.fsyncSync(fd);
+   fd=io.openSync(filename(manifestKey),"r");platformFsync(io,fd);
    io.closeSync(fd);fd=undefined;
    dirfd=io.openSync(dir,"r");
-   try{io.fsyncSync(dirfd)}catch(e){
-    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+   platformFsync(io,dirfd);
 
   }catch{return deny("DEPARTURE_REPLAY_FSYNC_UNCERTAIN_NEEDS_REPAIR")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}
@@ -155,8 +155,7 @@ function createDepartureWitness({root,io=fs,clock=()=>Date.now()}={}){
     return deny("DEPARTURE_WRITE_UNCERTAIN");
    io.fsyncSync(fd);io.closeSync(fd);fd=undefined;
    dirfd=io.openSync(dir,"r");
-   try{io.fsyncSync(dirfd)}catch(e){
-    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+   platformFsync(io,dirfd);
 
   }catch{return deny("DEPARTURE_WRITE_UNCERTAIN_NEEDS_REPAIR")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{};

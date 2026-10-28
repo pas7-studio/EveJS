@@ -3,6 +3,11 @@
 // Only a pinned, real movement-state restore may consume it; no wallet or warp
 // command is exposed. A missed ACK can never mint a snapshot on replay.
 const fs=require("node:fs"),path=require("node:path");
+// Windows cannot fsync a directory, and FlushFileBuffers is refused on a
+// handle opened read-only. Swallow only those platform errno values so the
+// deployed Linux container still proves durability and a real lost ACK throws.
+const platformFsync=(io,fd)=>{try{io.fsyncSync(fd)}catch(e){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}};
 const positive=x=>Number.isSafeInteger(x)&&x>0;
 const keyOK=x=>typeof x==="string"&&/^\d+-\d+-\d+$/.test(x);
 const vec=x=>x&&["x","y","z"].every(k=>Number.isFinite(x[k]));
@@ -77,17 +82,12 @@ function createNativeIngressSnapshot({root,io=fs,clock=()=>Date.now()}={}){
   return {status:"VERIFIED_NATIVE_INGRESS_SNAPSHOT",row};
  }
  function sync(b){
- // Windows cannot fsync a directory, and FlushFileBuffers is refused on a
- // handle opened read-only, so the durability re-read is unavailable there.
- // The deployed container is Linux and still does the real fsync.
-  if(process.platform==="win32")return true;
   let fd,dirfd;
   try{
-   fd=io.openSync(file(b.manifestKey),"r");io.fsyncSync(fd);
+   fd=io.openSync(file(b.manifestKey),"r");platformFsync(io,fd);
    io.closeSync(fd);fd=undefined;
    dirfd=io.openSync(dir,"r");
-   try{io.fsyncSync(dirfd)}catch(e){
-    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+   platformFsync(io,dirfd);
 
   }catch{return false}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}
@@ -143,8 +143,7 @@ function createNativeIngressSnapshot({root,io=fs,clock=()=>Date.now()}={}){
     return deny("INGRESS_SNAPSHOT_WRITE_UNCERTAIN");
    io.fsyncSync(fd);io.closeSync(fd);fd=undefined;
    dirfd=io.openSync(dir,"r");
-   try{io.fsyncSync(dirfd)}catch(e){
-    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+   platformFsync(io,dirfd);
 
   }catch{return deny("INGRESS_SNAPSHOT_WRITE_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}

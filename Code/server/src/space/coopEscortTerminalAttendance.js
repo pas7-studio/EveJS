@@ -3,6 +3,11 @@
 // trusted native station tick after actual full-manifest warehouse verification.
 // Never a wallet, warp, client RPC or ad-hoc "claim attendance" mechanism.
 const fs=require("node:fs"),path=require("node:path");
+// Windows cannot fsync a directory, and FlushFileBuffers is refused on a
+// handle opened read-only. Swallow only those platform errno values so the
+// deployed Linux container still proves durability and a real lost ACK throws.
+const platformFsync=(io,fd)=>{try{io.fsyncSync(fd)}catch(e){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}};
 const pos=x=>Number.isSafeInteger(x)&&x>0;
 const vec=p=>p&&["x","y","z"].every(k=>Number.isFinite(p[k]));
 const same=(a,b)=>Array.isArray(a)&&Array.isArray(b)&&a.length===b.length&&a.every((x,i)=>x===b[i]);
@@ -70,15 +75,11 @@ function createEscortTerminalAttendance({root,io=fs,clock=()=>Date.now()}={}){
  function readDurable(b,d,r,stock){
   const original=inspect(b,d,r,stock);
   if(original.status!=="VERIFIED_NATIVE_ESCORT_TERMINAL_ATTENDANCE")return original;
- // Windows cannot fsync a directory, and FlushFileBuffers is refused on a
- // handle opened read-only, so the durability re-read is unavailable there.
- // The deployed container is Linux and still does the real fsync.
-  if(process.platform==="win32")return inspect(b,d,r,stock);
   let fd,dd;
   try{
-   fd=io.openSync(filename(b.manifestKey),"r");io.fsyncSync(fd);
+   fd=io.openSync(filename(b.manifestKey),"r");platformFsync(io,fd);
    io.closeSync(fd);fd=undefined;
-   dd=io.openSync(dir,"r");io.fsyncSync(dd);
+   dd=io.openSync(dir,"r");platformFsync(io,dd);
   }catch{return deny("TERMINAL_ATTENDANCE_FSYNC_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}
    if(dd!==undefined)try{io.closeSync(dd)}catch{}}
@@ -157,7 +158,7 @@ function createEscortTerminalAttendance({root,io=fs,clock=()=>Date.now()}={}){
    if(io.writeSync(fd,bytes,0,bytes.length,null)!==bytes.length)
     return deny("TERMINAL_ATTENDANCE_WRITE_UNCERTAIN");
    io.fsyncSync(fd);io.closeSync(fd);fd=undefined;
-   dd=io.openSync(dir,"r");io.fsyncSync(dd);
+   dd=io.openSync(dir,"r");platformFsync(io,dd);
   }catch{return deny("TERMINAL_ATTENDANCE_WRITE_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}
    if(dd!==undefined)try{io.closeSync(dd)}catch{}}

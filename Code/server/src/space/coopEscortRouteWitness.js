@@ -3,6 +3,11 @@
 // ship warp or wallet. Source, immutable original dual signatures and actual
 // in-scene positions are independently server-verified for each checkpoint.
 const fs=require("node:fs"),path=require("node:path");
+// Windows cannot fsync a directory, and FlushFileBuffers is refused on a
+// handle opened read-only. Swallow only those platform errno values so the
+// deployed Linux container still proves durability and a real lost ACK throws.
+const platformFsync=(io,fd)=>{try{io.fsyncSync(fd)}catch(e){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}};
 const pos=x=>Number.isSafeInteger(x)&&x>0;
 const keyOK=x=>typeof x==="string"&&/^\d+-\d+-\d+$/.test(x);
 const same=(a,b)=>Array.isArray(a)&&Array.isArray(b)&&a.length===b.length&&
@@ -93,16 +98,11 @@ function createRouteWitness({root,io=fs,clock=()=>Date.now()}={}){
   return {status:"VERIFIED_NATIVE_ROUTE_CHECKPOINT",row:x};
  }
  function fsyncStored(manifestKey,stage){
- // Windows cannot fsync a directory, and FlushFileBuffers is refused on a
- // handle opened read-only, so the durability re-read is unavailable there.
- // The deployed container is Linux and still does the real fsync.
-  if(process.platform==="win32")return true;
   let fd,dirfd;try{
-   fd=io.openSync(file(manifestKey,stage),"r");io.fsyncSync(fd);
+   fd=io.openSync(file(manifestKey,stage),"r");platformFsync(io,fd);
    io.closeSync(fd);fd=undefined;
    dirfd=io.openSync(dir,"r");
-   try{io.fsyncSync(dirfd)}catch(e){
-    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+   platformFsync(io,dirfd);
 
    return true;
   }catch{return false}
@@ -231,8 +231,7 @@ function createRouteWitness({root,io=fs,clock=()=>Date.now()}={}){
     return denied("ROUTE_CHECKPOINT_WRITE_UNCERTAIN");
    io.fsyncSync(fd);io.closeSync(fd);fd=undefined;
    dirfd=io.openSync(dir,"r");
-   try{io.fsyncSync(dirfd)}catch(e){
-    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+   platformFsync(io,dirfd);
 
   }catch{return denied("ROUTE_CHECKPOINT_WRITE_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}
