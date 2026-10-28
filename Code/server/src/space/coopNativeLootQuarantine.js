@@ -16,8 +16,15 @@ function createGuard({file,storage=fs,clock=()=>Date.now()}={}){
  let hardBlocked=false;
  const key=(w,i)=>String(w)+":"+String(i);
  function durableDirectory(){
-  const fd=storage.openSync(dir,"r");
-  try{storage.fsyncSync(fd);}finally{storage.closeSync(fd);}
+  let fd=null;
+  try{fd=storage.openSync(dir,"r");storage.fsyncSync(fd);}
+  catch(error){
+   // Windows cannot open a directory for fsync at all; that is the platform
+   // refusing the call, not this quarantine losing its durable ACK.
+   if(process.platform!=="win32"||
+      !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+  }
+  finally{if(fd!==null)try{storage.closeSync(fd);}catch(_ignored){}}
  }
  function assertNoIncompleteWrites(){
   const names=storage.readdirSync(dir);
