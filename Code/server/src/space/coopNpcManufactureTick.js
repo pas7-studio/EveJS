@@ -30,6 +30,15 @@ const PRICE_FLOOR_FLAG = "EVEJS_COOP_NPC_MANUFACTURE_MIN_PRICE";
 const REGION_FLAG = "EVEJS_COOP_NPC_MARKET_REGION";
 const DEFAULT_REGION = 10000002;
 const THROTTLE_MS = 5 * 60 * 1000;
+const DEFAULT_MARKET_TIMEOUT_MS = 15000;
+function withTimeout(promise, ms) {
+  if (!(ms > 0)) return promise;
+  return Promise.race([promise,
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({timeout: true}), ms);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    })]);
+}
 
 const pos = (x) => {
   const n = Number(x);
@@ -213,6 +222,8 @@ async function runOnce(options = {}) {
   const maxRuns = Math.max(1, Math.min(20, Math.round(num(env[RUNS_FLAG]) || num(env[MAX_RUNS_FLAG]) || 5)));
   const minPrice = Math.max(0, num(env[PRICE_FLOOR_FLAG]));
   const region = pos(env[REGION_FLAG]) || DEFAULT_REGION;
+  const marketTimeoutMs = Math.max(0, num(env.EVEJS_COOP_NPC_MANUFACTURE_MARKET_TIMEOUT_MS)
+    || DEFAULT_MARKET_TIMEOUT_MS);
   const manufacture = options.manufacture || require("./coopNpcManufacture");
   const items = options.items || require("../services/inventory/itemStore");
   const root = options.root || manufacture.root();
@@ -222,7 +233,12 @@ async function runOnce(options = {}) {
   let completed = [];
   try { completed = (manufacture.tick({now}) || {}).completed || []; }
   catch (error) {
-    return {status: "TICK_THREW", reason: String((error && error.message) || error).slice(0, 90)};
+    const reason = String((error && error.message) || error).slice(0, 90);
+    // A silent early return is indistinguishable from the caller never running: that is
+    // exactly how this phase looked for its first minutes (no event, no journal, no clue).
+    note(options, "living-npc-manufacture-skipped", {systemID: options.systemID,
+      status: "TICK_THREW", reason});
+    return {status: "TICK_THREW", reason};
   }
   for (const job of completed)
     note(options, "living-npc-manufactured", {systemID: options.systemID,
@@ -230,20 +246,42 @@ async function runOnce(options = {}) {
       productTypeID: pos(job.productTypeID), quantity: num(job.quantity)});
 
   const blueprints = seededBlueprints({root, ownerID});
-  if (!blueprints.length) return {status: "NO_BLUEPRINT", completed};
+  if (!blueprints.length) {
+    note(options, "living-npc-manufacture-skipped", {systemID: options.systemID,
+      status: "NO_BLUEPRINT", ownerID});
+    return {status: "NO_BLUEPRINT", completed};
+  }
   const candidates = [];
   for (const blueprint of blueprints) {
     let plan = null;
     try { plan = manufacture.recipe(blueprint.blueprintTypeID, 1); }
-    catch (_error) { plan = null; }
-    if (!plan || plan.status !== "READY") continue;
+    catch (error) {
+      plan = {status: "RECIPE_THREW",
+        reason: String((error && error.message) || error).slice(0, 70)};
+    }
+    if (!plan || plan.status !== "READY") {
+      // A dropped candidate was indistinguishable from a phase that never ran: the
+      // recipe itself has to say why it is not READY, or the silence is a lie.
+      candidates.push({stationID: blueprint.stationID,
+        blueprintTypeID: blueprint.blueprintTypeID, recipeRejected: true,
+        reason: String((plan && plan.status) || "NO_PLAN"),
+        detail: String((plan && plan.reason) || "").slice(0, 70)});
+      continue;
+    }
     const have = hangarHeld(items, ownerID, blueprint.stationID);
+    const inFlight = productCoverage({manufacture, root, ownerID,
+      stationID: blueprint.stationID, productTypeID: plan.productTypeID});
     let bid = null;
     try {
+      // Bound on purpose: marketDaemonClient.call dereferences `this` to reach the socket.
       const call = options.call ||
-        require("../services/market/marketDaemonClient").marketDaemonClient.call;
-      bid = await bestSeededBid({region, stationID: blueprint.stationID,
-        productTypeID: plan.productTypeID, call});
+        ((method, params) => require("../services/market/marketDaemonClient")
+          .marketDaemonClient.call(method, params));
+      const answer = await withTimeout(bestSeededBid({region,
+        stationID: blueprint.stationID, productTypeID: plan.productTypeID, call}),
+        marketTimeoutMs);
+      if (answer && answer.timeout === true) throw Error("MARKET_TIMEOUT");
+      bid = answer;
     } catch (error) {
       // An unreachable market is not a buyer: build nothing rather than guess demand.
       bid = null;
@@ -262,11 +300,18 @@ async function runOnce(options = {}) {
       have,
       bid,
       heldProduct: have[plan.productTypeID] || 0,
-      inFlightProduct: productCoverage({manufacture, root, ownerID,
-        stationID: blueprint.stationID, productTypeID: plan.productTypeID}),
+      inFlightProduct: inFlight,
+      // Two live jobs for one recipe can race the same hangar stack into a shortfall,
+      // so a recipe with a job in flight waits for that job instead of starting another.
+      jobInFlight: inFlight > 0,
     });
   }
-  const decision = choose({candidates, maxRuns, minPrice, now});
+  const ready = candidates.filter((c) => c.recipeRejected !== true);
+  note(options, "living-npc-manufacture-attempt", {systemID: options.systemID,
+    blueprints: blueprints.length, candidates: candidates.length, ready: ready.length,
+    rejected: candidates.filter((c) => c.recipeRejected === true)
+      .map((c) => c.stationID + ":" + c.blueprintTypeID + ":" + c.reason)});
+  const decision = choose({candidates: ready, maxRuns, minPrice, now});
   if (decision.status !== "JOB") {
     for (const refusal of decision.refusals) {
       const key = "manufacture:" + refusal.stationID + ":" + refusal.blueprintTypeID + ":" + refusal.reason;
@@ -304,7 +349,12 @@ function tick(options = {}) {
   const env = options.env || process.env;
   if (String(env[FLAG] || "") !== "1") return {status: "DISABLED"};
   const now = Number(options.now) || Date.now();
-  if (running) return {status: "BUSY"};
+  if (running) {
+    if (once(options, "busy", String(Math.floor(now / THROTTLE_MS))))
+      note(options, "living-npc-manufacture-skipped", {systemID: options.systemID,
+        status: "BUSY"});
+    return {status: "BUSY"};
+  }
   if (lastRun && now - lastRun < THROTTLE_MS) return {status: "THROTTLED"};
   lastRun = now;
   running = true;
