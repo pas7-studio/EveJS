@@ -205,6 +205,7 @@ function buildProofs({ plan, presence, territories, getStargatesForSystem, getGa
 function planWars({
   state, presence, getStargatesForSystem, getGate,
   nowMs, minShips = 1, balanceISK = 0, maxOpenings = 4,
+  navyCapability = null,
 } = {}) {
   if (!state || typeof state !== "object") return refuse("NO_WAR_STATE");
   const { territories, observedCount, registeredCount } =
@@ -235,6 +236,21 @@ function planWars({
       if (!pos(sourceSystemID) || !pos(targetSystemID)) {
         skipped.push({ edge, reason: "INVALID_EDGE" });
         continue;
+      }
+      // FW-036 (dynamic decision): a campaign needs two sides that can really
+      // shoot, because capture-by-force needs a defending wreck and a defender
+      // with no navy can never produce one. Opening such a border squats the
+      // target forever and starves every other front (measured: an ORE party
+      // blocked the whole frontier). An unknown capability is never a yes.
+      if (typeof navyCapability === "function") {
+        let navy = null;
+        try {
+          navy = navyCapability({ attackerFactionID, defenderFactionID });
+        } catch (_error) { navy = null; }
+        if (!navy || navy.open !== true) {
+          skipped.push({ edge, reason: String((navy && navy.reason) || "NO_NAVY_CAPABILITY:UNKNOWN") });
+          continue;
+        }
       }
       // A front is one gate pair, not one direction. The derived edge keeps the
       // orientation of whichever system the territory map listed first, so when
@@ -434,6 +450,9 @@ function createWarOpening({
   // their corporation really resolves to a faction. Without the authority the
   // behaviour is unchanged.
   fleetPresence = null,
+  // FW-036: which factions can really field a navy. Without this authority the
+  // planner behaves exactly as before (no capability gate).
+  navyCapability = null,
   minShips = 1, balanceISK = 0, maxOpenings = 4,
   now = () => Date.now(), maxLinks = MAX_LINKS,
 } = {}) {
@@ -488,6 +507,7 @@ function createWarOpening({
       const plan = planWars({
         state, presence, getStargatesForSystem, getGate,
         nowMs: num(now()), minShips, balanceISK, maxOpenings,
+        navyCapability: typeof navyCapability === "function" ? navyCapability : null,
       });
       if (plan.status !== "READY")
         return { status: "NO_OPENING", reason: plan.reason || "PLAN_REFUSED", plan };

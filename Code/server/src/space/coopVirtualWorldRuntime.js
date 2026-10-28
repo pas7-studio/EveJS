@@ -355,6 +355,35 @@ function advanceNativeWarOpening(){
    readWarState,
    writeWarState:state=>store.write(state),
    reserveBounty:warBountyReserve,
+   // FW-036: a front is only opened between two factions that can really field a
+   // navy - a party without combat hulls (measured: ORE, whose only charged rows
+   // are mining lasers) can never produce a defending wreck, so its campaign
+   // squats the target and starves every other front. Reads the same doctrine
+   // composition the sanctioned spawn path uses; never invents a hull.
+   navyCapability:(()=>{
+    let capability=null;
+    return ({attackerFactionID,defenderFactionID})=>{
+     try{
+      if(!capability){
+       const npcData=require("./npc/npcData"),
+        itemTypes=require("../services/inventory/itemTypeRegistry"),
+        dogma=require("./combat/weaponDogma"),
+        authorities=require("./coopAdminBridgeActions").warFleetAuthorities();
+       capability=require("./coopWarNavyCapability").createNavyCapability({
+        compose:args=>authorities.composition.compose(args),
+        getLoadout:id=>npcData.getNpcLoadout(id),
+        // A mining laser carries modules and a charge too; only a real weapon
+        // family makes a hull a navy.
+        isWeapon:typeID=>{
+         const item=itemTypes.resolveItemByTypeID(Number(typeID));
+         return Boolean(item&&dogma.resolveWeaponFamily(item));
+        }
+       });
+      }
+      return capability.decide({attackerFactionID,defenderFactionID});
+     }catch(_error){return {open:false,reason:"NO_NAVY_CAPABILITY:UNAVAILABLE"}}
+    };
+   })(),
    // FW-027: a real war fleet is presence too (the roster proves the hulls).
    fleetPresence:args=>{
     try{return require("./coopWarFleetRoster").sharedRoster().presence(args)}
