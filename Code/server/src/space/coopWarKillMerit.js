@@ -150,6 +150,32 @@ function note({ proof, victim, emit, ledger: injected } = {}) {
         reason: String((error && error.message) || error).slice(0, 120)};
     }
   }
+  // FW-047: a refused bounty used to be SILENT. `coopWarBounty` only emits when
+  // value really moves (PAID / ALREADY_PAID / ESCROW_RELEASED_NOT_CREDITED) and
+  // this function dropped its return value, so the work stack showed a real kill
+  // with merit PROMOTED, a real HELD escrow for the OTHER side, and not one line
+  // saying why no ISK could move. Every outcome that is not a payment is now
+  // recorded with its own reason, so a missing payout always names its cause.
+  if (record) {
+    const outcomes = [["warship-kill", attackerPilotID, bounty],
+      ["force-lost", victimPilotID, deathBenefit]];
+    for (const [kind, pilotID, outcome] of outcomes) {
+      if (!outcome) continue;
+      const status = String(outcome.status || "");
+      if (status === "PAID" || status === "ALREADY_PAID") continue;
+      record("living-native-war-bounty-skipped", null,
+        { spaceState: { systemID: Number(p.systemID) || 0 } }, {
+          status: status || "UNKNOWN",
+          reason: String(outcome.reason || ""),
+          pilotID: String(pilotID || ""),
+          factionID: Number(outcome.factionID) || 0,
+          campaignID: String(outcome.campaignID || ""),
+          kind: String(outcome.kind || kind),
+          wreckID,
+          evidence: "REAL_KILL_WITHOUT_PAYABLE_ESCROW",
+        });
+    }
+  }
   return {
     status: killer.status,
     attackerPilotID,

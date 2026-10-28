@@ -318,6 +318,17 @@ function warBountyStore(){
  return warBountyInstance;
 }
 // One real reservation per campaign side, taken before START_CAMPAIGN.
+//
+// FW-046: this used to RETURN on the first side it could fund, so a war had a
+// bounty only for the attacker. Measured on the work stack at 19:15Z: the real
+// kill that decided the battle was made by a DEFENDER (coop-pilot-027, faction
+// 500011) while the only HELD escrow belonged to 500004, so `coopWarBounty`
+// correctly refused with NO_HELD_ESCROW_FOR_FACTION and no ISK could move - a
+// funded war where half the fighters can never be paid is not a bounty, and the
+// comment above already promised one reservation per side.
+// Each side now funds its OWN bounty out of its OWN wallet; a side that cannot
+// pay is refused per side (its own reason is kept) and never blocks the other.
+// Env-gated because it takes a second real escrow: EVEJS_COOP_WAR_BOUNTY_BOTH_SIDES=1.
 function warBountyReserve({war,campaign,campaignID,warID,persist}){
  if(process.env.EVEJS_COOP_WAR_BOUNTY_ISK==="0")return {status:"REFUSED",reason:"WAR_BOUNTY_OFF"};
  const bountyISK=Math.max(1,Math.round(Number(process.env.EVEJS_COOP_WAR_BOUNTY_ISK)||25000));
@@ -327,20 +338,22 @@ function warBountyReserve({war,campaign,campaignID,warID,persist}){
  catch(error){return {status:"REFUSED",reason:"WAR_STATE_PERSIST_FAILED"};}
  const pilots=warPresencePilots(),ledger=warEarnedLedger(),refusals=[];
  const chest=warChestStore(),treasury=warTreasuryStore();
- for(const factionID of [Number(war.attackerFactionID),Number(war.defenderFactionID)]){
-  if(!Number.isSafeInteger(factionID)||factionID<=0)continue;
+ const reserveSide=(factionID)=>{
+  if(!Number.isSafeInteger(factionID)||factionID<=0)
+   return {status:"REFUSED",reason:"NO_FACTION",factionID:0};
   const corporationID=warFactionCorporation(factionID,pilots,ledger);
   if(!Number.isSafeInteger(corporationID)||corporationID<=0){
    refusals.push({factionID,reason:"NO_MILITIA_CORPORATION"});
-   continue;
+   return {status:"REFUSED",reason:"NO_MILITIA_CORPORATION",factionID};
   }
   let funded=null;
   try{
    funded=chest.fund({factionID,corporationID,warID,campaignID,needCents,pilots,ledger,
     eventID:"bounty:"+campaignID+":"+factionID});
   }catch(error){
-   refusals.push({factionID,reason:"WAR_CHEST_THROW:"+String(error&&error.message||error)});
-   continue;
+   const reason="WAR_CHEST_THROW:"+String(error&&error.message||error);
+   refusals.push({factionID,reason});
+   return {status:"REFUSED",reason,factionID};
   }
   if(funded.status!=="APPLIED"&&funded.status!=="DUPLICATE"){
    const reason=String(funded.reason||funded.status);
@@ -356,7 +369,10 @@ function warBountyReserve({war,campaign,campaignID,warID,persist}){
    // not there, so no ISK is invented, only spent from where it already is.
    const walletBacked=process.env.EVEJS_COOP_WAR_BOUNTY_WALLET_FALLBACK==="1"&&
     ["NO_REAL_FACTION_INCOME","INSUFFICIENT_REAL_INCOME"].includes(reason);
-   if(!walletBacked){refusals.push({factionID,reason});continue}
+   if(!walletBacked){
+    refusals.push({factionID,reason});
+    return {status:"REFUSED",reason,factionID};
+   }
    refusals.push({factionID,reason:"BOUNTY_BACKED_BY_NATIVE_CORP_WALLET",chestRefusal:reason});
   }
   const reservationID="bounty:"+campaignID+":"+factionID;
@@ -367,12 +383,14 @@ function warBountyReserve({war,campaign,campaignID,warID,persist}){
     corporationID,factionID,warID,campaignID,amountCents:needCents,
     minRemainingCents:0});
   }catch(error){
-   refusals.push({factionID,reason:"WAR_TREASURY_THROW:"+String(error&&error.message||error)});
-   continue;
+   const reason="WAR_TREASURY_THROW:"+String(error&&error.message||error);
+   refusals.push({factionID,reason});
+   return {status:"REFUSED",reason,factionID};
   }
   if(reserved.status!=="APPLIED"&&reserved.status!=="DUPLICATE"){
-   refusals.push({factionID,reason:String(reserved.reason||reserved.status)});
-   continue;
+   const reason=String(reserved.reason||reserved.status);
+   refusals.push({factionID,reason});
+   return {status:"REFUSED",reason,factionID};
   }
   try{
    require("./coopRuntimeProbe").observe("living-native-war-bounty-reserved",null,null,{
@@ -387,9 +405,22 @@ function warBountyReserve({war,campaign,campaignID,warID,persist}){
   return {status:"RESERVED",reservationID,factionID,corporationID,
    amountCents:needCents,chestJournalID:String(funded.entry?.journalID||""),
    escrowJournalID:Number(reserved.receipt?.journalID)||0};
- }
- return {status:"REFUSED",reason:refusals.length?
-  refusals.map(r=>r.factionID+":"+r.reason).join("|"):"NO_WAR_PARTY",refusals};
+ };
+ const sides=[Number(war.attackerFactionID),Number(war.defenderFactionID)];
+ const both=String(process.env.EVEJS_COOP_WAR_BOUNTY_BOTH_SIDES||"0")==="1";
+ const planned=require("./coopWarBountyEscrowSides")
+  .planSideReservations({sides,both,attackerFactionID:war.attackerFactionID,reserveSide});
+ if(!planned.funded.length)
+  return {status:"REFUSED",reason:refusals.length?
+   refusals.map(r=>r.factionID+":"+r.reason).join("|"):"NO_WAR_PARTY",refusals};
+ // The campaign is oriented attacker -> defender, so the attacker's escrow is the
+ // one that names this campaign's supply. A defender-only escrow still opens the
+ // war (unchanged fallback), it simply is not the supply proof.
+ const primary=planned.primary;
+ return {...primary,status:"RESERVED",refusals,
+  otherSideReservationID:(planned.funded.find(r=>r!==primary)||{}).reservationID||"",
+  sides:planned.funded.map(r=>({factionID:r.factionID,
+   reservationID:r.reservationID,corporationID:r.corporationID}))};
 }
 // Read-only: what the chest can really see, so a refusal names its own cause.
 function diagnoseWarFunding(){
