@@ -349,7 +349,7 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState } = {})
   if (!plan || plan.status !== "READY") return refuse("PLAN_NOT_READY");
   const at = num(nowMs) > 0 ? num(nowMs) : Date.now();
   let current = state;
-  const applied = [], warIDs = [], campaignIDs = [], fundings = [];
+  const applied = [], warIDs = [], campaignIDs = [], fundings = [], skipped = [];
   const step = (command, proofs) => {
     const result = core.transition(current, command, { now: at, proofs });
     if (result.status !== "APPLIED" && result.status !== "DUPLICATE")
@@ -399,10 +399,21 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState } = {})
           campaignID: campaign.campaignID, state: current,
           persist: () => { if (typeof persistState === "function") persistState(current); },
         });
-        if (reserved.status !== "RESERVED")
-          throw Object.assign(Error("WAR_SUPPLY_UNFUNDED:" + reserved.reason), {
-            reason: "SUPPLY_UNFUNDED:" + String(reserved.reason || "UNKNOWN"),
+        if (reserved.status !== "RESERVED") {
+          // FW-037: one border nobody can pay for must not abort the whole batch.
+          // Measured on the work stack: the frontier refused every opening with
+          // SUPPLY_UNFUNDED and threw the plan away, so a single broke faction
+          // pair could stop every other border from opening in the same tick.
+          // The refusal is recorded per border instead, exactly like the
+          // mobiliser already reports a starved campaign without hiding others.
+          skipped.push({
+            edge: { sourceSystemID: campaign.sourceSystemID, targetSystemID: campaign.targetSystemID },
+            campaignID: campaign.campaignID,
+            warID: war.warID,
+            reason: "SUPPLY_UNFUNDED:" + String(reserved.reason || "UNKNOWN").slice(0, 160),
           });
+          continue;
+        }
         supplyReservationID = reserved.reservationID;
         realReservation = reserved;
         fundings.push(Object.assign({ status: "FUNDED", paper: false, escrow: true },
@@ -420,7 +431,7 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState } = {})
       campaignIDs.push(campaign.campaignID);
       if (!realReservation) fundings.push(opening.funding);
     }
-    return { status: "OPENED", state: current, warIDs, campaignIDs, applied, fundings };
+    return { status: "OPENED", state: current, warIDs, campaignIDs, applied, fundings, skipped };
   } catch (error) {
     return refuse(error.reason || String((error && error.message) || error), { state: current, applied });
   }
@@ -519,7 +530,9 @@ function createWarOpening({
         status: "OPENED", warIDs: opened.warIDs, campaignIDs: opened.campaignIDs,
         applied: opened.applied, fundings: opened.fundings,
         presence: { pilots: presence.pilots.length, skipped: presence.skipped, fleetShips },
-        territories: plan.territories, fronts: plan.fronts.length, skipped: plan.skipped,
+        territories: plan.territories, fronts: plan.fronts.length,
+        // A border refused for funding is named here instead of vanishing.
+        skipped: plan.skipped.concat(Array.isArray(opened.skipped) ? opened.skipped : []),
       };
     } finally { busy = false; }
   }
