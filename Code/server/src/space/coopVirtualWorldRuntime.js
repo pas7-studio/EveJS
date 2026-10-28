@@ -4362,47 +4362,49 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
      liftedTypes.add(Number(row.typeID));
   }catch(_error){/* an unreadable hold never blocks the ore sale */}
  }
- if(process.env.EVEJS_COOP_NPC_MINERAL_LIFT==="1"&&
-  !arrivalSales.has(Number(stationID)+":"+Number(haulerID))){
-  // Declared outside the try: the skip telemetry below reads it. As a block-scoped
-  // const it raised "loaded is not defined" on every arrival, aborting the sale.
-  let loaded=null;
-  try{
-   loaded=ensureMineralLift()?.lift({systemID,stationID,haulerID,
-    cap:Math.max(1,Number(process.env.EVEJS_COOP_NPC_MINERAL_LIFT_MAX_QTY||100000))});
-   if(loaded?.status==="LIFTED")
-    for(const row of loaded.lifted){
-     const typeID=Number(row.typeID);
-     if(!sellTypes.includes(typeID))sellTypes.push(typeID);
-     liftedTypes.add(typeID);
-    }
-  }catch(_error){/* a failed lift must never block the ore sale */}
-   if(loaded&&loaded.status!=="LIFTED"){
-    const note="lift:"+Number(stationID)+":"+String(loaded.status);
-    const now=Date.now();
-    if(now-(mineralLiftNotes.get(note)||0)>300000){
-     mineralLiftNotes.set(note,now);
-     try{require("./coopRuntimeProbe").observe("living-npc-mineral-lift-skipped",null,
-      {spaceState:{systemID:Number(systemID),stationID:Number(stationID),
-       haulerID:Number(haulerID),status:String(loaded.status||"UNKNOWN")}});}catch(_error){}
-    }
-   }
- }
  // The market refuses a sale while the hauler's controller holds a target, and the
  // fleet's asteroid orbit sets one. Release only a non-combat target (see above).
  releaseStationIdleTarget({systemID,stationID,haulerID,scene:scene||null});
  const trader=ensureMarketTrader();
  if(!trader){noteSaleSkip(systemID,stationID,haulerID,"MARKET_UNAVAILABLE");return {status:"NOT_SOLD",reason:"MARKET_UNAVAILABLE"};}
- const wanted=[...new Set(sellTypes.filter(typeID=>
-  liftedTypes.has(Number(typeID))||
-  !types.length||types.map(Number).includes(Number(typeID))))];
- if(!wanted.length){noteSaleSkip(systemID,stationID,haulerID,"NO_ALLOWED_ORE");return {status:"NOT_SOLD",reason:"NO_ALLOWED_ORE"};}
  const job={startedAt:Date.now(),settled:null};
  arrivalSales.set(key,job);
  void (async()=>{
   const sold=[];let last="NO_ELIGIBLE_STACK",settlements=0;
   try{
    const scene=require("./runtime").ensureScene(Number(systemID),{refreshStargates:false});
+   // The lift is ASYNC. Awaiting it here is what puts the refined minerals into this
+   // hull's real native hold (and their types into the sale list) BEFORE the sale is
+   // priced. Measured 2026-10-28: the promise was read as a result, so no mineral type
+   // ever joined sellTypes, not one mineral was ever sold, and 47 lift-tagged rows sat
+   // in a single hold while the station surplus could not move.
+   if(process.env.EVEJS_COOP_NPC_MINERAL_LIFT==="1"){
+    let loaded=null;
+    try{
+     loaded=await ensureMineralLift()?.lift({systemID,stationID,haulerID,
+      cap:Math.max(1,Number(process.env.EVEJS_COOP_NPC_MINERAL_LIFT_MAX_QTY||100000))});
+    }catch(_error){loaded=null;}
+    if(loaded&&loaded.status==="LIFTED")
+     for(const row of loaded.lifted||[]){
+      const typeID=Number(row.typeID);
+      if(!sellTypes.includes(typeID))sellTypes.push(typeID);
+      liftedTypes.add(typeID);
+     }
+    else if(loaded&&loaded.status!=="LIFTED"){
+     const note="lift:"+Number(stationID)+":"+String(loaded.status);
+     const now=Date.now();
+     if(now-(mineralLiftNotes.get(note)||0)>300000){
+      mineralLiftNotes.set(note,now);
+      try{require("./coopRuntimeProbe").observe("living-npc-mineral-lift-skipped",null,
+       {spaceState:{systemID:Number(systemID),stationID:Number(stationID),
+        haulerID:Number(haulerID),status:String(loaded.status||"UNKNOWN")}});}catch(_error){}
+     }
+    }
+   }
+   const wanted=[...new Set(sellTypes.filter(typeID=>
+    liftedTypes.has(Number(typeID))||
+    !types.length||types.map(Number).includes(Number(typeID))))];
+   if(!wanted.length)last="NO_ALLOWED_ORE";
    for(const typeID of wanted){
     // Several stacks of one ore type are still one merchant action. Keep going
     // while the market really buys, so a haul is liquidated instead of decaying
