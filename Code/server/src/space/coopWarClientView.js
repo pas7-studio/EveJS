@@ -350,7 +350,7 @@ function adjacencyStates(occupiers, { getStargatesForSystem } = {}) {
 // The faction on the other side of the line for a system: the enemy of its occupier in
 // an ACTIVE war, or - for ground that changed hands without a running campaign - the
 // sovereign owner it was taken from.
-function attackerIDs(state, occupiers = {}) {
+function attackerIDs(state, occupiers = {}, warzoneFactions = []) {
   const rival = new Map();
   for (const war of Object.values((state && state.wars) || {})) {
     if (!war || war.state !== "ACTIVE") continue;
@@ -361,13 +361,19 @@ function attackerIDs(state, occupiers = {}) {
     rival.set(defender, attacker);
   }
   const live = occupationStates(state);
+  const pair = (warzoneFactions || []).map(Number).filter(pos);
   const out = {};
   for (const key of Object.keys(occupiers)) {
     const systemID = num(key);
     const occupier = num(occupiers[systemID]);
     const owner = num((live[systemID] || {}).ownerID);
+    // The warzone map colours the arrow by FACTION_ID_TO_COLOR[attackerID], and the
+    // advantage gauge builds its two bars from occupierID and attackerID, so an
+    // unknown 0 there is a KeyError, not "no attacker". Fall back to the other side
+    // of this warzone before giving up.
+    const other = pair.find((factionID) => factionID !== occupier) || 0;
     const known = num(rival.get(occupier));
-    out[systemID] = known || (pos(owner) && owner !== occupier ? owner : 0);
+    out[systemID] = known || other || (pos(owner) && owner !== occupier ? owner : 0);
   }
   return out;
 }
@@ -407,7 +413,7 @@ function occupationPairs(buildKeyVal, warzones, { state = null, getStargatesForS
       getStargatesForSystem: getStargatesForSystem || spaceWorldData().getStargatesForSystem,
     });
   } catch (_error) { adjacency = {}; }
-  const attackers = attackerIDs(state, occupiers);
+  const attackers = attackerIDs(state, occupiers, Array.from(allowed));
   const entries = Object.entries(states).map(([systemID, entry]) => {
     const ownerID = num(entry && entry.ownerID);
     const occupierID = num(entry && entry.occupierID);

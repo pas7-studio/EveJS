@@ -27,6 +27,12 @@ const casualtyLedger = require("./coopWarCasualtyLedger" + suffix);
 const { readRow } = require("./coopNativeRowPath" + suffix);
 const pos = x => Number.isSafeInteger(x) && x > 0;
 const DEFAULT_THRESHOLD = 75000;
+// factionwarfare/advantageState.py turns points into fractions of MAX_ACTIVITY_POINTS
+// and REFUSES anything outside it: contribution > 1.0, floor > 1.0 or their sum > 1.0
+// raises ValueError, and the advantages tab silently falls back to no data. The
+// projection is clamped into that domain instead of handing the client a number it
+// cannot represent.
+const MAX_CLIENT_POINTS = 100000;
 const LOSS_WEIGHT = 1000;
 const HULL_WEIGHT = 100;
 
@@ -107,11 +113,17 @@ function createWarAdvantage({
     return { status: "OBSERVED", systems };
   }
 
+  function clientPoints(value) {
+    const points = Number(value);
+    if (!Number.isFinite(points) || points <= 0) return 0;
+    return Math.min(Math.round(points), MAX_CLIENT_POINTS);
+  }
+
   function victoryPointStates() {
     const view = snapshot();
     const out = {};
     for (const [systemID, entry] of Object.entries(view.systems)) {
-      out[systemID] = { score: entry.score, threshold: entry.threshold };
+      out[systemID] = { score: clientPoints(entry.score), threshold: entry.threshold };
     }
     return out;
   }
@@ -120,10 +132,12 @@ function createWarAdvantage({
     const view = snapshot();
     const entry = view.systems[String(Number(solarSystemID) || 0)];
     if (!entry) return [];
-    return entry.scores.map(s => ({ factionID: s.factionID, contribution: s.contribution, floor: 0 }));
+    return entry.scores.map(s => ({
+      factionID: s.factionID, contribution: clientPoints(s.contribution), floor: 0,
+    }));
   }
 
-  return Object.freeze({ snapshot, victoryPointStates, scoresFor, enabled });
+  return Object.freeze({ snapshot, victoryPointStates, scoresFor, clientPoints, enabled });
 }
 
 let singleton = null;

@@ -11,6 +11,24 @@ const {
   buildList,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
 
+let factionStateModule = null;
+function factionState() {
+  if (!factionStateModule) {
+    factionStateModule = require(path.join(__dirname, "factionState"));
+  }
+  return factionStateModule;
+}
+
+let factionWarMgrViewModule = null;
+// The projection lives in the deployed co-op module so it can be tested without a
+// server; the service only maps the answer onto the native marshal helpers.
+function factionWarMgrView() {
+  if (!factionWarMgrViewModule) {
+    factionWarMgrViewModule = require(path.join(__dirname, "../../space/coopFactionWarMgrView"));
+  }
+  return factionWarMgrViewModule;
+}
+
 function resolveCharacterID(args, session) {
   return Number(
     (Array.isArray(args) && args.length > 0 && args[0]) ||
@@ -204,6 +222,54 @@ class FacWarMgrService extends BaseService {
     );
 
     return result;
+  }
+  // The client asks these before it can build a single faction-warfare panel, and the
+  // pinned server answered every one of them with baseService's "Unhandled method"
+  // null: fwWarzoneDashboard.py dereferences cfg.eveowners.Get(GetFactionMilitiaCorporation())
+  // and factionalWarStatus.startDate, so the dashboard threw instead of opening.
+  Handle_GetFactionMilitiaCorporation(args) {
+    const factionID = normalizePositiveInteger(args && args[0], null);
+    const corpID = factionWarMgrView().militiaCorporation(factionID, {
+      getFactionRecord: (id) => factionState().getFactionRecord(id),
+    });
+
+    log.debug(
+      `[FacWarMgr] GetFactionMilitiaCorporation(factionID=${factionID}) -> ${corpID || "none"}`,
+    );
+
+    return corpID;
+  }
+
+  Handle_GetCorpFactionalWarStatus(args, session) {
+    const characterID = resolveCharacterID(args, session);
+    const charData = characterID ? getCharacterRecord(characterID) || {} : {};
+    const status = factionWarMgrView().corpFactionalWarStatus({ charData, session });
+
+    log.debug(
+      `[FacWarMgr] GetCorpFactionalWarStatus(charID=${characterID}) -> ${status ? status.status : "none"}`,
+    );
+
+    return status
+      ? buildKeyVal([
+          ["status", status.status],
+          ["factionID", status.factionID],
+          ["startDate", status.startDate],
+        ])
+      : null;
+  }
+
+  // A corporation or alliance holds a war faction only through persisted state; this
+  // world has no such registry, so the honest answer is "none" rather than a guess.
+  Handle_GetCorporationWarFactionID() {
+    return null;
+  }
+
+  Handle_GetAllianceWarFactionID() {
+    return null;
+  }
+
+  Handle_GetFactionCorporations() {
+    return buildList([]);
   }
 }
 
