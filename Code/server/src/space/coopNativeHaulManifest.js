@@ -70,6 +70,12 @@ function createManifest({root,store,items,getNativeEntity,io=fs,clock=()=>Date.n
     const rows=store.listNativeCargoForEntity(haulerID);
     if(!Array.isArray(rows))return {status:"MANIFEST_CARGO_UNAVAILABLE"};
     for(const row of rows){
+     // Measured 2026-10-27: the same hold carries the fleet's own lift-tagged minerals back
+     // to market, and those rows have no ore provenance by design. They are NOT part of the
+     // ore manifest, so they are skipped instead of invalidating the whole trip (measured:
+     // MANIFEST_CARGO_INVALID_OR_AMBIGUOUS on every route attempt after a successful load).
+     const coopLiftRow=/^coop-mineral-lift:v1:/.test(String(row?.customInfo||""));
+     if(coopLiftRow)continue;
      if(![row?.cargoID,row?.typeID,row?.quantity,row?.coopHaulFromMinerID].every(valid)||
       id(row.entityID)!==haulerID||id(row.coopHaulFleetID)!==id(fleetID)||
       Number(row.moduleID||0)!==0||row.transient===true||seen.has(id(row.cargoID)))
