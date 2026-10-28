@@ -28,12 +28,14 @@ const valid = x => typeof x === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
 
 function createWarCaptureByForce({
   gameStore,
+  isHullLive = null,
   clock = () => Date.now(),
   env = process.env,
   sustainMs = 60000,
 } = {}) {
   if (typeof gameStore?.coopAtomicNativeRows?.transact !== "function" ||
     typeof clock !== "function" ||
+    (isHullLive !== null && typeof isHullLive !== "function") ||
     !Number.isSafeInteger(sustainMs) || sustainMs < 10000 || sustainMs > 3600000) {
     throw Error("WAR_CAPTURE_BY_FORCE_AUTHORITIES_REQUIRED");
   }
@@ -80,12 +82,27 @@ function createWarCaptureByForce({
             skips.push({ campaignID: campaign.campaignID, reason: "NO_DEFENDER_WRECK" });
             continue;
           }
-          // 2. No live defender hull may remain in the system.
-          const liveDefenders = ships.filter(s => Number(s.systemID) === systemID &&
-            Number(s.factionID) === defenderFactionID).length;
+          // 2. No live defender hull may remain in the system. A registry row is
+          //    custody, not a ship on the field: FW-032 keeps a row until a
+          //    confirmed wreck releases it, and a hull can be gone from every
+          //    scene while its row waits for reconciliation. Counting rows made
+          //    a physically empty, wreck-backed system un-capturable forever
+          //    (measured: DEFENDER_STILL_PRESENT with three ghost hulls and two
+          //    real defender wrecks). When a liveness authority is supplied only
+          //    hulls really present in the scene count - the same rule FW-033
+          //    already applies to the garrison.
+          const liveOf = (s) => {
+            if (typeof isHullLive !== "function") return true;
+            try { return isHullLive(systemID, Number(s.entityID)) === true; }
+            catch (_error) { return false; }
+          };
+          const defenderRows = ships.filter(s => Number(s.systemID) === systemID &&
+            Number(s.factionID) === defenderFactionID);
+          const liveDefenders = defenderRows.filter(liveOf).length;
+          const ghostDefenders = defenderRows.length - liveDefenders;
           if (liveDefenders > 0) {
             series.delete(campaign.campaignID);
-            skips.push({ campaignID: campaign.campaignID, reason: "DEFENDER_STILL_PRESENT", liveDefenders });
+            skips.push({ campaignID: campaign.campaignID, reason: "DEFENDER_STILL_PRESENT", liveDefenders, ghostDefenders });
             continue;
           }
           // 3. Sustained: the same empty, wreck-backed state for `sustainMs`.

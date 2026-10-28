@@ -1750,7 +1750,18 @@ function advanceNativeWarCaptureByForce(){
  const api=require("./coopWarCaptureByForce");
  if(process.env.EVEJS_COOP_WAR_CAPTURE_BY_FORCE!=="1")return warSkip("capture-by-force","FLAG_OFF");
  if(!warCaptureByForce)warCaptureByForce=api.createWarCaptureByForce({
-  gameStore:require("../gameStore")
+  gameStore:require("../gameStore"),
+  // FW-035 x FW-032: only a hull really present in the scene blocks a capture;
+  // a custody row whose ship is gone from every scene is reconciled by FW-032,
+  // not counted as a defending garrison.
+  isHullLive:(systemID,entityID)=>{
+   try{
+    const native=require("./runtime");
+    const scene=native.scenes instanceof Map?native.scenes.get(Number(systemID)):null;
+    return Boolean(scene&&typeof scene.getEntityByID==="function"&&
+     scene.getEntityByID(Number(entityID)));
+   }catch{return false}
+  }
  });
  const result=warCaptureByForce.tick();
  if(result.captured.length)require("./coopRuntimeProbe").observe(
