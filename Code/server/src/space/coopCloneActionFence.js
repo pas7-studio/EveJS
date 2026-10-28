@@ -65,8 +65,14 @@ function createCloneActionFence({file,storage=fs,clock=()=>Date.now()}={}){
    }
    storage.fsyncSync(fd);
   }finally{storage.closeSync(fd)}
-  const d=storage.openSync(dir,"r");
-  try{storage.fsyncSync(d)}finally{storage.closeSync(d)}
+  // Windows cannot open a directory for fsync at all; that is the platform
+  // refusing the call, not this journal losing its durable acknowledgement.
+  let d=null;
+  try{d=storage.openSync(dir,"r");storage.fsyncSync(d);}
+  catch(error){
+   if(process.platform!=="win32"||
+    !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+  }finally{if(d!==null)try{storage.closeSync(d);}catch(_ignored){}}
  }
  function locked(fn){
   if(unsafe)return {status:"NATIVE_CLONE_JOURNAL_UNSAFE"};
