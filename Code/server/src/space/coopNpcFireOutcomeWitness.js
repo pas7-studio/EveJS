@@ -7,13 +7,22 @@
  */
 const fs=require("node:fs");
 const path=require("node:path");
-const {inspectShip}=require("./coopNpcAmmoBankAtomic");
+// The engine stores this sibling as .js; the repository mirror keeps the same
+// code as .cjs, so the load has to survive both extensions.
+const load=name=>{try{return require("./"+name)}catch(_error){return require("./"+name+".cjs")}};
+const {inspectShip}=load("coopNpcAmmoBankAtomic");
 const positive=v=>Number.isSafeInteger(Number(v))&&Number(v)>0?Number(v):null;
 const allowedKinds=new Set(["TURRET_RESOLVED","MISSILE_LAUNCHED","MISSILE_LAUNCH_FAILED"]);
 let sequence=0;
 function sync(io,dir){
- const fd=io.openSync(dir,"r");
- try{io.fsyncSync(fd);}finally{io.closeSync(fd);}
+ // Windows cannot open a directory for fsync at all; that is the platform
+ // refusing the call, not this witness losing its durable acknowledgement.
+ let fd=null;
+ try{fd=io.openSync(dir,"r");io.fsyncSync(fd);}
+ catch(error){
+  if(process.platform!=="win32"||
+   !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+ }finally{if(fd!==null)try{io.closeSync(fd);}catch(_ignored){}}
 }
 function receiptAt(io,file){
  const st=io.lstatSync(file);

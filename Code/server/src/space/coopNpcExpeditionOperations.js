@@ -3,6 +3,9 @@
 // and physically witnessed corporate warehouse return inside the existing
 // 30-second A-Life phase. No timer, spawned cargo, new wallet or fictive warp.
 const POS=x=>Number.isSafeInteger(x)&&x>0;
+// The engine stores this sibling as .js; the repository mirror keeps the same
+// code as .cjs, so the load has to survive both extensions.
+const load=name=>{try{return require("./"+name)}catch(_error){return require("./"+name+".cjs")}};
 const vec=x=>x&&["x","y","z"].every(k=>typeof x[k]==="number"&&Number.isFinite(x[k]));
 const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z);
 const receipt=s=>typeof s==="string"&&
@@ -18,7 +21,7 @@ function createNpcExpeditionOperations({nativeStore,getController,itemStore,game
   !orderBridge||typeof orderBridge.issue!=="function"||
   typeof orderBridge.blocked!=="function")
   throw Error("EX03_NATIVE_HACKING_AND_ITEM_CUSTODY_AUTHORITIES_REQUIRED");
- const {createNpcExpeditionLoot}=require("./coopNpcExpeditionLoot");
+ const {createNpcExpeditionLoot}=load("coopNpcExpeditionLoot");
  const stable=new Map(),returnOrders=new Map(),quarantine=new Set();
  const loot=createNpcExpeditionLoot({
   nativeStore,itemStore,gameStore,getController,getStation,
