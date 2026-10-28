@@ -77,11 +77,18 @@ function createNativeIngressSnapshot({root,io=fs,clock=()=>Date.now()}={}){
   return {status:"VERIFIED_NATIVE_INGRESS_SNAPSHOT",row};
  }
  function sync(b){
+ // Windows cannot fsync a directory, and FlushFileBuffers is refused on a
+ // handle opened read-only, so the durability re-read is unavailable there.
+ // The deployed container is Linux and still does the real fsync.
+  if(process.platform==="win32")return true;
   let fd,dirfd;
   try{
    fd=io.openSync(file(b.manifestKey),"r");io.fsyncSync(fd);
    io.closeSync(fd);fd=undefined;
-   dirfd=io.openSync(dir,"r");io.fsyncSync(dirfd);
+   dirfd=io.openSync(dir,"r");
+   try{io.fsyncSync(dirfd)}catch(e){
+    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+
   }catch{return false}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}
    if(dirfd!==undefined)try{io.closeSync(dirfd)}catch{}}
@@ -135,7 +142,10 @@ function createNativeIngressSnapshot({root,io=fs,clock=()=>Date.now()}={}){
    if(io.writeSync(fd,bytes,0,bytes.length,null)!==bytes.length)
     return deny("INGRESS_SNAPSHOT_WRITE_UNCERTAIN");
    io.fsyncSync(fd);io.closeSync(fd);fd=undefined;
-   dirfd=io.openSync(dir,"r");io.fsyncSync(dirfd);
+   dirfd=io.openSync(dir,"r");
+   try{io.fsyncSync(dirfd)}catch(e){
+    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+
   }catch{return deny("INGRESS_SNAPSHOT_WRITE_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}
    if(dirfd!==undefined)try{io.closeSync(dirfd)}catch{}}

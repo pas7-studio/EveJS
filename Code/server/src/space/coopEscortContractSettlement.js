@@ -24,7 +24,8 @@ function createEscortContractSettlement({root,io=fs,clock=()=>Date.now(),authori
  const file=id=>path.join(directory,id+".jsonl");
  const claim=id=>path.join(directory,"claims",id+".lock");
  function syncDir(dir){let fd;try{fd=io.openSync(dir,"r");io.fsyncSync(fd);return true}
-  catch{return false}finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}}
+  catch(e){return process.platform==="win32"&&["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code)}
+  finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}}
  function append(target,event,exclusive=false){
   let fd;
   try{

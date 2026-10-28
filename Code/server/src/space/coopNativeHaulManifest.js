@@ -15,7 +15,8 @@ function createManifest({root,store,items,getNativeEntity,io=fs,clock=()=>Date.n
  const manifestPath=k=>path.join(dir,k+".json");
  function syncDir(){
   let fd;try{fd=io.openSync(dir,"r");io.fsyncSync(fd);return true}
-  catch{return false}finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
+  catch(e){return process.platform==="win32"&&["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code)}
+  finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
  }
  function identity(args){
   if(![args?.systemID,args?.fleetID,args?.stationID,args?.corporationID].every(valid)||

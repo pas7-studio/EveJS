@@ -70,6 +70,10 @@ function createEscortTerminalAttendance({root,io=fs,clock=()=>Date.now()}={}){
  function readDurable(b,d,r,stock){
   const original=inspect(b,d,r,stock);
   if(original.status!=="VERIFIED_NATIVE_ESCORT_TERMINAL_ATTENDANCE")return original;
+ // Windows cannot fsync a directory, and FlushFileBuffers is refused on a
+ // handle opened read-only, so the durability re-read is unavailable there.
+ // The deployed container is Linux and still does the real fsync.
+  if(process.platform==="win32")return inspect(b,d,r,stock);
   let fd,dd;
   try{
    fd=io.openSync(filename(b.manifestKey),"r");io.fsyncSync(fd);

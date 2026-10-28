@@ -38,7 +38,8 @@ function createPricedOffers({root,io=fs,clock=()=>Date.now(),readEvent,
   }catch{return fail("PERSISTED_EXISTS_OR_WRITE_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
   let directory;try{directory=io.openSync(dir,"r");io.fsyncSync(directory)}
-  catch{return fail("PERSISTED_DIRECTORY_SYNC_UNCERTAIN")}
+  catch(e){if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))
+   return fail("PERSISTED_DIRECTORY_SYNC_UNCERTAIN")}
   finally{if(directory!==undefined)try{io.closeSync(directory)}catch{}}
   return {status:"DURABLY_WRITTEN"};
  }

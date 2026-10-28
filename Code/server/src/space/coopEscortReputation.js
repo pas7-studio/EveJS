@@ -80,7 +80,8 @@ function createReputation({root,io=fs,clock=()=>Date.now(),readContract,
   }catch{return deny("HISTORY_ALREADY_EXISTS_OR_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
   try{fd=io.openSync(dir,"r");io.fsyncSync(fd)}
-  catch{return deny("HISTORY_WRITE_UNCERTAIN")}
+  catch(e){if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))
+   return deny("HISTORY_WRITE_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
   return {status:"VERIFIED_NATIVE_ESCORT_HISTORY_RECORDED",outcome:record.outcome};
  }

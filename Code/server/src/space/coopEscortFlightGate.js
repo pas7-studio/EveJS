@@ -18,7 +18,8 @@ function createEscortFlightGate({root,io=fs,clock=()=>Date.now(),
  const dir=path.join(root,"escort-flight-gate");
  const filename=key=>path.join(dir,key+".jsonl");
  function syncDir(){let fd;try{fd=io.openSync(dir,"r");io.fsyncSync(fd);return true}
-  catch{return false}finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}}
+  catch(e){return process.platform==="win32"&&["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code)}
+  finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}}
  function append(key,value,exclusive=false){
   let fd;try{
    io.mkdirSync(dir,{recursive:true});

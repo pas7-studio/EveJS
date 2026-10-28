@@ -66,11 +66,18 @@ function createDepartureWitness({root,io=fs,clock=()=>Date.now()}={}){
   // a new departure from the current NPC/pilot positions.
   const prior=read(manifestKey,booking);
   if(prior.status!=="VERIFIED_NATIVE_ESCORT_DEPARTURE")return prior;
+ // Windows cannot fsync a directory, and FlushFileBuffers is refused on a
+ // handle opened read-only, so the durability re-read is unavailable there.
+ // The deployed container is Linux and still does the real fsync.
+  if(process.platform==="win32")return read(manifestKey,booking);
   let fd,dirfd;
   try{
    fd=io.openSync(filename(manifestKey),"r");io.fsyncSync(fd);
    io.closeSync(fd);fd=undefined;
-   dirfd=io.openSync(dir,"r");io.fsyncSync(dirfd);
+   dirfd=io.openSync(dir,"r");
+   try{io.fsyncSync(dirfd)}catch(e){
+    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+
   }catch{return deny("DEPARTURE_REPLAY_FSYNC_UNCERTAIN_NEEDS_REPAIR")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}
    if(dirfd!==undefined)try{io.closeSync(dirfd)}catch{}}
@@ -147,7 +154,10 @@ function createDepartureWitness({root,io=fs,clock=()=>Date.now()}={}){
    if(io.writeSync(fd,data,0,data.length,null)!==data.length)
     return deny("DEPARTURE_WRITE_UNCERTAIN");
    io.fsyncSync(fd);io.closeSync(fd);fd=undefined;
-   dirfd=io.openSync(dir,"r");io.fsyncSync(dirfd);
+   dirfd=io.openSync(dir,"r");
+   try{io.fsyncSync(dirfd)}catch(e){
+    if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e}
+
   }catch{return deny("DEPARTURE_WRITE_UNCERTAIN_NEEDS_REPAIR")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{};
    if(dirfd!==undefined)try{io.closeSync(dirfd)}catch{}}

@@ -14,7 +14,8 @@ function createWarpFence({root,io=fs,clock=()=>Date.now()}={}){
  const loc=k=>path.join(dir,k+".jsonl");
  function directorySynced(){
   let fd;try{fd=io.openSync(dir,"r");io.fsyncSync(fd);return true}
-  catch{return false}finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
+  catch(e){return process.platform==="win32"&&["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code)}
+  finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
  }
  function append(key,entry,exclusive){
   let fd;
