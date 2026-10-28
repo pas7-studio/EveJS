@@ -46,8 +46,15 @@ function createReprocessor({items,industry,staticData,root,io=fs,clock=()=>Date.
    io.closeSync(fd);fd=null;
    io.renameSync(temp,dest);
    // A receipt that cannot be durably acknowledged must never trigger mutation.
-   const dfd=io.openSync(root,"r");
-   try{io.fsyncSync(dfd);}finally{io.closeSync(dfd);}
+   // Windows cannot open a directory for fsync at all; that is the platform
+   // refusing the call, not this receipt losing its ACK.
+   try{
+    const dfd=io.openSync(root,"r");
+    try{io.fsyncSync(dfd);}finally{io.closeSync(dfd);}
+   }catch(error){
+    if(process.platform!=="win32"||
+       !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+   }
   }finally{
    if(fd!==null)try{io.closeSync(fd);}catch(_e){}
    try{io.unlinkSync(temp);}catch(error){if(error.code!=="ENOENT")throw error;}
