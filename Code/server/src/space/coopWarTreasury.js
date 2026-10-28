@@ -10,6 +10,13 @@ const nonneg=x=>Number.isSafeInteger(x)&&x>=0;
 const key=x=>typeof x==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(x)&&
  !["__proto__","constructor","prototype"].includes(x);
 const own=(x,k)=>Object.prototype.hasOwnProperty.call(x,k);
+// FW-055 (review, the reason no bounty ever paid): a payout names a CO-OP PILOT,
+// which is a string ("coop-pilot-027"); the treasury demanded a positive INTEGER,
+// so `coopWarBounty.pay` -> PAYOUT was refused with INVALID_TREASURY_PAYOUT before
+// any money could move, and the row validator would have rejected the same string
+// afterwards. Both a real pilot id and a positive integer are accepted; anything
+// else is still refused, and a payout row keeps the identifier it was paid to.
+const pilotRef=(x)=>pos(x)||(typeof x==="string"&&/^coop-(pilot|player)-[0-9]{3,}$/.test(x));
 function cents(x){
  if(typeof x!=="number"||!Number.isFinite(x)||x<0)return null;
  const v=x*100,n=Math.round(v);
@@ -32,7 +39,7 @@ function validate(s){
    throw Error("WAR_TREASURY_CORRUPT_RESERVATION");
    // A PAID row is the proof that escrowed value left the chest for a named
    // pilot; without the whole proof the row is not a settlement.
-   if(r.status==="PAID"&&(!pos(r.paidAt)||!pos(r.paidToPilotID)||!key(r.payoutProofID)))
+   if(r.status==="PAID"&&(!pos(r.paidAt)||!pilotRef(r.paidToPilotID)||!key(r.payoutProofID)))
     throw Error("WAR_TREASURY_CORRUPT_PAYOUT");
  }
  return s;
@@ -45,6 +52,8 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
  const enabled=()=>env.EVEJS_COOP_FACTION_WAR==="1"&&
   env.EVEJS_COOP_WAR_TREASURY==="1"&&env.EVEJS_COOP_NATIVE_ATOMIC_ROWS==="1";
  let busy=false;
+ // Set by the RESERVE path when it had to make room: reported, never invented.
+ const validators={pruned:0,liveHeld:0};
  function snapshot(){
   if(!enabled())return {status:"DISABLED"};
   return gameStore.coopAtomicNativeRows.transact([TABLE],
@@ -88,7 +97,7 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
     // only proves where the escrowed value went.
     if(command.type==="PAYOUT"&&(!r||r.status!=="HELD"||
       r.corporationID!==command.corporationID||!key(command.proofID)||
-      !pos(command.pilotID)))
+      !pilotRef(command.pilotID)))
      return {status:"BLOCKED",reason:"INVALID_TREASURY_PAYOUT"};
     const at=clock();
     if(!pos(at))throw Error("WAR_TREASURY_CLOCK_UNSAFE");
@@ -104,9 +113,29 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
       war.defenderFactionID!==purpose.factionID))
      return {status:"BLOCKED",reason:"WAR_TREASURY_FACTION_MISMATCH"};
     if(command.type==="RESERVE"){
+     // FW-054 (review): terminal rows were never pruned, so after 500 campaign
+     // sides the cap refused every new war forever even though only a handful of
+     // escrows were live. Settled rows (REFUNDED/PAID) are history, not money:
+     // the oldest are dropped only when room is needed, and a HELD row is never
+     // touched. The count of dropped rows is reported, never silent.
+     let pruned=0;
+     const live=Object.values(state.reservations).filter(row=>row.status==="HELD").length;
+     if(Object.keys(state.reservations).length>=MAX_RESERVATIONS){
+      const terminal=Object.values(state.reservations)
+       .filter(row=>row.status!=="HELD")
+       .sort((a,b)=>(Number(b.paidAt||b.refundedAt||b.reservedAt)||0)-(Number(a.paidAt||a.refundedAt||a.reservedAt)||0));
+      for(const row of terminal){
+       if(Object.keys(state.reservations).length<MAX_RESERVATIONS)break;
+       delete state.reservations[row.reservationID];
+       pruned+=1;
+      }
+      validators.pruned=pruned;
+      validators.liveHeld=live;
+     }
      if(war.state!=="ACTIVE"||own(warState.campaigns,command.campaignID)||
       Object.keys(state.reservations).length>=MAX_RESERVATIONS)
-      return {status:"BLOCKED",reason:"WAR_TREASURY_PURPOSE_UNAVAILABLE"};
+      return {status:"BLOCKED",reason:"WAR_TREASURY_PURPOSE_UNAVAILABLE",
+       prunedReservations:pruned,liveEscrows:live};
      // An ORPHANED escrow must unblock its own campaign. Measured on the work
      // stack 2026-10-28: the campaign record was lost to a container recreate
      // while its reservation stayed HELD, so every later opening refused with
@@ -210,7 +239,10 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
     const receipt={type:command.type,reservationID:id,
      corporationID:command.corporationID,amountCents:amount,
      walletBeforeCents:balance,walletAfterCents:next,
-     journalID,at};
+     journalID,at,
+     // FW-054: room made for this reserve by dropping settled history, so a
+     // full ledger can never look like a world that simply cannot fund a war.
+     prunedReservations:Number(validators.pruned)||0};
     if(command.type==="RESERVE"){
      state.reservations[id]={reservationID:id,corporationID:command.corporationID,
       factionID:command.factionID,warID:command.warID,
