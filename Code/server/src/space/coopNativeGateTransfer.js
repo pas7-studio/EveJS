@@ -24,7 +24,14 @@ function createNativeGateTransfer({sceneForSystem,getGate,store,service,getContr
    .every(k=>typeof store[k]==="function"))throw Error("native gate transfer dependencies required");
  const journalFile=id=>path.join(journalDir,id+".json");
  // Crash-persistent intent. A partial temporary write is a repair blocker.
- const syncDir=()=>{const fd=fs.openSync(journalDir,"r");try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}};
+ const syncDir=()=>{let fd=null;try{fd=fs.openSync(journalDir,"r");fs.fsyncSync(fd);return true;}
+ catch(e){
+  // Windows refuses to open a directory for fsync at all; that is the platform
+  // reporting "unsupported", not this module losing the journal ACK.
+  if(process.platform!=="win32"||!["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e;
+  return false;
+ }
+ finally{if(fd!==null)try{fs.closeSync(fd);}catch(_ignored){}}};
  const safeDirectory=()=>{
   fs.mkdirSync(journalDir,{recursive:true});
   const st=fs.lstatSync(journalDir);
