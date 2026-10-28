@@ -1639,6 +1639,7 @@ function start(){
  timer=setInterval(()=>worldPhaseCoordinator.tick(runPhase=>{
   backgroundTicks++;
   syncWarRuntime();
+  for(const fleetSystemID of warFleetSystemIDs())visitedSystems.add(fleetSystemID);
   // Read-only courier pass (COOP-024). It never mutates a contract: it only
   // reports what the decision core thinks of the outstanding courier contracts,
   // so the live wiring can be verified before anything is accepted.
@@ -4373,6 +4374,15 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
 // The split runtime reads live objects this file creates. They appear in a
 // different order than the module assumes, so hand them over on every cycle
 // instead of guessing one moment when all of them already exist.
+// The war layer only looked at systems a client had flown into. A real war
+// fleet spawned into a system creates a native scene there and the durable
+// roster proves those hulls, so that system is observed too.
+function warFleetSystemIDs(){
+ try{
+  return require("./coopWarObservedSystems")
+   .fleetSystemIDs(require("./coopWarFleetRoster").sharedRoster().snapshot());
+ }catch(_error){return []}
+}
 function syncWarRuntime(){
  try{
   require("./coopVirtualWorldRuntime.pure").bindWarRuntime({
