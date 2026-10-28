@@ -192,9 +192,8 @@ function start(scene, fleetRecord, now) {
     decision = governor.decide({ stock: num(measured.stockUnits), demand: num(measured.demand),
       floorUnits, now });
   } catch (_error) { return false; }
-  if (!decision || decision.action !== "HOLD") {
-    // Within demand (or a trickle window): nothing to drain, and a trickle must be
-    // allowed to become a haul instead of being spent on a trip to the station.
+  if (!decision || decision.action === "ALLOW") {
+    // Within demand: nothing to drain.
     fleetRecord.coopDrainNextAtMs = now + intervalMs();
     return false;
   }
