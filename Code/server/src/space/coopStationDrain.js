@@ -74,8 +74,13 @@ function chooseStation(rows, { corpID = 0, isMineral = () => false, isOre = () =
     ranked: [...products.entries()] };
   const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
   const usable = ranked.filter(([stationID]) => !onCooldown(stationID, now));
-  const pick = usable[0] || ranked[0];
-  return pick ? { stationID: pick[0], units: pick[1], kind: "mineral", ranked } : null;
+  // A station that just answered "nothing was sold" is NOT flown to again, even when it
+  // holds the most stock: measured 2026-10-28 the drain returned to one hangar three times
+  // because the fallback below ignored its own cooldown, and every trip wasted the one
+  // hauler the fleet has instead of visiting a station that really bids.
+  const pick = usable[0] || null;
+  return pick ? { stationID: pick[0], units: pick[1], kind: "mineral", ranked,
+    cooled: ranked.length - usable.length } : null;
 }
 
 // The governor throttles how much ore the corporation digs. A manufactured good is
