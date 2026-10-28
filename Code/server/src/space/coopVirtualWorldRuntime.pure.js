@@ -214,21 +214,47 @@ function warPilotFaction(pilotID){
  return 0;
 }
 
+// FW-049: a war presence is a PHYSICAL fleet, so it must be read from the hull.
+//
+// Measured 20:29-20:34Z: the 500011 Angels spawned in 30003836 kept disappearing
+// from `war_state.presence` while their native hulls were still alive there,
+// because the link's `systemID` follows the VIRTUAL pilot and the virtual world
+// keeps advancing that pilot along its route (x5). Ownership, fronts and target
+// selection therefore flickered every few minutes and no border stayed open long
+// enough to open a campaign. The native entity record knows where the hull really
+// is, and a link whose native record is gone is a dead ship, not a presence.
+// Links with no native record AND no readable position are skipped, never guessed.
+function projectWarPresence(links,{getNativeEntity,getFactionForCorporation}={}){
+ const out=[];
+ if(typeof getNativeEntity!=="function"||
+  typeof getFactionForCorporation!=="function")return out;
+ for(const link of Array.isArray(links)?links:Object.values(links||{})){
+  try{
+   const entityID=Number(link&&link.entityID);
+   const native=entityID>0?getNativeEntity(entityID):null;
+   if(!native)continue; // the hull is gone: it is not a presence
+   const faction=Number(getFactionForCorporation(native.corporationID));
+   if(!Number.isSafeInteger(faction)||faction<=0)continue;
+   const physical=Number(native.systemID);
+   const systemID=Number.isSafeInteger(physical)&&physical>0?physical:
+    (Number(link&&link.systemID)||0);
+   if(!systemID)continue;
+   out.push({pilotID:link.pilotID,systemID,factionID:faction,
+    corporationID:Number(native.corporationID)||0,
+    role:String(link.role||""),
+    linkSystemID:Number(link.systemID)||0,
+    positionDrifted:Number(link.systemID)!==systemID});
+  }catch(_error){/* one bad link never decides a presence */}
+ }
+ return out;
+}
 function warPresencePilots(){
  if(!identityRegistry)return [];
  const npcStore=require("./npc/nativeNpcStore"),
   factions=require("../services/faction/factionState");
- const out=[];
- for(const link of Object.values(identityRegistry.snapshot()?.links||{})){
-  try{
-   const native=npcStore.getNativeEntity(Number(link.entityID));
-   const faction=Number(factions.getFactionIDForCorporation(native?.corporationID));
-   if(!Number.isSafeInteger(faction)||faction<=0)continue;
-   out.push({pilotID:link.pilotID,systemID:Number(link.systemID)||0,factionID:faction,
-    corporationID:Number(native?.corporationID)||0});
-  }catch(_error){/* skip */}
- }
- return out;
+ return projectWarPresence(Object.values(identityRegistry.snapshot()?.links||{}),{
+  getNativeEntity:id=>npcStore.getNativeEntity(Number(id)),
+  getFactionForCorporation:corp=>factions.getFactionIDForCorporation(corp)});
 }
 // The real NPC corporation a faction fields. A faction with earned income in
 // one of its corporations funds its chest from that corporation's wallet.
@@ -669,6 +695,11 @@ function observeEconomyOre(){
  }catch(error){console.warn("[CoopEconomyDestination] fleet state",error.message);}
 }
 
+// The order in the env list IS the priority: one arrival is bounded to 20 settlements,
+// so the goods that matter must be asked for first, and the cap is what keeps that bound.
+// Measured 2026-10-28: a manufactured product appended as the 44th type was silently
+// dropped by the slice, so the arrival sale never asked the market for the one good the
+// station really bids for - the chipsets rode along unsold through a full ore haul.
 function nativeMarketAllowlist(name){
  return [...new Set(String(process.env[name]||"").split(",").map(Number)
   .filter(x=>Number.isSafeInteger(x)&&x>0))].slice(0,20);
@@ -1070,4 +1101,4 @@ function releaseSpawnedIdentity({pilotID,entityID=0,reason=""}={}){
  return {...released,reason:String(reason||"IDENTITY_REASSIGNED")};
 }
 
-module.exports = {bindWarRuntime, observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningScenes, destroyedNativeShips, wreckCustodyNotes, worldBootAtMs, courierPilotIDs, nativeWarFleetRegistry, warSkipReasons, warSkip, warFrontChatSent, siblingSuffix, warFrontChat, warTreasuryStore, warPilotFaction, warPresencePilots, warFactionCorporation, presenceSummary, advanceNativeAmmoBankRecovery, ensureWarRecoverySocket, diagnoseNativeRaids, npcRealPoints, syncNativeDeliveries, hasPhysicalWreckClaim, nextHeadlessRetryMs, isHeadlessNativeReady, ensureNativeGateTransfer, observeNativeAmmoConsumption, wreckRecoveryNotes, lockedTargets, npcModuleSummary, distanceBetween, nearestBeltMeters, mineableSummary, mineableBeltSummary, miningShipDetail, observeEconomyOre, nativeMarketAllowlist, nativeWarpPoint, raidLeashNotes, raidLeashWrite, raidLeashScope, raidLeashRestore, advanceNativePveBossWreck, advanceNativePveObjectiveDoctrine, advanceNativePveWaveReinforcements, advanceNativePveSiteDefense, advanceNpcRecognition, confirmedWreck, arrivalSales, saleNotes, noteSaleSkip, createWarRecoveryAdmin, witnessedNativeBossWreck, releaseSpawnedIdentity};
+module.exports = {projectWarPresence, bindWarRuntime, observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningScenes, destroyedNativeShips, wreckCustodyNotes, worldBootAtMs, courierPilotIDs, nativeWarFleetRegistry, warSkipReasons, warSkip, warFrontChatSent, siblingSuffix, warFrontChat, warTreasuryStore, warPilotFaction, warPresencePilots, warFactionCorporation, presenceSummary, advanceNativeAmmoBankRecovery, ensureWarRecoverySocket, diagnoseNativeRaids, npcRealPoints, syncNativeDeliveries, hasPhysicalWreckClaim, nextHeadlessRetryMs, isHeadlessNativeReady, ensureNativeGateTransfer, observeNativeAmmoConsumption, wreckRecoveryNotes, lockedTargets, npcModuleSummary, distanceBetween, nearestBeltMeters, mineableSummary, mineableBeltSummary, miningShipDetail, observeEconomyOre, nativeMarketAllowlist, nativeWarpPoint, raidLeashNotes, raidLeashWrite, raidLeashScope, raidLeashRestore, advanceNativePveBossWreck, advanceNativePveObjectiveDoctrine, advanceNativePveWaveReinforcements, advanceNativePveSiteDefense, advanceNpcRecognition, confirmedWreck, arrivalSales, saleNotes, noteSaleSkip, createWarRecoveryAdmin, witnessedNativeBossWreck, releaseSpawnedIdentity};
