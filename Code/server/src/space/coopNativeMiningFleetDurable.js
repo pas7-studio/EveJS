@@ -202,8 +202,16 @@ function repairPartialSlot({scene,store,systemID,slot,key,db,spawn,ensureState,m
      born.data.haulerSpawnResult?.data?.partialFailure)
   throw Error("ALIFE08_PARTIAL_NATIVE_SPAWN");
  const newMin=ids(born.data.minerEntityIDs||[]),newHau=ids(born.data.haulerEntityIDs||[]);
- if(!newMin||!newHau||newMin.length!==missingMin||newHau.length!==missingHau)
-  throw Error("ALIFE08_REPAIR_SPAWN_COUNT_MISMATCH");
+ // The native wing spawner always creates AT LEAST one miner (miningNpcOperations:
+ // amount = Math.max(1, ...)), even when only a hauler is missing. A repair that asked
+ // for 0 miners therefore got 1 and refused itself: measured 2026-10-28
+ // "need=0m/1h got=1m/1h" left both 30000145 slots unrepairable for ever. The wing may
+ // legitimately gain a miner; it must never gain FEWER ships than it needs.
+ if(!newMin||!newHau||newMin.length<missingMin||newHau.length<missingHau)
+  throw Error("ALIFE08_REPAIR_SPAWN_COUNT_MISMATCH:need="+missingMin+"m/"+missingHau+"h"+
+   " got="+(newMin?newMin.length:"null")+"m/"+(newHau?newHau.length:"null")+"h"+
+   " partial="+String(Boolean(born&&born.data&&(born.data.minerSpawnResult?.data?.partialFailure||born.data.haulerSpawnResult?.data?.partialFailure)))+
+   " ids="+String([...(newMin||[]),...(newHau||[])].join(",")));
  const merged={minerEntityIDs:[...aliveMin,...newMin],haulerEntityIDs:[...aliveHau,...newHau]};
  if(merged.minerEntityIDs.length+merged.haulerEntityIDs.length>MAX_WING)
   throw Error("ALIFE08_REPAIR_WING_TOO_LARGE");
