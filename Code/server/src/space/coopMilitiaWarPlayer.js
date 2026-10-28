@@ -233,11 +233,21 @@ function npcPlayerVerdict(npcEntity, playerEntity) {
   catch (error) { return { status: "UNAVAILABLE", reason: String(error?.message || error).slice(0, 120) }; }
 }
 
+// One decision for the same hook, so the native file does not carry the policy:
+// undefined = no co-op opinion, let stock EveJS answer; true = engage; false = hold fire.
+function npcPlayerEngages(npcEntity, playerEntity) {
+  const verdict = npcPlayerVerdict(npcEntity, playerEntity);
+  if (verdict.status === "ENEMY_MILITIA") return false;
+  if (verdict.status !== "NOT_WAR_SHIP") return true;
+  return undefined;
+}
+
 module.exports = {
   combatEnabled,
   activeEnlistment,
   verdictFor,
   createMilitiaWarPlayer,
   npcPlayerVerdict,
+  npcPlayerEngages,
   native,
 };

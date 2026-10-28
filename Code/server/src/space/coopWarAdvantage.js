@@ -135,3 +135,19 @@ function shared() {
 }
 
 module.exports = { createWarAdvantage, shared, DEFAULT_THRESHOLD, LOSS_WEIGHT, HULL_WEIGHT };
+
+// fwAdvantageGatewayService answered with a gRPC envelope it built inline; the shape
+// belongs here. null = no score for this system, so the caller keeps its stock answer.
+// The three payload helpers stay in the gateway because they are stock exports there.
+function scoresResponse(solarSystemID, { buildEncodedPayload, response, buildPayload }) {
+  const scores = shared().scoresFor(solarSystemID);
+  if (!scores.length) return null;
+  return {
+    statusCode: 200,
+    statusMessage: "",
+    responseTypeName: "eve_public.faction.activity.GetSolarSystemScoresResponse",
+    responsePayloadBuffer: buildEncodedPayload(response, buildPayload(solarSystemID, scores)),
+  };
+}
+
+module.exports.scoresResponse = scoresResponse;
