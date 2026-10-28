@@ -173,15 +173,14 @@ function payFee({gameStore, root, ownerID, stationID, oreItemID, amountISK, now,
 /**
  * Refine the corporation's warehouse ore at one station. Returns a summary; never throws.
  */
-function run(options = {}) {
+function refineAtStation(options = {}, stationIDOverride = 0) {
   const env = options.env || process.env;
-  if (String(env[FLAG] || "") !== "1") return {status: "DISABLED", refined: 0};
   const ownerID = pos(env[CORP_FLAG]) || DEFAULT_CORP_ID;
   // The mining fleet docks no hull, so its record usually carries no station. The station
   // that really holds this fleet's ore is proven by its newest warehouse trip manifest,
   // never guessed from an arbitrary system.
-  const proved = pos(options.stationID) ? null : manifestStation({env, options});
-  const stationID = pos(options.stationID) || (proved ? proved.stationID : 0);
+  const proved = pos(stationIDOverride) ? null : manifestStation({env, options});
+  const stationID = pos(stationIDOverride) || (proved ? proved.stationID : 0);
   // Say why nothing was refined instead of returning silently: a caller that passes no
   // station must be visible in the event stream, not inferred from an empty refinery dir.
   const skip = (status, extra = {}) => {
@@ -206,7 +205,9 @@ function run(options = {}) {
   const items = options.items || require("../services/inventory/itemStore");
   let rows;
   try {
-    rows = candidates({items, ownerID, stationID, limit: 8});
+    rows = candidates({items, ownerID, stationID,
+      limit: Math.max(1, Math.min(64,
+        Number(env.EVEJS_COOP_NPC_REFINERY_BATCH) || 24))});
   } catch (error) {
     return skip("CANDIDATES_UNREADABLE", {reason: String(error && error.message).slice(0, 80)});
   }
@@ -299,6 +300,25 @@ function run(options = {}) {
 }
 
 // Called from the mining fleet tick: throttled, and only when the fleet knows a station.
+// Measured 2026-10-28: 454 124 units of tagged warehouse ore sat at 60000682 while the
+// refinery worked only at the fleet's own station (1 535 units there), so no Pyerite was
+// ever made from the stack the corporation actually owned. Both stations are proven - the
+// fleet's dock and the newest warehouse trip manifest - so both are refined, in that order.
+function run(options = {}) {
+  const env = options.env || process.env;
+  if (String(env[FLAG] || "") !== "1") return {status: "DISABLED", refined: 0};
+  const first = refineAtStation(options, pos(options.stationID));
+  if (first.refined > 0) return first;
+  if (!["NO_WAREHOUSE_ORE", "NO_STATION", "STOCK_UNREADABLE"].includes(String(first.status)))
+    return first;
+  const proved = manifestStation({env, options});
+  if (!proved || proved.stationID === pos(options.stationID)) return first;
+  const second = refineAtStation(options, proved.stationID);
+  return second.refined > 0 || second.status !== "NO_WAREHOUSE_ORE"
+    ? {...second, firstStation: pos(options.stationID)}
+    : {...first, triedStations: [pos(options.stationID), proved.stationID]};
+}
+
 function tick(options = {}) {
   const env = options.env || process.env;
   if (String(env[FLAG] || "") !== "1") return {status: "DISABLED"};
@@ -317,5 +337,5 @@ function resetForTests() {
 }
 
 module.exports = {FLAG, WAREHOUSE_FLAG, manifestStation, DIR_FLAG, CORP_FLAG, DEFAULT_CORP_ID, THROTTLE_MS, WAREHOUSE_TAG,
-  candidates, payFee, run, tick, resetForTests};
+  candidates, payFee, refineAtStation, run, tick, resetForTests};
 
