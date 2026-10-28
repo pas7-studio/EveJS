@@ -11,7 +11,7 @@ function loadSettlement(){
      String(error.message).split("\n")[0]!==
       "Cannot find module './coopNpcCorporateSettlement'")
    throw error;
-  return require("./coopNpcCorporateSettlement");
+  return require("./coopNpcCorporateSettlement.cjs");
  }
 }
 const {createNpcCorporateSettlement}=loadSettlement();
