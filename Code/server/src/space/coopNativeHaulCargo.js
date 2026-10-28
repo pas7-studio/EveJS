@@ -196,14 +196,24 @@ function strictTransferCargo(scene,fleet,miner,options,store,probe){
    for(const row of existing){
     const type=resolveType(Number(row?.typeID));
     const unit=Number(type?.volume);
-    if(!integer(Number(row?.cargoID))||!integer(Number(row?.quantity))||
-      Number(row?.entityID)!==haulerID||
-      !allowedOwners.has(Number(row?.ownerID))||
-      row.transient!==false||!Number.isFinite(unit)||unit<=0){
+    // Each predicate is evaluated once and reported, so a refusal always names the exact
+    // condition instead of a generic "invalid" (measured: a row that looked perfect in
+    // every printed field was still refused).
+    const rowCargoID=Number(row?.cargoID);
+    const rowQuantity=Number(row?.quantity);
+    const rowReadable=integer(rowCargoID)&&integer(rowQuantity)&&
+      row?.transient===false&&Number.isFinite(unit)&&unit>0;
+    const rowOurs=Number(row?.entityID)===haulerID&&
+      allowedOwners.has(Number(row?.ownerID));
+    if(!rowReadable||!rowOurs){
      valid=false;
-     badRow={cargoID:Number(row?.cargoID)||0,typeID:Number(row?.typeID)||0,
-      ownerID:Number(row?.ownerID)||0,entityID:Number(row?.entityID)||0,
-      transient:row?.transient===true,unit:Number.isFinite(unit)?unit:null};
+     badRow={cargoID:rowCargoID||0,quantity:Number.isFinite(rowQuantity)?rowQuantity:null,
+      typeID:Number(row?.typeID)||0,ownerID:Number(row?.ownerID)||0,
+      entityID:Number(row?.entityID)||0,haulerID,
+      owners:[...allowedOwners].map(x=>Number(x)||0),
+      transient:row?.transient===true,unit:Number.isFinite(unit)?unit:null,
+      rowReadable,rowOurs,integerCargoID:integer(rowCargoID),
+      integerQuantity:integer(rowQuantity)};
      break;
     }
     used+=unit*Number(row.quantity);
