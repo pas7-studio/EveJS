@@ -67,7 +67,12 @@ function makePlayerIndustryFence({file,storage=fs,clock=()=>Date.now()}={}){
    storage.fsyncSync(fd);
   }finally{storage.closeSync(fd)}
   const dirFd=storage.openSync(dir,"r");
-  try{storage.fsyncSync(dirFd)}finally{storage.closeSync(dirFd)}
+  try{storage.fsyncSync(dirFd)}catch(error){
+   // Windows cannot fsync a directory at all; that is the platform refusing the
+   // call, not this journal losing its durable acknowledgement.
+   if(process.platform!=="win32"||
+    !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+  }finally{storage.closeSync(dirFd)}
  }
  function withLock(fn){
   if(unsafe)return {status:"NATIVE_INDUSTRY_JOURNAL_UNSAFE"};
