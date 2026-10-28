@@ -224,10 +224,10 @@ function planWars({
   for (const front of fronts) {
     for (const edge of front.edges) {
       if (openings.length >= limit) break;
-      const attackerFactionID = num(edge && edge.fromOwner);
-      const defenderFactionID = num(edge && edge.toOwner);
-      const sourceSystemID = num(edge && edge.fromSystemID);
-      const targetSystemID = num(edge && edge.toSystemID);
+      let attackerFactionID = num(edge && edge.fromOwner);
+      let defenderFactionID = num(edge && edge.toOwner);
+      let sourceSystemID = num(edge && edge.fromSystemID);
+      let targetSystemID = num(edge && edge.toSystemID);
       if (!pos(attackerFactionID) || !pos(defenderFactionID) || attackerFactionID === defenderFactionID) {
         skipped.push({ edge, reason: "NOT_TWO_REAL_FACTIONS" });
         continue;
@@ -236,9 +236,40 @@ function planWars({
         skipped.push({ edge, reason: "INVALID_EDGE" });
         continue;
       }
-      if (liveCampaignFor(state, targetSystemID)) {
-        skipped.push({ edge, reason: "TARGET_ALREADY_CONTESTED" });
-        continue;
+      // A front is one gate pair, not one direction. The derived edge keeps the
+      // orientation of whichever system the territory map listed first, so when
+      // that side's target already carries a live campaign the pair looked
+      // permanently blocked even though the other side was free. Attack across
+      // the same real gate from the other end instead of freezing the front.
+      //
+      // The mirror is only for a DIFFERENT war squatting on that system. When
+      // the live campaign belongs to this very faction pair, the border is
+      // already being fought and must not be reopened from the far side - that
+      // would let one war ping-pong its own front every tick.
+      let workingEdge = edge;
+      const blocking = liveCampaignFor(state, targetSystemID);
+      if (blocking) {
+        const blockingWar = (state && state.wars && state.wars[blocking.warID]) || null;
+        const samePair = Boolean(blockingWar) &&
+          [num(blockingWar.attackerFactionID), num(blockingWar.defenderFactionID)]
+            .sort((a, b) => a - b).join("|") ===
+          [attackerFactionID, defenderFactionID].sort((a, b) => a - b).join("|");
+        if (samePair || liveCampaignFor(state, sourceSystemID)) {
+          skipped.push({ edge, reason: "TARGET_ALREADY_CONTESTED" });
+          continue;
+        }
+        workingEdge = {
+          fromSystemID: targetSystemID,
+          toSystemID: sourceSystemID,
+          fromOwner: defenderFactionID,
+          toOwner: attackerFactionID,
+          gateID: edge.reciprocalGateID,
+          reciprocalGateID: edge.gateID,
+        };
+        attackerFactionID = defenderFactionID;
+        defenderFactionID = num(edge.fromOwner);
+        sourceSystemID = workingEdge.fromSystemID;
+        targetSystemID = workingEdge.toSystemID;
       }
       const war = activeWarFor(state, attackerFactionID, defenderFactionID);
       const warID = war ? war.warID
@@ -251,12 +282,12 @@ function planWars({
       const known = war
         ? { attackerFactionID: num(war.attackerFactionID), defenderFactionID: num(war.defenderFactionID) }
         : plannedWarOrientation.get(warID) || null;
-      let plannedEdge = edge;
+      let plannedEdge = workingEdge;
       let plannedTarget = targetSystemID;
       if (known && known.attackerFactionID === defenderFactionID &&
         known.defenderFactionID === attackerFactionID) {
         plannedEdge = {
-          ...edge,
+          ...workingEdge,
           fromSystemID: targetSystemID, toSystemID: sourceSystemID,
           fromOwner: defenderFactionID, toOwner: attackerFactionID,
         };
