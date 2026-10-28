@@ -39,11 +39,45 @@ const dist = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : I
 // the drain moves on to another hangar instead of re-visiting a market it emptied.
 const stationCooldown = new Map();
 const COOLDOWN_MS = 30 * 60 * 1000;
+// A station that just answered "nothing was sold" must stay cooled down ACROSS restarts.
+// Measured 2026-10-28: the map was in memory, the work stack restarted between trips, and
+// the drain flew to the same station that buys none of its stock three times in a row.
+const cooldownRoot = () =>
+  String(process.env.EVEJS_COOP_STATION_DRAIN_ROOT ||
+    process.env.EVEJS_COOP_NPC_MARKET_ROOT || "/var/lib/evejs/coop-native-market");
+function cooldownFile() {
+  return require("node:path").join(cooldownRoot(), "drain-cooldowns.json");
+}
+let cooldownsLoaded = false;
+function loadCooldowns(now = Date.now()) {
+  if (cooldownsLoaded) return;
+  cooldownsLoaded = true;
+  let saved = null;
+  try {
+    saved = JSON.parse(require("node:fs").readFileSync(cooldownFile(), "utf8"));
+  } catch (_error) { return; }
+  if (!saved || typeof saved !== "object") return;
+  for (const [key, until] of Object.entries(saved)) {
+    const id = pos(key);
+    const at = num(until);
+    if (id && at > now) stationCooldown.set(id, at);
+  }
+}
+function saveCooldowns() {
+  try {
+    const out = {};
+    for (const [id, until] of stationCooldown) if (until > Date.now()) out[id] = until;
+    const fs = require("node:fs");
+    fs.mkdirSync(cooldownRoot(), { recursive: true });
+    fs.writeFileSync(cooldownFile(), JSON.stringify(out));
+  } catch (_error) { /* a lost cooldown file must never stop a drain */ }
+}
 function coolDown(stationID, now = Date.now()) {
   const id = pos(stationID);
-  if (id) stationCooldown.set(id, now + COOLDOWN_MS);
+  if (id) { stationCooldown.set(id, now + COOLDOWN_MS); saveCooldowns(); }
 }
 function onCooldown(stationID, now = Date.now()) {
+  loadCooldowns(now);
   const until = stationCooldown.get(pos(stationID));
   return Boolean(until && now < until);
 }
