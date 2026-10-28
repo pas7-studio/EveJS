@@ -7,6 +7,7 @@ const { getCharacterRecord } = require(path.join(
   "../character/characterState",
 ));
 const {
+  buildDict,
   buildKeyVal,
   buildList,
 } = require(path.join(__dirname, "../_shared/serviceHelpers"));
@@ -17,6 +18,30 @@ function factionState() {
     factionStateModule = require(path.join(__dirname, "factionState"));
   }
   return factionStateModule;
+}
+
+// The statistics the client asks for are about the same war record the rest of the
+// co-op layer writes, so they are read through the one projection that already reads it.
+function readWarState() {
+  try {
+    return require(path.join(__dirname, "../../space/coopWarClientView")).warState();
+  } catch (_error) {
+    return null;
+  }
+}
+
+// The header of the militia table is faction ids: the client maps each one through
+// appConst.raceByFaction, so only real warzone empires may appear.
+function warzoneFactionsOf(warState) {
+  const factions = new Set();
+  for (const war of Object.values((warState && warState.wars) || {})) {
+    if (!war || war.state !== "ACTIVE") continue;
+    for (const id of [war.attackerFactionID, war.defenderFactionID]) {
+      const factionID = Number(id);
+      if (factionID >= 500001 && factionID <= 500004) factions.add(factionID);
+    }
+  }
+  return [...factions].sort((left, right) => left - right);
 }
 
 let factionWarMgrViewModule = null;
@@ -270,6 +295,45 @@ class FacWarMgrService extends BaseService {
 
   Handle_GetFactionCorporations() {
     return buildList([]);
+  }
+
+  // The statistics tab builds every table from these six answers, and
+  // statisticsController.py dereferences topStats[0][group] and .items() directly, so a
+  // null here raised instead of rendering an empty table.
+  Handle_GetStats_Character() {
+    return factionWarMgrView().emptyStats();
+  }
+
+  Handle_GetStats_Corp() {
+    return factionWarMgrView().emptyStats();
+  }
+
+  Handle_GetStats_Alliance() {
+    return factionWarMgrView().emptyStats();
+  }
+
+  Handle_GetStats_TopAndAllKillsAndVPs() {
+    const [top, all] = factionWarMgrView().topAndAllStats();
+    return [buildDict(Object.entries(top)), buildDict(Object.entries(all))];
+  }
+
+  Handle_GetStats_Militia() {
+    const view = factionWarMgrView();
+    const warState = readWarState();
+    const militia = view.militiaStats({ warzoneFactions: warzoneFactionsOf(warState) });
+    const data = {};
+    for (const [key, byFaction] of Object.entries(militia.data || {})) {
+      data[key] = buildDict(Object.entries(byFaction));
+    }
+    return buildKeyVal([["header", buildList(militia.header)], ["data", buildDict(Object.entries(data))]]);
+  }
+
+  Handle_GetStats_FactionInfo() {
+    const rows = factionWarMgrView().factionInfo(readWarState());
+    return buildDict(Object.entries(rows).map(([factionID, row]) => [
+      Number(factionID),
+      buildKeyVal(Object.entries(row)),
+    ]));
   }
 }
 
