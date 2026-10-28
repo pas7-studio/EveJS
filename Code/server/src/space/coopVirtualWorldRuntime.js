@@ -107,8 +107,52 @@ function warStateStore(){
   write(state){
    core.validateState(state);
    rows.transact([TABLE],tx=>{tx.put(TABLE,KEY,state);});
+   mirrorWarState(state);
   }
  };
+}
+// FW-041: the war record must survive a container recreate.
+//
+// Measured repeatedly on the work stack: the fleet registry, the casualty ledger,
+// the merit ledger and the treasury row all survived, while the war state row came
+// back EMPTY - so the campaign disappeared, the escrow kept holding real ISK and
+// no bounty could ever pay. A validated mirror on the data volume is a copy of the
+// authoritative record, never an invention: it is written after every successful
+// write and restored only when the atomic row is missing or unreadable, and it must
+// pass the core's own validateState before it is used.
+const WAR_MIRROR_FILE=()=>process.env.EVEJS_COOP_WAR_STATE_MIRROR_FILE||
+ "/var/lib/evejs/coop-faction-war-mirror.json";
+function warMirrorEnabled(){
+ return String(process.env.EVEJS_COOP_WAR_STATE_MIRROR??"1")!=="0";
+}
+function mirrorWarState(state){
+ if(!warMirrorEnabled())return;
+ try{
+  const fs=require("node:fs"),file=WAR_MIRROR_FILE(),tmp=file+".tmp";
+  fs.writeFileSync(tmp,JSON.stringify(state));
+  fs.renameSync(tmp,file);
+ }catch(_error){/* a mirror is best effort, never a reason to fail a war write */}
+}
+function readWarMirror(){
+ if(!warMirrorEnabled())return null;
+ try{
+  const fs=require("node:fs");
+  const parsed=JSON.parse(fs.readFileSync(WAR_MIRROR_FILE(),"utf8"));
+  const core=require("./coopFactionWarCore");
+  core.validateState(parsed);
+  return parsed;
+ }catch(_error){return null}
+}
+// Pure: which record to use on boot. A mirror may only replace an ABSENT or EMPTY
+// record - it can never overwrite a live war with an older copy.
+function chooseWarRestore({current,mirror}={}){
+ const liveSides=(state)=>Object.keys((state&&state.wars)||{}).length+
+  Object.keys((state&&state.campaigns)||{}).length+
+  Object.keys((state&&state.territories)||{}).length;
+ if(!mirror)return {use:current||null,reason:"NO_MIRROR"};
+ if(liveSides(mirror)===0)return {use:current||null,reason:"MIRROR_EMPTY_TOO"};
+ if(current&&liveSides(current)>0)return {use:current,reason:"LIVE_RECORD_WINS"};
+ return {use:mirror,reason:"RESTORED_FROM_MIRROR"};
 }
 // The war domain needs a valid state record to exist at all. Without it every
 // phase answers NO_WAR_STATE, which looks like a broken feature instead of an
@@ -118,6 +162,19 @@ function ensureWarState(){
  const store=warStateStore(),core=require("./coopFactionWarCore");
  const current=store.read();
  if(current)return current;
+ // FW-041: restore the validated mirror instead of publishing an empty war.
+ const restored=chooseWarRestore({current,mirror:readWarMirror()});
+ if(restored.use&&restored.reason==="RESTORED_FROM_MIRROR"){
+  store.write(restored.use);
+  try{
+   require("./coopRuntimeProbe").observe("living-native-war-state",null,null,
+    {status:"RESTORED",version:core.VERSION,
+     wars:Object.keys(restored.use.wars||{}).length,
+     campaigns:Object.keys(restored.use.campaigns||{}).length,
+     evidence:"VALIDATED_MIRROR_ON_DATA_VOLUME_NOT_AN_INVENTED_WAR"});
+  }catch(_error){/* probe is best effort */}
+  return restored.use;
+ }
  const state=core.empty();
  store.write(state);
  console.log("[CoopFactionWar] empty war state created (version "+core.VERSION+")");
@@ -4733,4 +4790,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,chooseWarRestore,readWarMirror,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
