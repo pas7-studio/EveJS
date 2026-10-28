@@ -32,6 +32,26 @@ function warnOnce(code){
   lastWarning=marker;
   try { console.warn("[CoopProbe] BLOCKED_TELEMETRY_"+marker+"; inspect effective EVEJS_COOP_EVENTS_FILE and /var/lib/evejs mount"); }catch(_ignored){}
 }
+// The event file is the only durable trace of what the world did, and nothing ever trimmed it:
+// measured on the play stack, /var/lib/evejs/coop-events.jsonl reached 368 MB / 402 291 lines and
+// the data volume 4.2 GB. Bounded rotation keeps the recent history readable without letting the
+// file grow forever: when it passes the cap it becomes `<file>.1` (replacing the previous one) and
+// a fresh file starts. Cap via EVEJS_COOP_EVENTS_MAX_MB (default 128, 0 disables rotation).
+let lastRotateCheckAt=0;
+function rotateIfNeeded(destination){
+  const capMb=Number(process.env.EVEJS_COOP_EVENTS_MAX_MB??128);
+  if(!Number.isFinite(capMb)||capMb<=0)return false;
+  const now=Date.now();
+  if(now-lastRotateCheckAt<60000)return false;
+  lastRotateCheckAt=now;
+  try{
+    const size=fs.statSync(destination).size;
+    if(size<capMb*1024*1024)return false;
+    fs.renameSync(destination,destination+".1");
+    return true;
+  }catch(_error){return false}
+}
+
 function observe(event,session,ship,extra={}){
   // Evaluating at event time is intentional: environment may be configured
   // after module preload in local tests or startup plugins.
@@ -50,6 +70,7 @@ function observe(event,session,ship,extra={}){
       runtimeRunID,
     };
     fs.mkdirSync(path.dirname(destination),{recursive:true});
+    rotateIfNeeded(destination);
     fs.appendFileSync(destination,JSON.stringify(record)+"\n",{encoding:"utf8",flag:"a"});
     lastWarning="";
     // Listeners get the record after it is durable; failures are isolated.
@@ -64,4 +85,4 @@ function observe(event,session,ship,extra={}){
     return false;
   }
 }
-module.exports={observe,subscribe};
+module.exports={observe,subscribe,rotateIfNeeded};
