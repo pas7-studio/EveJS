@@ -31,12 +31,23 @@ function dependenciesOf(options={}){
 // store cannot enumerate.
 function cargoRows({store,cargoTable,database}={}){
  if(typeof store?.listNativeCargo==="function"){
-  // The native store re-reads and deep-clones the whole cargo table on every
-  // call, and a plan runs per hauler per pass. One cached read per cache window
-  // replaces that; the TTL is the staleness bound for custody decisions.
-  const all=require("./coopNativeReadCache"+(__filename.endsWith(".js")?"":".cjs"))
-   .nativeCache().allCargoRows();
-  if(Array.isArray(all))return all;
+  // The read cache is a cache over the PINNED singleton store. A caller that
+  // passes its own store (a scoped store, a sandbox, a reconciliation run) must
+  // be answered from THAT store: reading the global cache there made its rows
+  // invisible and durable ore look like "no orphan cargo".
+  let pinned=null;
+  try{pinned=require("./npc/nativeNpcStore");}catch(_error){pinned=null;}
+  if(store===pinned){
+   // The native store re-reads and deep-clones the whole cargo table on every
+   // call, and a plan runs per hauler per pass. One cached read per cache window
+   // replaces that; the TTL is the staleness bound for custody decisions.
+   const all=require("./coopNativeReadCache"+(__filename.endsWith(".js")?"":".cjs"))
+    .nativeCache().allCargoRows();
+   if(Array.isArray(all))return all;
+  }else{
+   const own=store.listNativeCargo();
+   if(Array.isArray(own))return own;
+  }
  }
  let read=cargoTable;
  if(typeof read!=="function"){
