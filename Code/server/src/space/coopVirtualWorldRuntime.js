@@ -4409,17 +4409,27 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
     // Several stacks of one ore type are still one merchant action. Keep going
     // while the market really buys, so a haul is liquidated instead of decaying
     // in the warehouse, but stay strictly bounded in count and time.
+    let hardFail=false;
     for(;;){
      if(settlements>=8||Date.now()-job.startedAt>30000)break;
      const result=await trader.execute({scene,pilotID:link.pilotID,
       entityID:Number(haulerID),stationID:Number(stationID),
       side:"sell",typeID,buyTypes:[],sellTypes},
       {withinBatch:settlements>0});
-     if(result.status!=="TRADE_SETTLED"){last=String(result.status||"UNKNOWN");break;}
+     if(result.status!=="TRADE_SETTLED"){
+      last=String(result.status||"UNKNOWN");
+      // "Nothing of THIS type aboard" is not a failure of the haul: the hold carries
+      // several types and one empty allowlisted type used to break the loop before the
+      // minerals were ever tried (measured 2026-10-28: a drain visit settled
+      // NOT_SOLD NO_REAL_NATIVE_CARGO while 56 lift rows sat in the hold).
+      hardFail=!["NO_REAL_NATIVE_CARGO","NO_ELIGIBLE_STACK","TYPE_NOT_ALLOWLISTED"].includes(last);
+      break;
+     }
      settlements++;
      sold.push({typeID,quantity:result.quantity,price:result.price,
       isk:Math.round(result.price*result.quantity),balance:result.balance});
     }
+    if(hardFail)break;
    }
   }catch(error){last="SALE_ERROR:"+String(error?.message||error).slice(0,60);}
   job.settled=sold.length?
