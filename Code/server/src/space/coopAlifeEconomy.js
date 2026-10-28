@@ -106,7 +106,7 @@ function decideNativeEconomy(snapshot,{maxIntents=12,now=Date.now(),maxAgeMs=120
   if(e.materialShortage>0&&e.nativeOreToRefine>0)
    return{stage:"REFINE",reason:"NATIVE_ORE_AVAILABLE_FOR_MINERAL_SHORTAGE",
       stationID:station.stationID,resource:"station:"+station.stationID+":refine"};
-  if(e.materialShortage>0){
+  if(e.materialShortage>0&&e.productShortage>0&&e.nativeActiveJobs<2){
    if(positive(p.ownerID)&&e.walletCents===0)
     return{stage:"IDLE",reason:"NPC_CORPORATION_FUNDS_UNVERIFIED_OR_EMPTY"};
    return{stage:"BUY_SUPPLIES",reason:"MATERIAL_DEFICIT_REQUIRES_REAL_MARKET_PURCHASE",
