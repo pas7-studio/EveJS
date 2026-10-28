@@ -4361,6 +4361,9 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
   const timer=setTimeout(()=>{if(arrivalSales.get(key)===job)arrivalSales.delete(key);},5000);
   if(typeof timer?.unref==="function")timer.unref();
  });
+ // The split runtime owns nativeWarFleetRegistry() but not the module state it
+ // reads: hand it the live bridge and identity registry after they exist.
+ try{require("./coopVirtualWorldRuntime.pure").bindWarRuntime({bridge,identityRegistry});}catch(_bindError){/* reported by the phase itself */}
  return {status:"PENDING"};
 }
 // This is deliberately NOT an EveJS client RPC or HTTP admin endpoint.
