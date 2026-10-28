@@ -1113,7 +1113,27 @@ function parkFleetMiners(scene, fleetRecord, reason) {
     if (!entity || entity.mode === "WARP" || entity.pendingWarp || entity.warpState) {
       continue;
     }
-    if (stopRunawayFullThrottle(scene, entity, reason)) parked += 1;
+    // A runaway straight line must still be killed first, or no orbit order can win.
+    stopRunawayFullThrottle(scene, entity, reason);
+    // Measured 2026-10-27: parking the miners where they happened to drift left them
+    // 3.1-6.4 km from their own rock while the hauler waited 750 m from it, so the
+    // 2 500 m transfer range was never met. The meeting point is the rock: send each
+    // miner back to the fleet's asteroid at its normal orbit distance.
+    const rockID = toInt(fleetRecord.activeAsteroidID, 0);
+    if (!(rockID > 0)) continue;
+    const alreadyOrbitingRock =
+      String(entity.mode || "").toUpperCase() === "ORBIT" &&
+      toInt(entity.targetEntityID, 0) === rockID;
+    if (alreadyOrbitingRock) continue;
+    try {
+      const npcService = require("../../space/npc/npcService");
+      if (typeof npcService.issueManualOrder !== "function") continue;
+      const ordered = npcService.issueManualOrder(minerEntityID, {
+        type: "orbit", targetID: rockID, orbitDistanceMeters: 1_200,
+        allowWeapons: false,
+      });
+      if (ordered && ordered.success === true) parked += 1;
+    } catch (_coopMinerReturnError) { /* never block the haul */ }
   }
   if (parked > 0) {
     try {
@@ -3026,14 +3046,14 @@ function completeHaulCycle(scene, fleetRecord, now) {
                     issueStopOrder: false,
                     clearCombatPreference: false,
                   });
-                  // Measured 2026-10-27: orbiting the fleet's asteroid left the hauler 8.5 km
-                  // from its own miner, because the miners orbit that rock kilometres away
-                  // (toRock 3.1-6.4 km) - the shared rock is NOT a shared meeting point.
-                  // Station-keep on the MINER: the profile stays "orbit" so the behaviour loop
-                  // honours the order, and the target is the hull that actually holds the ore.
+                  // Measured 2026-10-27 twice over: an orbit order around the MINER is
+                  // refused (the hull reverts to STOP with target 0 and the gap freezes),
+                  // while an orbit order around the fleet's ROCK is honoured (mode ORBIT,
+                  // correct target). So the rock is the meeting point - and the miners are
+                  // sent to that same rock below instead of being parked where they drifted.
                   order = typeof npcService.issueManualOrder === "function"
                     ? npcService.issueManualOrder(haulerID, {
-                      type: "orbit", targetID: minerID, orbitDistanceMeters: 1_200,
+                      type: "orbit", targetID: rockID, orbitDistanceMeters: 1_000,
                       allowWeapons: false,
                     })
                     : null;
