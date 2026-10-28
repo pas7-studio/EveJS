@@ -197,6 +197,11 @@ function warNavyCapability(){
 }
 // Read-only: the capability of every faction that appears in a live war, plus the
 // decision for each war, so "this border cannot be fought" is a measurement.
+// FW-040: the live identity registry, for attribution paths that used to read
+// only the on-disk file and therefore saw a just-spawned war hull as UNNAMED.
+function identityLinks(){
+ try{return Object.values(identityRegistry?.snapshot?.()?.links||{})}catch(_error){return []}
+}
 function diagnoseNavy(){
  const capability=warNavyCapability();
  if(!capability)return {status:"UNAVAILABLE",factions:[],wars:[]};
@@ -4728,4 +4733,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};

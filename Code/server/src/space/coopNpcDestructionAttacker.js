@@ -4,6 +4,26 @@
 const fs=require("node:fs");
 const positive=x=>Number.isSafeInteger(Number(x))&&Number(x)>0?Number(x):null;
 const named=x=>typeof x==="string"&&/^coop-pilot-[0-9]{3,}$/.test(x);
+// Pure: union two link lists without duplicating a pilot/entity pair.
+function mergeLinks(...lists){
+ const seen=new Set(),out=[];
+ for(const list of lists){
+  for(const link of Array.isArray(list)?list:[]){
+   if(!link||typeof link!=="object")continue;
+   const key=String(link.pilotID||"")+"|"+Number(link.entityID||0)+"|"+Number(link.systemID||0);
+   if(seen.has(key))continue;
+   seen.add(key);out.push(link);
+  }
+ }
+ return out;
+}
+// The live registry is authoritative; a missing runtime is simply an empty list.
+function liveLinks(){
+ try{
+  const runtime=require("./coopVirtualWorldRuntime");
+  return typeof runtime.identityLinks==="function"?runtime.identityLinks():[];
+ }catch(_error){return []}
+}
 function verify({scene,victim,wreck,options={},links=[]}={}){
  const systemID=positive(scene?.systemID);
  const victimID=positive(victim?.itemID),wreckID=positive(wreck?.wreckID);
@@ -46,7 +66,12 @@ function note(scene,victim,options,wreck){
  try{
   const file=process.env.EVEJS_COOP_IDENTITY_FILE||"/var/lib/evejs/coop-npc-links.json";
   const saved=JSON.parse(fs.readFileSync(file,"utf8"));
-  const links=Object.values(saved?.links||{});
+  // FW-040: the on-disk file lags the live identity registry, and a war hull whose
+  // link is only in memory looked UNNAMED - measured: a real war kill answered
+  // NOT_UNIQUE_NAMED_PIRATE because the victim link was not on disk yet, so no
+  // attribution, no merit and the HELD bounty could never pay. The live registry is
+  // the authority the war system itself uses, so both are merged.
+  const links=mergeLinks(Object.values(saved?.links||[]),liveLinks());
   const ext=__filename.endsWith(".cjs")?".cjs":"";
   // FW-024: a PLAYER hull as the upstream attacker is a real war participant
   // only through an ACTIVE militia enlistment against a registered war ship.
@@ -133,4 +158,4 @@ function note(scene,victim,options,wreck){
   return {status:"UNAVAILABLE"};
  }
 }
-module.exports={verify,note};
+module.exports={verify,note,mergeLinks};
