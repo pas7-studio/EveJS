@@ -114,8 +114,24 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
     ];
     const entries=sides.map(side=>{
      const onSide=inSide(c.campaignID,side.factionID,side.systemID);
-     let existingSide=Object.values(assigned.ships).filter(onSide).length;
-     existingSide+=mobilized.filter(onSide).length;
+     // A registry/assignment row is custody, not a hull on the field (the same
+     // rule FW-033 already applies to the garrison). Measured on the work stack
+     // 2026-10-28: two ghost rows made both sides answer SIDE_MUSTERED with
+     // assigned 1 while the only live hull in the system was idle, so the
+     // mobiliser reserved nothing, no attack order was ever issued and the
+     // campaign stalled in ASSAULT forever. Count only hulls really in the scene
+     // when the caller can tell us; with no scene authority the old counting is
+     // kept unchanged.
+     let sideProbe=null;
+     try{
+      const scene=sceneForSystem(side.systemID);
+      if(scene&&typeof scene.getEntityByID==="function")
+       sideProbe=entityID=>Boolean(scene.getEntityByID(Number(entityID)));
+     }catch{sideProbe=null}
+     const reallyThere=list=>list.filter(onSide)
+      .filter(s=>sideProbe?sideProbe(s.entityID):true).length;
+     let existingSide=reallyThere(Object.values(assigned.ships));
+     existingSide+=reallyThere(mobilized);
      // A side may only field as many ships as its commander's rank allows
      // (recruit 1 ... admiral 25), and never more than the global hard cap.
      let sideLimit=maxPerSide;
