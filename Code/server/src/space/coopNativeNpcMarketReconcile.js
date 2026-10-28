@@ -72,7 +72,11 @@ function proveFill(tx, order, { toleranceMs = PROOF_TOLERANCE_MS } = {}) {
   const soldFromRow = Number.isFinite(entered) && Number.isFinite(remaining) ? entered - remaining : NaN;
   // A partial fill is only a live bid that is short by exactly our quantity: a row with
   // nothing remaining is a closed order, and a closed order must say so.
-  const partial = state === "open" && remaining > 0 && soldFromRow === Number(tx.quantity);
+  // A live bid is short by WHAT IT TOOK, which is at most what we offered: the journal
+  // can over-declare its own stack (measured 2026-10-28: declared 5, the bid absorbed 3),
+  // so any shortfall between 1 and our quantity inside this row's own window is ours.
+  const partial = state === "open" && remaining > 0 && soldFromRow >= 1 &&
+   soldFromRow <= Number(tx.quantity);
   if (state !== "filled" && !partial) {
     return { ok: false, reason: state === "open" ? "MARKET_ORDER_NOT_FILLED" : "MARKET_ORDER_STATE_UNKNOWN" };
   }
@@ -100,6 +104,7 @@ function proveFill(tx, order, { toleranceMs = PROOF_TOLERANCE_MS } = {}) {
       volEntered: entered,
       volRemaining: remaining,
       partialFill: partial === true,
+      filledQuantity: partial === true ? soldFromRow : Number(tx.quantity),
       price: Number(row.price),
       stationID: Number(row.station_id),
       typeID: Number(row.type_id),
@@ -232,10 +237,24 @@ async function reconcileJournals({ root = "/var/lib/evejs/coop-native-market", i
       settled.push({ file, pilotID: tx.pilotID, noEffect: true });
       continue;
     }
+    // The MARKET owns how many units it took. A journal that declared more than the bid
+    // absorbed (measured 2026-10-28: it declared 5 chipsets, the row was short by 3) must
+    // settle for the units that really left, never for the declared number.
+    const filled = Number(proof.proof && proof.proof.filledQuantity);
+    if (!Number.isSafeInteger(filled) || filled < 1 || filled > Number(tx.quantity)) {
+      pending.push({ file, reason: "MARKET_FILLED_QUANTITY_UNPROVEN" });
+      continue;
+    }
+    const isk = Math.round(Number(tx.price) * filled * 100) / 100;
+    const targetQuantity = Number(tx.beforeQuantity) - filled;
+    if (!Number.isSafeInteger(targetQuantity) || targetQuantity < 0) {
+      pending.push({ file, reason: "MARKET_FILLED_QUANTITY_UNPROVEN" });
+      continue;
+    }
     if (dryRun) {
-      settled.push({ file, pilotID: tx.pilotID, entityID: Number(tx.entityID), quantity: Number(tx.quantity),
-        price: Number(tx.price), isk: Math.round(Number(tx.price) * Number(tx.quantity) * 100) / 100,
-        beforeBalance: tx.beforeBalance, afterBalance: tx.afterBalance,
+      settled.push({ file, pilotID: tx.pilotID, entityID: Number(tx.entityID), quantity: filled,
+        price: Number(tx.price), isk,
+        beforeBalance: tx.beforeBalance, afterBalance: Number(tx.beforeBalance) + isk,
         cargoPresent: Boolean(cargo), dryRun: true, proof: proof.proof });
       continue;
     }
@@ -244,18 +263,18 @@ async function reconcileJournals({ root = "/var/lib/evejs/coop-native-market", i
         pending.push({ file, reason: "NPC_MARKET_CARGO_IDENTITY_CHANGED" });
         continue;
       }
-      if (Number(cargo.quantity) === Number(tx.afterQuantity)) {
+      if (Number(cargo.quantity) === targetQuantity) {
         cargoState = "ALREADY_APPLIED";
       } else if (Number(cargo.quantity) === Number(tx.beforeQuantity)) {
         cargoState = "APPLIED_NOW";
-        if (Number(tx.afterQuantity) === 0) {
+        if (targetQuantity === 0) {
           const removed = store.removeNativeCargo(tx.cargoID);
           if (removed?.success !== true) {
             pending.push({ file, reason: "NPC_MARKET_CARGO_REMOVE_FAILED" });
             continue;
           }
         } else {
-          const written = store.upsertNativeCargo({ ...cargo, quantity: Number(tx.afterQuantity) },
+          const written = store.upsertNativeCargo({ ...cargo, quantity: targetQuantity },
             { transient: cargo.transient === true });
           if (written?.success !== true) {
             pending.push({ file, reason: "NPC_MARKET_CARGO_WRITE_FAILED" });
@@ -270,13 +289,15 @@ async function reconcileJournals({ root = "/var/lib/evejs/coop-native-market", i
     // Durable receipt BEFORE the ledger, so a crash repeats settle, not the proof.
     const receipt = { version: 1, status: "SETTLED_BY_MARKET_PROOF", ...proof.proof,
       pilotID: tx.pilotID, entityID: Number(tx.entityID), systemID: Number(tx.systemID),
-      stationID: Number(tx.stationID), typeID: Number(tx.typeID), quantity: Number(tx.quantity),
-      price: Number(tx.price), beforeBalance: tx.beforeBalance, afterBalance: tx.afterBalance,
-      isk: Math.round(Number(tx.price) * Number(tx.quantity) * 100) / 100,
+      stationID: Number(tx.stationID), typeID: Number(tx.typeID), quantity: filled,
+      declaredQuantity: Number(tx.quantity),
+      price: Number(tx.price), beforeBalance: tx.beforeBalance,
+      afterBalance: Number(tx.beforeBalance) + isk,
+      isk,
       cargoID: Number(tx.cargoID), cargoState, at: Number(tx.at), reconciledAt: now(),
       marketRPC: "FillOrder", replayed: false };
     atomic(path.join(root, "reconciled", file), receipt);
-    ledger.pilots[tx.pilotID] = { balance: tx.afterBalance, lastTradeAt: Number(tx.at),
+    ledger.pilots[tx.pilotID] = { balance: Number(tx.beforeBalance) + isk, lastTradeAt: Number(tx.at),
       tradeCount: Number(account.tradeCount || 0) + 1 };
     atomic(ledgerFile, ledger);
     // The live hull caches nativeCargoItems; refresh it from the store, which is
