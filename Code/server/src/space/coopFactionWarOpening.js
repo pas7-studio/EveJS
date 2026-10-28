@@ -44,12 +44,22 @@ function stallMs() {
 // In memory on purpose - it is a pacing guard, not world state.
 const recentlyExpired = new Map();
 
-function coolingDown(targetSystemID, nowMs, ttlMs = stallMs()) {
+function coolingDown(targetSystemID, nowMs, ttlMs = stallMs(), state = null) {
   const target = num(targetSystemID);
   const at = num(recentlyExpired.get(target));
-  if (!at) return false;
-  if (num(nowMs) - at < num(ttlMs)) return true;
-  recentlyExpired.delete(target);
+  if (at) {
+    if (num(nowMs) - at < num(ttlMs)) return true;
+    recentlyExpired.delete(target);
+  }
+  // The map above dies with the process, so the durable record is consulted too: a
+  // target whose only campaign is EXPIRED moments ago must not be re-planned on the
+  // very next tick, or the world reopens (and announces) the same front forever.
+  for (const campaign of Object.values((state && state.campaigns) || {})) {
+    if (!campaign || num(campaign.targetSystemID) !== target) continue;
+    if (campaign.state !== "EXPIRED") continue;
+    const expiredAt = num(campaign.expiredAt);
+    if (expiredAt && num(nowMs) - expiredAt < num(ttlMs)) return true;
+  }
   return false;
 }
 
@@ -379,7 +389,7 @@ function planWars({
         plannedWarOrientation.set(warID, { attackerFactionID, defenderFactionID });
       }
       // A border released a moment ago is not re-planned on the very next tick.
-      if (coolingDown(plannedTarget, nowMs)) {
+      if (coolingDown(plannedTarget, nowMs, stallMs(), state)) {
         skipped.push({ edge, reason: "TARGET_RECENTLY_EXPIRED" });
         continue;
       }
