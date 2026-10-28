@@ -17,11 +17,16 @@ const destroyedNativeShips=new Set();
 // The split tool moved the functions but not their module state. Without these
 // declarations nativeWarFleetRegistry() threw "warFleetRegistry is not defined"
 // inside the garrison phase, so the war silently stopped refilling.
-let warFleetRegistry=null,bridge=null,identityRegistry=null;
+let warFleetRegistry=null,bridge=null,identityRegistry=null,
+ economy=null,nativeGateTransfer=null,recognitionAnnouncer=null,nativeAmmoWitness=null;
 function bindWarRuntime(state){
  if(!state||typeof state!=="object")return false;
  if(state.bridge!==undefined)bridge=state.bridge||null;
  if(state.identityRegistry!==undefined)identityRegistry=state.identityRegistry||null;
+ if(state.economy!==undefined)economy=state.economy||null;
+ if(state.nativeGateTransfer!==undefined)nativeGateTransfer=state.nativeGateTransfer||null;
+ if(state.recognitionAnnouncer!==undefined)recognitionAnnouncer=state.recognitionAnnouncer||null;
+ if(state.nativeAmmoWitness!==undefined)nativeAmmoWitness=state.nativeAmmoWitness||null;
  return true;
 }
 
