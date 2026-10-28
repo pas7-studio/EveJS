@@ -39,13 +39,34 @@ const cents = (value) => {
   return nonneg(rounded) && Math.abs(exact - rounded) <= 0.000001 ? rounded : null;
 };
 const isk = (value) => value / 100;
+// FW-058 (review): the chest journal had a hard 2048-entry ceiling that made
+// `validateJournal` THROW - the whole chest became unusable and every later war
+// would answer WAR_CHEST_JOURNAL_INVALID, not "full". Compaction keeps replay
+// safety: an event that was pruned is still recognised (DUPLICATE, and deliberately
+// with no entry, so nothing can be debited twice) and a different event under the
+// same id is still a conflict. A PREPARED entry is never pruned: `recover()` owns it.
+const MAX_ENTRIES = 1024;
+const MAX_ARCHIVE = 20000;
+const crypto = require("node:crypto");
+const signatureHash = (value) => crypto.createHash("sha256")
+  .update(String(value)).digest("hex").slice(0, 32);
+// A replay is decided by IDENTITY, never by the amount: the levy plan is computed
+// again from live balances, so a replayed event may plan different cents - and must
+// still be recognised as already done instead of debiting a pilot twice.
+const sameChestIdentity = (archived, request) =>
+  Number(archived?.factionID) === Number(request.factionID) &&
+  Number(archived?.corporationID) === Number(request.corporationID) &&
+  String(archived?.warID || "") === String(request.warID || "") &&
+  String(archived?.campaignID || "") === String(request.campaignID || "");
 const emptyJournal = () => ({version: 1, entries: {}, nextJournalID: JOURNAL_BASE});
 
 function validateJournal(state) {
   if (!state || state.version !== 1 || !state.entries ||
       typeof state.entries !== "object" || Array.isArray(state.entries) ||
       !nonneg(state.nextJournalID) || state.nextJournalID < JOURNAL_BASE ||
-      Object.keys(state.entries).length > 2048)
+      Object.keys(state.entries).length > MAX_ENTRIES ||
+      (state.archive !== undefined && (typeof state.archive !== "object" ||
+        Array.isArray(state.archive) || Object.keys(state.archive).length > MAX_ARCHIVE)))
     throw Error("WAR_CHEST_JOURNAL_INVALID");
   for (const [id, entry] of Object.entries(state.entries)) {
     if (!key(id) || entry?.journalID !== id || !pos(entry.corporationID) ||
@@ -265,6 +286,14 @@ function createWarChestFunding({gameStore, verifyCorporation, adjustEarned,
       const journalID = "chest:" + eventID;
       const state = readJournal();
       const prior = own(state.entries, journalID) ? state.entries[journalID] : null;
+      // FW-058: a compacted event is still decided, never re-executed. The archive
+      // keeps only what is needed to answer "did this already happen?".
+      if (!prior && own(state.archive || {}, journalID)) {
+        const archived = state.archive[journalID];
+        return sameChestIdentity(archived, { factionID, corporationID, warID, campaignID })
+          ? {status: "DUPLICATE", entry: null, archived: true}
+          : {status: "BLOCKED", reason: "WAR_CHEST_EVENT_CONFLICT", archived: true};
+      }
       if (prior) {
         if (prior.factionID !== Number(factionID) || prior.corporationID !== Number(corporationID))
           return {status: "BLOCKED", reason: "WAR_CHEST_EVENT_CONFLICT"};
@@ -275,6 +304,24 @@ function createWarChestFunding({gameStore, verifyCorporation, adjustEarned,
           return {status: "BLOCKED", reason: finished.reason, entry: prior};
         commitEntry(state, prior, finished);
         return {status: "APPLIED", entry: state.entries[journalID], receipt: finished};
+      }
+      // Room for a new entry: only terminal (COMMITTED/ABORTED) rows are compacted,
+      // oldest first, and a PREPARED levy is left to `recover()`.
+      if (Object.keys(state.entries).length >= MAX_ENTRIES) {
+        if (!state.archive || typeof state.archive !== "object") state.archive = {};
+        const terminal = Object.values(state.entries)
+          .filter((row) => row && row.phase !== "PREPARED")
+          .sort((a, b) => (Number(a.at) || 0) - (Number(b.at) || 0));
+        for (const row of terminal) {
+          if (Object.keys(state.entries).length < MAX_ENTRIES) break;
+          if (Object.keys(state.archive).length >= MAX_ARCHIVE) break;
+          state.archive[row.journalID] = {factionID: row.factionID,
+            corporationID: row.corporationID, warID: row.warID,
+            campaignID: row.campaignID, at: Number(row.at) || 0};
+          delete state.entries[row.journalID];
+        }
+        if (Object.keys(state.entries).length >= MAX_ENTRIES)
+          return {status: "BLOCKED", reason: "WAR_CHEST_JOURNAL_FULL"};
       }
       const plan = planLevy({factionID, pilots, ledger, needCents});
       if (plan.status !== "FUNDED") return {status: "BLOCKED", reason: plan.reason, plan};
