@@ -131,17 +131,28 @@ function collectPresence({ links, systemIDs, getNativeEntity, getFactionForCorpo
     : null;
   const pilots = [];
   let skipped = 0;
+  let drifted = 0;
   for (const link of links) {
-    const systemID = num(link && link.systemID);
+    const linkSystemID = num(link && link.systemID);
     const entityID = num(link && link.entityID);
-    if (!pos(systemID) || !pos(entityID) || (allowed && !allowed.has(systemID))) { skipped++; continue; }
+    if (!pos(entityID)) { skipped++; continue; }
     let native = null, faction = 0;
     try {
       native = getNativeEntity(entityID);
-      if (native && pos(native.systemID) && num(native.systemID) !== systemID) { skipped++; continue; }
       faction = num(getFactionForCorporation(native && native.corporationID));
     } catch (_error) { skipped++; continue; }
     if (!pos(faction)) { skipped++; continue; }
+    // FW-051: the opening planner used to DROP a hull whose link had drifted,
+    // because the link's systemID follows the VIRTUAL pilot while the hull stays
+    // put (see FW-049). That made the planner and the territory bootstrap disagree
+    // about the very same fleet: `warPresencePilots` counted the ship where it
+    // really was while this collector silently skipped it, so a border could be
+    // "owned" by a faction the opener could not see. The native record decides the
+    // system; a hull with no readable native position keeps the link's value.
+    const nativeSystemID = num(native && native.systemID);
+    const systemID = pos(nativeSystemID) ? nativeSystemID : linkSystemID;
+    if (!pos(systemID) || (allowed && !allowed.has(systemID))) { skipped++; continue; }
+    if (pos(linkSystemID) && linkSystemID !== systemID) drifted += 1;
     pilots.push({
       pilotID: link.pilotID,
       entityID,
@@ -149,9 +160,11 @@ function collectPresence({ links, systemIDs, getNativeEntity, getFactionForCorpo
       factionID: String(faction),
       corporationID: num(native && native.corporationID),
       role: String(link.role || ""),
+      linkSystemID,
+      positionDrifted: pos(linkSystemID) && linkSystemID !== systemID,
     });
   }
-  return { status: "PRESENCE", pilots, skipped };
+  return { status: "PRESENCE", pilots, skipped, drifted };
 }
 
 // Registered military control is authoritative; live presence only fills the
@@ -343,7 +356,17 @@ function planWars({
             .sort((a, b) => a - b).join("|") ===
           [attackerFactionID, defenderFactionID].sort((a, b) => a - b).join("|");
         if (samePair || liveCampaignFor(state, sourceSystemID)) {
-          skipped.push({ edge, reason: "TARGET_ALREADY_CONTESTED" });
+          // FW-052 (review): the reason now names the campaign that blocks this
+          // border and whether it belongs to this faction pair. Measured today, an
+          // ASSAULT campaign opened at 19:14 on 30045344 kept this same string on
+          // every tick for over an hour, and nothing in the event said WHICH record
+          // was holding the frontier - so a legitimate "already fighting here"
+          // looked exactly like a stuck world.
+          skipped.push({ edge, reason: "TARGET_ALREADY_CONTESTED",
+            blockingCampaignID: String(blocking.campaignID || ""),
+            blockingWarID: String(blocking.warID || ""),
+            sameFactionPair: samePair,
+            sourceCampaignID: String((liveCampaignFor(state, sourceSystemID) || {}).campaignID || "") });
           continue;
         }
         workingEdge = {
@@ -381,7 +404,11 @@ function planWars({
         };
         plannedTarget = sourceSystemID;
         if (liveCampaignFor(state, plannedTarget)) {
-          skipped.push({ edge, reason: "TARGET_ALREADY_CONTESTED" });
+          const squatter = liveCampaignFor(state, plannedTarget);
+          skipped.push({ edge, reason: "TARGET_ALREADY_CONTESTED",
+            blockingCampaignID: String((squatter || {}).campaignID || ""),
+            blockingWarID: String((squatter || {}).warID || ""),
+            sameFactionPair: false });
           continue;
         }
       }
@@ -645,7 +672,8 @@ function createWarOpening({
       return {
         status: "OPENED", warIDs: opened.warIDs, campaignIDs: opened.campaignIDs,
         applied: opened.applied, fundings: opened.fundings,
-        presence: { pilots: presence.pilots.length, skipped: presence.skipped, fleetShips },
+        presence: { pilots: presence.pilots.length, skipped: presence.skipped,
+          drifted: num(presence.drifted), fleetShips },
         expiredCampaignIDs,
         territories: plan.territories, fronts: plan.fronts.length,
         // A border refused for funding is named here instead of vanishing.
