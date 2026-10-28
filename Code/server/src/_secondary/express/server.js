@@ -667,6 +667,15 @@ function createLocalSecureResponder(httpsPort, bindHost) {
   });
 
   secureServer.on("stream", (stream, headers) => {
+    try {
+      handleSecureStream(stream, headers);
+    } catch (error) {
+      log.http2Err(`stream handler error: ${error && error.message}`);
+      try { stream.close(2); } catch (_ignored) { /* the stream may be gone already */ }
+    }
+  });
+
+  const handleSecureStream = (stream, headers) => {
     const method = headers[":method"] || "";
     const routePath = headers[":path"] || "";
     const authority = headers[":authority"] || headers.host || "";
@@ -742,22 +751,15 @@ function createLocalSecureResponder(httpsPort, bindHost) {
       "content-type": "application/json",
     });
     stream.end(JSON.stringify(makeHttp2Payload(headers)));
-  });
+  };
 
-  secureServer.on("request", (req, res) => {
-    if (Number(req.httpVersionMajor || 0) >= 2) {
-      return;
-    }
-
-    if (handleLaunchDarklyHttpRequest(req, res)) {
-      return;
-    }
-
-    res.writeHead(200, {
-      "content-type": "application/json",
-    });
-    res.end(JSON.stringify(makeHttp1Payload(req)));
-  });
+  // No "request" listener here on purpose. Node's compat layer engages an
+  // Http2ServerResponse for every stream as soon as one exists, and that response sends its
+  // own trailers after the gateway has already sent grpc-status: measured as
+  // ERR_HTTP2_TRAILERS_ALREADY_SENT from ServerHttp2Stream.onStreamTrailersReady, thrown in
+  // an internal handler and therefore fatal to the whole server. The gateway is reached over
+  // TLS + HTTP/2 (CONNECT -> this listener), and Chrome-style HTTP/1 debug echo is not worth
+  // a process crash.
 
   secureServer.on("sessionError", (err) => {
     log.http2Err(`session error: ${err.message}`);
@@ -1001,7 +1003,21 @@ function startServer() {
     next();
   });
 
-  app.use(express.json({ limit: "1mb" }));
+  // Only JSON bodies are parsed as JSON. The client's gRPC/gateway frames are binary,
+  // and express.json() answered them with an HTML 500 that the client cannot decode - it
+  // surfaces as ServerException(500, "invalid character on request") on every gateway
+  // surface (licences, insurgency, corp goals, campaigns). A body we do not understand must
+  // reach the routes untouched, and an unknown gateway path must be logged, not turned into
+  // an unreadable HTML error page.
+  const jsonBodyParser = express.json({ limit: "1mb" });
+  app.use((req, res, next) => {
+    const contentType = String(req.headers["content-type"] || "").toLowerCase();
+    if (!contentType.includes("application/json")) {
+      next();
+      return;
+    }
+    jsonBodyParser(req, res, next);
+  });
 
   app.get("/health", (req, res) => {
     res.status(200).json({
@@ -1032,6 +1048,15 @@ function startServer() {
       );
       pipeHttpRequest(req, res, upstreamTargetUrl);
       return;
+    }
+    // A call that names a gateway request type here means the client did not use the local
+    // proxy/TLS path: the gRPC gateway is served by the HTTP/2 listener, so answering this
+    // with a silent JSON echo hides a whole class of "the tab is empty" reports.
+    if (String(req.url || "").includes("eve_public")) {
+      log.proxyErr(
+        `gateway request on the plain-HTTP port: ${req.method} ${req.url} - ` +
+          "the client is not using the launcher proxy (http_proxy/https_proxy) or the TLS listener",
+      );
     }
     res.status(200).json(makeResponsePayload(req));
   });

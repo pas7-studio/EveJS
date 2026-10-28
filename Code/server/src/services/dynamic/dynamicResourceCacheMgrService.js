@@ -47,8 +47,11 @@ class DynamicResourceCacheMgrService extends BaseService {
   }
 
   callMethod(method, args, session, kwargs) {
+    // Same rule as essMgr: null from a real handler is an answer, not a missing method.
+    const handled = typeof this[`Handle_${method}`] === "function" ||
+      typeof this[method] === "function";
     const response = super.callMethod(method, args, session, kwargs);
-    if (response !== null) {
+    if (response !== null || handled) {
       return response;
     }
 

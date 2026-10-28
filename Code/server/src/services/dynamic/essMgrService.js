@@ -334,8 +334,14 @@ class EssMgrService extends BaseService {
   }
 
   callMethod(method, args, session, kwargs) {
+    // A handler that exists and legitimately answers null (a system with no ESS) is not an
+    // unhandled method. Measured: GetDataForClientSolarSystem exists, returns null for a
+    // system without an ESS, and this branch logged "Unhandled method fallback" five times
+    // per login - a warning that pointed at the wrong thing.
+    const handled = typeof this[`Handle_${method}`] === "function" ||
+      typeof this[method] === "function";
     const response = super.callMethod(method, args, session, kwargs);
-    if (response !== null) {
+    if (response !== null || handled) {
       return response;
     }
 
