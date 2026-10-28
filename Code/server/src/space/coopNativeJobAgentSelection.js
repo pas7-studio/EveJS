@@ -1,6 +1,10 @@
 "use strict";
 // Durable, actor-bound selection of a genuine NPC job for native agent UI.
 // The client supplies a button ID, NOT an event ID. Never silently rebind it.
+// Windows cannot fsync a directory (and refuses it on a read-only handle): the
+// deployed Linux container still proves durability, Windows dev runs cannot.
+const guard=(io,fd)=>{try{io.fsyncSync(fd)}catch(error){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error}};
 const fs=require("node:fs"),path=require("node:path");
 const pos=x=>Number.isSafeInteger(x)&&x>0;
 const valid=x=>typeof x==="string"&&/^convoy-\d+-\d+-\d+$/.test(x);
@@ -48,7 +52,7 @@ function createNativeJobSelection({root,io=fs,clock=()=>Date.now()}={}){
     return deny("SELECTION_WRITE_UNCERTAIN");
    io.fsyncSync(fd);io.closeSync(fd);fd=undefined;
    if(old.status==="EXPIRED")io.renameSync(temp,target);
-   dd=io.openSync(dir,"r");io.fsyncSync(dd);
+   dd=io.openSync(dir,"r");guard(io,dd);
   }catch{return deny("SELECTION_WRITE_UNCERTAIN_NEEDS_REPAIR")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{};
    if(dd!==undefined)try{io.closeSync(dd)}catch{}}

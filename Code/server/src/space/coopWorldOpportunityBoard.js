@@ -4,6 +4,10 @@
  * Only physical NPC observations can publish; no grants, NPC spawns, or ISK.
  * Default OFF. EVEmail sender uses existing pinned mailState (stock UI).
  */
+// Windows cannot fsync a directory (and refuses it on a read-only handle): the
+// deployed Linux container still proves durability, Windows dev runs cannot.
+const guard=(io,fd)=>{try{io.fsyncSync(fd)}catch(error){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error}};
 const fs=require("node:fs"),path=require("node:path");
 const POS=x=>Number.isSafeInteger(x)&&x>0;
 const KEY=x=>typeof x==="string"&&/^(raid|convoy)-[0-9]+-[0-9]+-[0-9]+$/.test(x);
@@ -21,7 +25,7 @@ function createBoard({root,io=fs,clock=()=>Date.now(),getSessions=()=>[],
   watchDir=path.join(dir,"watch"),claimsDir=path.join(dir,"mail-claims"),
   interestDir=path.join(dir,"interest");
  function safeDir(p){io.mkdirSync(p,{recursive:true});}
- function sync(p){let fd;try{fd=io.openSync(p,"r");io.fsyncSync(fd);return true}
+ function sync(p){let fd;try{fd=io.openSync(p,"r");guard(io,fd);return true}
   catch{return false}finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}}
  function durableNew(p,value){
   let fd;try{

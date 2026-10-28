@@ -2,6 +2,10 @@
 // Chat-30: conservative native contract mutation fencing. NO parallel inventory,
 // wallet or escrow authority. This only surrounds original EveJS methods.
 // Explicit default-OFF path; all uncertain outcomes require operator repair.
+// Windows cannot fsync a directory (and refuses it on a read-only handle): the
+// deployed Linux container still proves durability, Windows dev runs cannot.
+const guard=(io,fd)=>{try{io.fsyncSync(fd)}catch(error){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error}};
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -25,7 +29,7 @@ function createFence({root,io=fs,clock=()=>Date.now(),flush,readContract,readIte
       typeof readBalance!=="function"||typeof getCreateReward!=="function")
     throw Error("CONTRACT_FENCE_NATIVE_DEPENDENCIES_REQUIRED");
   const receipts=path.join(root,"receipts"),locks=path.join(root,"locks");
-  function syncDir(dir){let f;try{f=io.openSync(dir,"r");io.fsyncSync(f)}finally{if(f!==undefined)io.closeSync(f)}}
+  function syncDir(dir){let f;try{f=io.openSync(dir,"r");guard(io,f)}finally{if(f!==undefined)io.closeSync(f)}}
   function checkedDirectory(dir) {
     io.mkdirSync(dir,{recursive:true,mode:0o700});
     const stat=io.lstatSync(dir);if(!stat.isDirectory()||stat.isSymbolicLink())throw Error("CONTRACT_FENCE_UNSAFE_DIRECTORY");

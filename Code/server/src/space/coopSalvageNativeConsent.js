@@ -1,6 +1,10 @@
 "use strict";
 // Two separate real authenticated EVE pilots must explicitly accept same
 // originally verified RESCUE quote before any NPC wallet escrow debit.
+// Windows cannot fsync a directory (and refuses it on a read-only handle): the
+// deployed Linux container still proves durability, Windows dev runs cannot.
+const guard=(io,fd)=>{try{io.fsyncSync(fd)}catch(error){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error}};
 const fs=require("node:fs"),path=require("node:path");
 const key=x=>typeof x==="string"&&/^\d+-\d+-\d+$/.test(x);
 const pos=x=>Number.isSafeInteger(x)&&x>0;
@@ -32,7 +36,7 @@ function createSalvageConsent({root,io=fs,clock=()=>Date.now(),
    io.fsyncSync(fd);
   }catch{return false}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
-  try{fd=io.openSync(dir,"r");io.fsyncSync(fd);return true}
+  try{fd=io.openSync(dir,"r");guard(io,fd);return true}
   catch{return false}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
  }

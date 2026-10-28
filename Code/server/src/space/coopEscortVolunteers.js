@@ -1,6 +1,10 @@
 "use strict";
 // Voluntary TWO-pilot native event interest. This does not join fleets,
 // pay ISK, spawn objects, or count as an accepted FUNDED escort contract.
+// Windows cannot fsync a directory (and refuses it on a read-only handle): the
+// deployed Linux container still proves durability, Windows dev runs cannot.
+const guard=(io,fd)=>{try{io.fsyncSync(fd)}catch(error){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error}};
 const fs=require("node:fs"),path=require("node:path");
 const pos=x=>Number.isSafeInteger(x)&&x>0;
 const KEY=x=>typeof x==="string"&&/^(raid|convoy)-\d+-\d+-\d+$/.test(x);
@@ -23,7 +27,7 @@ function createVolunteers({root,io=fs,clock=()=>Date.now(),readEvent,readInteres
    if(io.writeSync(fd,buf,0,buf.length,null)!==buf.length)return false;
    io.fsyncSync(fd);
   }catch{return false}finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
-  let d;try{d=io.openSync(dir,"r");io.fsyncSync(d);return true}
+  let d;try{d=io.openSync(dir,"r");guard(io,d);return true}
   catch{return false}finally{if(d!==undefined)try{io.closeSync(d)}catch{}}
  }
  function load(p){

@@ -1,6 +1,10 @@
 "use strict";
 // Stage J: fsynced, immutable provenance for original NPC cargo -> native wreck.
 // NEVER manufactures loot, mutates itemStore or pays rewards.
+// Windows cannot fsync a directory (and refuses it on a read-only handle): the
+// deployed Linux container still proves durability, Windows dev runs cannot.
+const guard=(io,fd)=>{try{io.fsyncSync(fd)}catch(error){
+ if(process.platform!=="win32"||!["EPERM","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error}};
 const fs=require("node:fs"),path=require("node:path");
 const pos=x=>Number.isSafeInteger(x)&&x>0;
 const key=x=>typeof x==="string"&&/^\d+-\d+-\d+$/.test(x);
@@ -128,7 +132,7 @@ function createSalvageLedger({root,io=fs,clock=()=>Date.now(),readManifest,
    io.fsyncSync(fd);
   }catch{return deny("SALVAGE_WITNESS_WRITE_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
-  try{fd=io.openSync(dir,"r");io.fsyncSync(fd)}
+  try{fd=io.openSync(dir,"r");guard(io,fd)}
   catch{return deny("SALVAGE_FSYNC_UNCERTAIN")}
   finally{if(fd!==undefined)try{io.closeSync(fd)}catch{}}
   return {status:"SALVAGE_ORIGIN_DURABLE",manifestKey,
