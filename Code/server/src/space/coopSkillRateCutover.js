@@ -67,8 +67,15 @@ function append(file, record, create=false) {
  finally {if (fd!==undefined)try{fs.closeSync(fd);}catch{}}
 }
 function syncDirectory(dir) {
- let fd;try {fd=fs.openSync(dir,"r");fs.fsyncSync(fd);return true;}
- catch {return false;}
+ let fd;
+ try {fd=fs.openSync(dir,"r");fs.fsyncSync(fd);return true;}
+ catch (error) {
+  // Windows cannot open a directory for fsync at all; that is the platform
+  // refusing the call, not this cutover losing its durable acknowledgement.
+  if(process.platform==="win32"&&
+   ["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))return true;
+  return false;
+ }
  finally {if(fd!==undefined)try{fs.closeSync(fd);}catch{}}
 }
 function readSkills(native,id) {

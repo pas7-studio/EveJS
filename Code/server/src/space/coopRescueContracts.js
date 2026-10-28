@@ -7,6 +7,16 @@ const pos=n=>Number.isSafeInteger(n)&&n>0;
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const mark=(wreckID,itemID,cargoID)=>
  "coop-rescue:v1:wreck:"+wreckID+":item:"+itemID+":cargo:"+cargoID;
+function syncDir(io,dir){
+ // Windows cannot open a directory for fsync at all; that is the platform
+ // refusing the call, not this record losing its durable acknowledgement.
+ let fd=null;
+ try{fd=io.openSync(dir,"r");io.fsyncSync(fd);}
+ catch(error){
+  if(process.platform!=="win32"||
+   !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+ }finally{if(fd!==null)try{io.closeSync(fd);}catch(_ignored){}}
+}
 function createRescueContracts({root,readEvent,readFlight,readManifest,
  readOutcomes,getWreck,getWreckItems,readWarehouseItems,
  readNativeNpcCargo,isNpcCorporation,nativeFunds,readVolunteer,clock=()=>Date.now(),io=fs,
@@ -47,8 +57,7 @@ function createRescueContracts({root,readEvent,readFlight,readManifest,
      throw Error("SHORT_WRITE");
     io.fsyncSync(fd);
    }finally{io.closeSync(fd)}
-   fd=io.openSync(dir,"r");
-   try{io.fsyncSync(fd)}finally{io.closeSync(fd)}
+   syncDir(io,dir);
    return {status:"READY"};
   }catch(e){
    if(e?.code==="EEXIST")return {status:"EXISTS"};
@@ -199,8 +208,7 @@ function createRescueContracts({root,readEvent,readFlight,readManifest,
     try{if(io.writeSync(fd,Buffer.from(data),0,Buffer.byteLength(data),null)!==
       Buffer.byteLength(data))throw Error("SHORT_WRITE");
      io.fsyncSync(fd)}finally{io.closeSync(fd)}
-    fd=io.openSync(dir,"r");
-    try{io.fsyncSync(fd)}finally{io.closeSync(fd)}
+    syncDir(io,dir);
    }catch{return deny("RESCUE_ACCEPTANCE_WRITE_UNCERTAIN")}
   }
   const both=c.characters.map(x=>readAccepted(c,x));

@@ -100,8 +100,14 @@ function createWarRecoveryConsole({ledger,identityRegistry,authorizeOperator,
    catch(e){if(e?.code!=="ENOENT")throw e}
    io.renameSync(j.file,dest);
    for(const dir of [journalDir,destinationDir]){
-    const fd=io.openSync(dir,"r");
-    try{io.fsyncSync(fd)}finally{io.closeSync(fd)}
+    // Windows cannot open a directory for fsync at all; that is the platform
+    // refusing the call, not this archive losing its durable move.
+    let fd=null;
+    try{fd=io.openSync(dir,"r");io.fsyncSync(fd);}
+    catch(error){
+     if(process.platform!=="win32"||
+      !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+    }finally{if(fd!==null)try{io.closeSync(fd);}catch(_ignored){}}
    }
    return {status:"ARCHIVED",archiveName:path.basename(dest)};
   }catch{return {status:"NEEDS_OPERATOR_REPAIR",reason:"JOURNAL_ARCHIVE_OUTCOME_UNCERTAIN"}}
