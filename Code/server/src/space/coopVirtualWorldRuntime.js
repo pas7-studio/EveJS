@@ -352,21 +352,10 @@ function diagnoseWarFunding(){
 let warMercenarySettlementInstance=null;
 function warMercenarySettlement(){
  if(warMercenarySettlementInstance)return warMercenarySettlementInstance;
- const wallet=require("./coopCorpWallet"),gameStore=require("../gameStore");
- const balanceOf=(corporationID,division)=>{
-  const read=wallet.readWallet({gameStore,corporationID});
-  if(!read||read.status!=="OK"||!read.divisions)return NaN;
-  const divisionRow=read.divisions[String(division)];
-  const value=Number(divisionRow&&divisionRow.balance);
-  return Number.isFinite(value)?value:NaN;
- };
+ // FW-038C: the wallet is the idempotency anchor, so the settlement needs only
+ // the GameStore pointer API - the same one the corporation wallet itself uses.
  warMercenarySettlementInstance=require("./coopWarMercenarySettlement")
-  .createMercenarySettlement({
-   gameStore,division:"1000",
-   readBalance:(corporationID,division)=>balanceOf(corporationID,division),
-   applyDelta:({corporationID,division,delta,env})=>
-    wallet.applyDelta({gameStore,corporationID,division,delta,env})
-  });
+  .createMercenarySettlement({gameStore:require("../gameStore")});
  return warMercenarySettlementInstance;
 }
 function executeMercenaryContract(request){

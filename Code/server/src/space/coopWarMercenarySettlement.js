@@ -1,191 +1,161 @@
 "use strict";
-// FW-038B: pay a mercenary contract with a journaled two-leg wallet transfer.
+// FW-038C: pay a mercenary contract where the WALLET is the idempotency anchor.
 //
-// Measured on the work stack 2026-10-28: the only funded corporation (ORE,
-// 1000129, 136.5 M ISK in division 1000) has no combat hulls, and every faction
-// that can field a navy holds 0 ISK, so no war party could ever escrow a bounty.
-// FW-038 decides WHO to hire; this moves the money that pays for it.
+// MEASURED FAILURE it fixes (work stack 2026-10-28): the first version journalled
+// its intent in a separate `corporationRuntime` row, paid, and a replay 28 s later
+// could no longer read that row - it paid again and 25 000 ISK was destroyed. Rows
+// written through the atomic store do not reliably survive here, so a money mover
+// must never anchor "did I already pay?" in one.
 //
-// Rules, all of them conservative:
-//  - value is CONSERVED: one debit and one credit of the same amount in the real
-//    native corporation wallets, nothing minted;
-//  - the event is durable BEFORE the first leg, so a retry can never pay twice;
-//  - a debit that cannot be verified as applied is AMBIGUOUS and halts; it is
-//    never replayed, because replaying a debit that did apply creates or destroys
-//    ISK depending on which leg is repeated;
-//  - a verified debit whose credit fails is recorded as PARTIAL_CREDIT_MISSING
-//    with the exact amount still owed, and is not silently retried either.
-const fs = require("node:fs");
-const path = require("node:path");
-const suffix = typeof __filename === "string" && __filename.endsWith(".js") ? "" : ".cjs";
-const rows = require("./coopNativeRowPath" + suffix);
-
-const TABLE = "corporationRuntime";
-const KEY = "coop-faction-war\u001fmercenary-v1";
-const VERSION = 1;
-const MAX_EVENTS = 512;
+// This version marks every leg inside the same corporation record that holds the
+// money: the payer's wallet journal gets `FW-MERC <eventID> DEBIT` and the payee's
+// gets `FW-MERC <eventID> CREDIT`, written in the same write as the balance. A
+// replay is therefore refused by the wallet itself, and a missing credit can be
+// completed later without ever repeating the debit.
+//
+// Value is conserved: one debit and one credit of the same amount, nothing minted.
+const KEY_BANK = "corporationRuntime";
+const DIVISION = "1000";
+const MAX_JOURNAL = 100;
 const pos = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0;
 const cents = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0;
 const key = (value) => typeof value === "string" &&
   /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(value);
+const round = (value) => Math.round(Number(value) * 100) / 100;
 
-function empty() {
-  return { version: VERSION, processed: {}, nextSerial: 1 };
+function walletPointer(corporationID) {
+  return "/corporations/" + Number(corporationID) + "/wallet";
 }
 
-function validate(state) {
-  if (!state || state.version !== VERSION || !state.processed ||
-    typeof state.processed !== "object" || Array.isArray(state.processed) ||
-    !pos(state.nextSerial)) throw Error("WAR_MERCENARY_JOURNAL_INVALID");
-  if (Object.keys(state.processed).length > MAX_EVENTS)
-    throw Error("WAR_MERCENARY_JOURNAL_FULL");
-  for (const [id, row] of Object.entries(state.processed)) {
-    if (!key(id) || row?.eventID !== id || !pos(row?.payerCorporationID) ||
-      !pos(row?.payeeCorporationID) || !cents(row?.amountCents) ||
-      !["PREPARED", "PAID", "PARTIAL_CREDIT_MISSING", "AMBIGUOUS_DEBIT"].includes(row?.phase))
-      throw Error("WAR_MERCENARY_JOURNAL_CORRUPT");
-  }
-  return state;
-}
-
-function createMercenarySettlement({
-  gameStore,
-  readBalance,
-  applyDelta,
-  clock = () => Date.now(),
-  env = process.env,
-  division = "1000",
-} = {}) {
-  if (typeof gameStore?.coopAtomicNativeRows?.transact !== "function" ||
-    typeof readBalance !== "function" || typeof applyDelta !== "function" ||
-    typeof clock !== "function")
-    throw Error("WAR_MERCENARY_AUTHORITIES_REQUIRED");
+function createMercenarySettlement({ gameStore, clock = () => Date.now(), env = process.env } = {}) {
+  if (typeof gameStore?.read !== "function" || typeof gameStore?.write !== "function" ||
+    typeof clock !== "function") throw Error("WAR_MERCENARY_AUTHORITIES_REQUIRED");
   const enabled = () => String(env.EVEJS_COOP_WAR_MERCENARY_CONTRACT || "") === "1";
-  const transact = (fn) => gameStore.coopAtomicNativeRows.transact([TABLE], fn);
-  let busy = false;
 
-  function read() {
-    return transact((tx) => validate(tx.get(TABLE, KEY) || empty()));
+  function walletOf(corporationID) {
+    const current = gameStore.read(KEY_BANK, walletPointer(corporationID));
+    if (!current || current.success !== true || !current.data) return null;
+    const divisions = current.data.divisions;
+    if (!divisions || typeof divisions !== "object") return null;
+    return current.data;
   }
 
-  function snapshot() {
+  function balanceOf(corporationID) {
+    const wallet = walletOf(corporationID);
+    const value = Number(wallet && wallet.divisions && wallet.divisions[DIVISION] &&
+      wallet.divisions[DIVISION].balance);
+    return Number.isFinite(value) ? value : NaN;
+  }
+
+  function marker(eventID, side) {
+    return "FW-MERC " + String(eventID) + " " + side;
+  }
+
+  // One leg. The marker lives in the wallet journal, in the same write as the
+  // balance, so it cannot outlive or outrun the money it describes.
+  function leg({ corporationID, eventID, side, deltaISK }) {
+    const wallet = walletOf(corporationID);
+    if (!wallet) return { status: "WALLET_UNREADABLE", corporationID };
+    const division = { ...(wallet.divisions[DIVISION] || {}) };
+    const balance = Number(division.balance) || 0;
+    const journal = Array.isArray(division.journal) ? division.journal : [];
+    const mark = marker(eventID, side);
+    if (journal.some((entry) => String((entry && entry.description) || "").includes(mark)))
+      return { status: "DUPLICATE", corporationID, balance };
+    const next = round(balance + deltaISK);
+    if (!Number.isFinite(next) || next < 0)
+      return { status: "INSUFFICIENT", corporationID, balance };
+    const lastID = journal.length
+      ? Number(journal[journal.length - 1] && journal[journal.length - 1].transactionID) || 0 : 0;
+    const entry = {
+      transactionID: lastID + 1,
+      transactionDate: String(clock()),
+      description: mark,
+      amount: round(deltaISK),
+      balance: next,
+    };
+    const nextWallet = {
+      ...wallet,
+      divisions: {
+        ...wallet.divisions,
+        [DIVISION]: { ...division, balance: next, journal: [...journal, entry].slice(-MAX_JOURNAL) },
+      },
+    };
+    const written = gameStore.write(KEY_BANK, walletPointer(corporationID), nextWallet);
+    if (!written || written.success !== true)
+      return { status: "WRITE_FAILED", corporationID, reason: String((written && written.errorMsg) || "") };
+    const after = balanceOf(corporationID);
+    if (!Number.isFinite(after) || Math.abs(after - next) > 0.005)
+      return { status: "UNVERIFIED", corporationID, balance: after, expected: next };
+    return { status: "APPLIED", corporationID, before: balance, balance: next };
+  }
+
+  function snapshot({ eventID = "", payerCorporationID = 0, payeeCorporationID = 0 } = {}) {
     if (!enabled()) return { status: "DISABLED" };
-    const state = read();
+    const debtorWallet = walletOf(Number(payerCorporationID));
+    const journal = (debtorWallet && debtorWallet.divisions && debtorWallet.divisions[DIVISION] &&
+      Array.isArray(debtorWallet.divisions[DIVISION].journal))
+      ? debtorWallet.divisions[DIVISION].journal : [];
+    const rows = journal
+      .filter((entry) => String((entry && entry.description) || "").startsWith("FW-MERC "))
+      .map((entry) => ({ description: entry.description, amount: entry.amount, at: entry.transactionDate }));
     return {
       status: "OK",
-      events: Object.keys(state.processed).length,
-      rows: Object.values(state.processed).map((row) => ({ ...row })),
+      eventID: String(eventID || ""),
+      payerBalanceISK: balanceOf(Number(payerCorporationID)),
+      payeeBalanceISK: balanceOf(Number(payeeCorporationID)),
+      legs: rows.slice(-20),
     };
-  }
-
-  function isk(centsValue) {
-    return Math.round(Number(centsValue)) / 100;
   }
 
   function execute({ eventID, payerCorporationID, payeeCorporationID, amountCents, dryRun = false } = {}) {
     if (!enabled()) return { status: "DISABLED" };
-    if (busy) return { status: "BLOCKED", reason: "WAR_MERCENARY_REENTRANT" };
     const payer = Number(payerCorporationID), payee = Number(payeeCorporationID);
     const amount = Number(amountCents);
     if (!key(eventID) || !pos(payer) || !pos(payee) || payer === payee || !cents(amount))
       return { status: "BLOCKED", reason: "INVALID_MERCENARY_IDENTITY" };
-    busy = true;
-    try {
-      const prior = (() => {
-        try { return read().processed[eventID] || null; } catch (_error) { return null; }
-      })();
-      if (prior) {
-        if (prior.payerCorporationID !== payer || prior.payeeCorporationID !== payee ||
-          prior.amountCents !== amount)
-          return { status: "BLOCKED", reason: "WAR_MERCENARY_EVENT_CONFLICT" };
-        if (prior.phase === "PAID") return { status: "DUPLICATE", entry: { ...prior } };
-        // A debit that may have landed is never repeated.
-        return { status: "BLOCKED", reason: "WAR_MERCENARY_PRIOR_LEG_UNRESOLVED", phase: prior.phase };
-      }
-      const payerBefore = readBalance(payer, division);
-      const payeeBefore = readBalance(payee, division);
-      const needISK = isk(amount);
-      if (!Number.isFinite(payerBefore) || !Number.isFinite(payeeBefore))
-        return { status: "BLOCKED", reason: "WAR_MERCENARY_WALLET_UNREADABLE" };
-      if (payerBefore < needISK)
-        return { status: "BLOCKED", reason: "WAR_MERCENARY_PAYER_INSOLVENT",
-          payerBefore, needISK };
-      const preview = {
-        eventID, payerCorporationID: payer, payeeCorporationID: payee,
-        amountCents: amount, payerBeforeISK: payerBefore, payeeBeforeISK: payeeBefore,
-        payeeAfterISK: Math.round((payeeBefore + needISK) * 100) / 100,
-      };
-      if (dryRun) return { status: "DRY_RUN", phase: "PREPARED", preview };
+    const needISK = round(amount / 100);
+    const payerBefore = balanceOf(payer), payeeBefore = balanceOf(payee);
+    if (!Number.isFinite(payerBefore) || !Number.isFinite(payeeBefore))
+      return { status: "BLOCKED", reason: "WAR_MERCENARY_WALLET_UNREADABLE" };
+    if (payerBefore < needISK)
+      return { status: "BLOCKED", reason: "WAR_MERCENARY_PAYER_INSOLVENT", payerBefore, needISK };
+    const preview = {
+      eventID, payerCorporationID: payer, payeeCorporationID: payee,
+      amountCents: amount, payerBeforeISK: payerBefore, payeeBeforeISK: payeeBefore,
+      payerAfterISK: round(payerBefore - needISK), payeeAfterISK: round(payeeBefore + needISK),
+      idempotency: "WALLET_JOURNAL_MARKER",
+    };
+    if (dryRun) return { status: "DRY_RUN", phase: "PREVIEW", preview };
 
-      // Durable intent first: from here on a retry is refused, never re-paid.
-      const prepared = transact((tx) => {
-        const state = validate(tx.get(TABLE, KEY) || empty());
-        if (state.processed[eventID]) return { ok: false, state };
-        state.processed[eventID] = {
-          eventID, phase: "PREPARED", payerCorporationID: payer,
-          payeeCorporationID: payee, amountCents: amount,
-          payerBeforeISK: payerBefore, payeeBeforeISK: payeeBefore,
-          preparedAt: clock(),
-        };
-        state.nextSerial += 1;
-        tx.put(TABLE, KEY, state);
-        return { ok: true, state };
-      });
-      if (!prepared.ok) return { status: "DUPLICATE", entry: { ...prepared.state.processed[eventID] } };
-      // JOURNALLED-NOT-DURABLE guard. Measured on the work stack 2026-10-28: the
-      // intent row was written, the transfer paid, and a replay could no longer
-      // read the row - it paid a second time and 25 000 ISK left the payer with no
-      // matching credit. A money mover must never trust a write it cannot read
-      // back, so the debit only happens when the journal really persists.
-      let durable = null;
-      try { durable = read().processed[eventID] || null; } catch (_error) { durable = null; }
-      if (!durable || durable.phase !== "PREPARED")
-        return { status: "BLOCKED", reason: "WAR_MERCENARY_JOURNAL_NOT_DURABLE",
-          eventID, debitAttempted: false };
-
-      const debit = applyDelta({ corporationID: payer, division, delta: -needISK, env });
-      const payerAfter = readBalance(payer, division);
-      const debitVerified = debit && debit.status === "OK" &&
-        Number.isFinite(payerAfter) &&
-        Math.abs((payerBefore - payerAfter) - needISK) <= 0.005;
-      const finish = (phase, extra) => {
-        try {
-          transact((tx) => {
-            const state = validate(tx.get(TABLE, KEY) || empty());
-            const row = state.processed[eventID];
-            if (!row) return;
-            state.processed[eventID] = { ...row, phase, at: clock(), ...extra };
-            tx.put(TABLE, KEY, state);
-          });
-        } catch (_error) { /* the journal is best effort; the wallets are the truth */ }
-        return { status: phase === "PAID" ? "PAID" : "BLOCKED", phase, reason: extra.reason, ...extra };
-      };
-      if (!debitVerified) {
-        return finish("AMBIGUOUS_DEBIT", {
-          reason: "WAR_MERCENARY_DEBIT_UNVERIFIED",
-          debitStatus: String((debit && debit.status) || "NO_RESULT"),
-          payerAfterISK: payerAfter,
-        });
-      }
-      const credit = applyDelta({ corporationID: payee, division, delta: needISK, env });
-      const payeeAfter = readBalance(payee, division);
-      const creditVerified = credit && credit.status === "OK" &&
-        Number.isFinite(payeeAfter) &&
-        Math.abs((payeeAfter - payeeBefore) - needISK) <= 0.005;
-      if (!creditVerified) {
-        return finish("PARTIAL_CREDIT_MISSING", {
-          reason: "WAR_MERCENARY_CREDIT_UNVERIFIED",
-          creditStatus: String((credit && credit.status) || "NO_RESULT"),
-          payerAfterISK: payerAfter, payeeAfterISK: payeeAfter, owedISK: needISK,
-        });
-      }
-      return finish("PAID", {
-        payerAfterISK: payerAfter, payeeAfterISK: payeeAfter,
-      });
-    } finally { busy = false; }
+    const debit = leg({ corporationID: payer, eventID, side: "DEBIT", deltaISK: -needISK });
+    if (debit.status !== "APPLIED" && debit.status !== "DUPLICATE")
+      return { status: "BLOCKED", phase: "DEBIT", reason: "WAR_MERCENARY_DEBIT_" + debit.status,
+        debit, paymentComplete: false };
+    const credit = leg({ corporationID: payee, eventID, side: "CREDIT", deltaISK: needISK });
+    if (credit.status !== "APPLIED" && credit.status !== "DUPLICATE") {
+      // The debit is real and marked in the payer's own journal; re-running the
+      // same event completes only the missing credit because the debit leg is
+      // refused as DUPLICATE by the wallet itself.
+      return { status: "BLOCKED", phase: "CREDIT", reason: "WAR_MERCENARY_CREDIT_" + credit.status,
+        debit, credit, owedISK: needISK, retrySafe: true };
+    }
+    return {
+      status: "PAID",
+      phase: "PAID",
+      eventID,
+      payerCorporationID: payer,
+      payeeCorporationID: payee,
+      amountCents: amount,
+      debitLeg: debit.status,
+      creditLeg: credit.status,
+      payerAfterISK: balanceOf(payer),
+      payeeAfterISK: balanceOf(payee),
+      idempotency: "WALLET_JOURNAL_MARKER",
+    };
   }
 
-  return Object.freeze({ enabled, execute, snapshot, read });
+  return Object.freeze({ enabled, execute, snapshot, balanceOf });
 }
 
-module.exports = { TABLE, KEY, empty, validate, createMercenarySettlement };
+module.exports = { DIVISION, walletPointer, createMercenarySettlement };
