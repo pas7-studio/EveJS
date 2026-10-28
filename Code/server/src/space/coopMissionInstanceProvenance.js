@@ -78,8 +78,14 @@ function durableAppend(file,row){
   const b=Buffer.from(JSON.stringify({...row,at:Date.now()})+"\n");
   if(fs.writeSync(fd,b,0,b.length,null)!==b.length)return false;
   fs.fsyncSync(fd);
-  // Persist the new directory entry as well as the file contents.
-  dirfd=fs.openSync(dir,"r");fs.fsyncSync(dirfd);
+  // Persist the new directory entry as well as the file contents. Windows
+  // cannot open a directory for fsync at all; that is the platform refusing the
+  // call, not this ledger losing its ACK.
+  try{dirfd=fs.openSync(dir,"r");fs.fsyncSync(dirfd);}
+  catch(e){
+   if(process.platform!=="win32"||
+      !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(e?.code))throw e;
+  }
   return true;
  }catch{return false}
  finally{
