@@ -2085,6 +2085,15 @@ function logGatewaySummary(context, result) {
   log.info(message);
 }
 
+// Only eve_public request types get the default-answer treatment, and only when the
+// conventional Request->Response rename yields a name the client can decode. Anything else
+// keeps the explicit 404 so a genuinely unknown surface stays visible.
+function deriveDefaultResponseTypeName(requestTypeName) {
+  const name = String(requestTypeName || "");
+  if (!name.startsWith("eve_public.") || !name.endsWith("Request")) return null;
+  return name.slice(0, -"Request".length) + "Response";
+}
+
 function logUnknownRequest(context) {
   const key = context.requestTypeName || "<unknown>";
   const count = (UNKNOWN_REQUEST_COUNTS.get(key) || 0) + 1;
@@ -2209,13 +2218,33 @@ function buildGatewayResponseForRequest(frameBuffer) {
   }
 
   if (!result) {
-    logUnknownRequest(context);
-    result = {
-      statusCode: 404,
-      statusMessage: `EveJS Elysian local gateway has no handler for ${requestTypeName || "unknown request"}`,
-      responseTypeName: null,
-      responsePayloadBuffer: null,
-    };
+    // A request type we do not model still has a client waiting on it. An empty protobuf body
+    // decodes as a default message, so answering 200 with the obvious Response type name gives
+    // the client a valid answer ("no data") instead of an exception. Measured at login:
+    // eve_public.stargate.lock.api.GetRestrictedSystemsRequest and
+    // eve_public.payment.schedule.api.GetActiveByTypeRequest both answered 404, and the client
+    // reported ServerException(500, "invalid character on request") for them.
+    const derivedResponseTypeName = deriveDefaultResponseTypeName(requestTypeName);
+    if (derivedResponseTypeName) {
+      log.warn(
+        `[PublicGatewayLocal] No handler for type=${requestTypeName || "<unknown>"} ` +
+          `- answering a default empty ${derivedResponseTypeName}`,
+      );
+      result = {
+        statusCode: 200,
+        statusMessage: "",
+        responseTypeName: derivedResponseTypeName,
+        responsePayloadBuffer: EMPTY_PAYLOAD,
+      };
+    } else {
+      logUnknownRequest(context);
+      result = {
+        statusCode: 404,
+        statusMessage: `EveJS Elysian local gateway has no handler for ${requestTypeName || "unknown request"}`,
+        responseTypeName: null,
+        responsePayloadBuffer: null,
+      };
+    }
   }
 
   const durationMs = Number(process.hrtime.bigint() - startedAt) / 1000000;
@@ -2373,6 +2402,7 @@ module.exports = {
   publishStructurePaintworkSetNotice,
 };
 module.exports._testing = {
+  deriveDefaultResponseTypeName,
   buildBubbleShipStatesForCharacter,
   findLiveSessionByCharacterID,
   gatewayServiceRegistry,
