@@ -72,6 +72,16 @@ function saveCooldowns() {
     fs.writeFileSync(cooldownFile(), JSON.stringify(out));
   } catch (_error) { /* a lost cooldown file must never stop a drain */ }
 }
+// A station is only "not worth revisiting" when it REFUSED to buy the goods that were
+// actually carried. Measured 2026-10-28: a trip that found nothing to load (no native
+// cargo) cooled a station for 30 minutes, and that same station had a real seeded bid of
+// 54 289.76 for the product being manufactured - the drain was refusing to visit its own
+// best customer. An empty trip proves nothing about demand.
+function shouldCoolDown(settlement) {
+  if (!settlement || String(settlement.status) !== "NOT_SOLD") return false;
+  const reason = String(settlement.reason || "");
+  return reason !== "NO_REAL_NATIVE_CARGO" && reason !== "NOTHING_TO_CARRY";
+}
 function coolDown(stationID, now = Date.now()) {
   const id = pos(stationID);
   if (id) { stationCooldown.set(id, now + COOLDOWN_MS); saveCooldowns(); }
@@ -266,7 +276,7 @@ function tick(scene, fleetRecord, now) {
       }
       return true;
     }
-    if (state.settlement && state.settlement.status === "NOT_SOLD") coolDown(state.stationID, now);
+    if (shouldCoolDown(state.settlement)) coolDown(state.stationID, now);
     // The trip really happened: a full hauler emptied its hold at a station. A fleet
     // that was stuck in "loaded" waiting for a route it could not prove is now free to
     // mine again, which is the truth - its cargo left the hull.
@@ -389,5 +399,6 @@ function start(scene, fleetRecord, now) {
   return true;
 }
 
-module.exports = { active, start, tick, chooseStation, intervalMs, ENABLED, PHASE, coolDown, onCooldown,
+module.exports = {
+  shouldCoolDown, active, start, tick, chooseStation, intervalMs, ENABLED, PHASE, coolDown, onCooldown,
   shouldStart };
