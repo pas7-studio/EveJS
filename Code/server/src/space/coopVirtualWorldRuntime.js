@@ -509,7 +509,10 @@ function advanceNativeWarOpening(){
  }
  if(result.status!=="OPENED"){
   const reason=String(result.reason||result.status||"UNKNOWN");
-  const skips=Array.isArray(result.plan?.skipped)?result.plan.skipped:[];
+  // The refusal can come from the planner (plan.skipped) or from the applier, which
+  // names each border it refused to fund (result.skipped). Both must be published.
+  const skips=[].concat(Array.isArray(result.plan?.skipped)?result.plan.skipped:[],
+   Array.isArray(result.skipped)?result.skipped:[]);
   // Deduplicate on the reason AND the per-border detail. Measured: a border that
   // changed from "no navy" to "no money" kept the same top-level reason
   // NO_OPENABLE_FRONT, so the new precondition was never published and the world
