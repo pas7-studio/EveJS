@@ -15,6 +15,12 @@ const path = require("node:path");
 const positive = v => Number.isSafeInteger(Number(v)) && Number(v)>0 ? Number(v) : null;
 const validBoundary = n => typeof n==="number" && Number.isFinite(n) && n>0;
 let sequence = 0;
+// The engine stores this sibling as .js; the repository mirror keeps the same
+// code as .cjs, so the load has to survive both extensions.
+const sibling = () => {
+ try { return require("./coopNpcAmmoBankAtomic"); }
+ catch (_error) { return require("./coopNpcAmmoBankAtomic.cjs"); }
+};
 const MAX_TX_BYTES = 8192;
 function createAmmoDebitJournal({root,store,clock=()=>Date.now()}={}){
  if(typeof root!=="string"||!path.isAbsolute(root)||root.length<2||
@@ -213,16 +219,16 @@ function createAmmoDebitJournal({root,store,clock=()=>Date.now()}={}){
   // to bypass that unresolved transaction. A PREPARED journal whose SQLite
   // replay fence proves the debit never committed is recovered as ABORTED
   // first: one failed transaction must not quarantine a real warship forever.
-  let bankShip=require("./coopNpcAmmoBankAtomic").inspectShip({root,entityID});
+  let bankShip=sibling().inspectShip({root,entityID});
   if(!bankShip.ok&&(bankShip.status==="BANK_NEEDS_RECONCILIATION"||
    bankShip.status==="BANK_LOCKED_RECONCILE")){
    try{
-    const recovered=require("./coopNpcAmmoBankAtomic").recoverUncommitted({
+    const recovered=sibling().recoverUncommitted({
      root,entityID,
      readFence:id=>require("./coopNativeRowPath").readRow(
       require("../gameStore"),"npcCargo","coopAmmoCycles_"+String(id))});
     if(recovered.status==="ABORTED")
-     bankShip=require("./coopNpcAmmoBankAtomic").inspectShip({root,entityID});
+     bankShip=sibling().inspectShip({root,entityID});
     else console.warn("[CoopAmmoJournal] bank recovery",
      String(recovered.status||"UNKNOWN"),String(recovered.reason||""));
    }catch(error){
