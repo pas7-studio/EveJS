@@ -31,6 +31,14 @@ const REGION_FLAG = "EVEJS_COOP_NPC_MARKET_REGION";
 const DEFAULT_REGION = 10000002;
 const THROTTLE_MS = 5 * 60 * 1000;
 const DEFAULT_MARKET_TIMEOUT_MS = 15000;
+const DEFAULT_MIN_INPUT_RATIO = 0.1;
+// Only judge when the inputs have a real value: a material nobody bids for is valued at
+// zero, and zero must never be read as "this recipe is trivial".
+function isTrivialRecipe({materialValue, productValue, minRatio = DEFAULT_MIN_INPUT_RATIO} = {}) {
+  if (!(materialValue > 0)) return false;
+  if (!(productValue > 0)) return false;
+  return materialValue / productValue < minRatio;
+}
 function withTimeout(promise, ms) {
   if (!(ms > 0)) return promise;
   return Promise.race([promise,
@@ -222,6 +230,8 @@ async function runOnce(options = {}) {
   const maxRuns = Math.max(1, Math.min(20, Math.round(num(env[RUNS_FLAG]) || num(env[MAX_RUNS_FLAG]) || 5)));
   const minPrice = Math.max(0, num(env[PRICE_FLOOR_FLAG]));
   const region = pos(env[REGION_FLAG]) || DEFAULT_REGION;
+  const minRatio = num(env.EVEJS_COOP_NPC_MANUFACTURE_MIN_INPUT_RATIO) || DEFAULT_MIN_INPUT_RATIO;
+  const valueCache = new Map();
   const marketTimeoutMs = Math.max(0, num(env.EVEJS_COOP_NPC_MANUFACTURE_MARKET_TIMEOUT_MS)
     || DEFAULT_MARKET_TIMEOUT_MS);
   const manufacture = options.manufacture || require("./coopNpcManufacture");
@@ -272,6 +282,7 @@ async function runOnce(options = {}) {
     const inFlight = productCoverage({manufacture, root, ownerID,
       stationID: blueprint.stationID, productTypeID: plan.productTypeID});
     let bid = null;
+    let materialValue = 0;
     try {
       // Bound on purpose: marketDaemonClient.call dereferences `this` to reach the socket.
       const call = options.call ||
@@ -282,6 +293,12 @@ async function runOnce(options = {}) {
         marketTimeoutMs);
       if (answer && answer.timeout === true) throw Error("MARKET_TIMEOUT");
       bid = answer;
+      if (answer && answer.price > 0) {
+        for (const material of plan.materials) {
+          materialValue += material.quantity * await regionalValue({region,
+            typeID: material.typeID, call, cache: valueCache, timeoutMs: marketTimeoutMs});
+        }
+      }
     } catch (error) {
       // An unreachable market is not a buyer: build nothing rather than guess demand.
       bid = null;
@@ -289,6 +306,15 @@ async function runOnce(options = {}) {
         note(options, "living-npc-manufacture-blocked", {systemID: options.systemID,
           stationID: blueprint.stationID, status: "MARKET_UNREACHABLE",
           reason: String((error && error.message) || error).slice(0, 90)});
+    }
+    const productValue = bid && bid.price > 0 ? plan.productPerRun * bid.price : 0;
+    if (isTrivialRecipe({materialValue, productValue, minRatio})) {
+      candidates.push({stationID: blueprint.stationID,
+        blueprintTypeID: blueprint.blueprintTypeID, recipeRejected: true,
+        reason: "TRIVIAL_RECIPE",
+        detail: "inputs " + Math.round(materialValue) + " vs product " +
+          Math.round(productValue)});
+      continue;
     }
     candidates.push({
       stationID: blueprint.stationID,
@@ -375,5 +401,24 @@ function resetForTests() {
   lastNote.clear();
 }
 
-module.exports = {FLAG, CORP_FLAG, DEFAULT_CORP_ID, THROTTLE_MS, choose,
+// The regional best bid for one type, memoised per run: the sanity check below asks about
+// the inputs, and a recipe has very few of them.
+async function regionalValue({region, typeID, call, cache, timeoutMs}) {
+  if (cache.has(typeID)) return cache.get(typeID);
+  let value = 0;
+  try {
+    const answer = await withTimeout(call("GetOrders", {region_id: region, type_id: typeID}),
+      timeoutMs);
+    if (!(answer && answer.timeout === true)) {
+      const buys = (answer && (answer.buys || answer.data)) || [];
+      for (const row of Array.isArray(buys) ? buys : []) {
+        if (num(row && row.price) > value) value = num(row.price);
+      }
+    }
+  } catch (_error) { value = 0; }
+  cache.set(typeID, value);
+  return value;
+}
+
+module.exports = {FLAG, CORP_FLAG, DEFAULT_CORP_ID, THROTTLE_MS, choose, isTrivialRecipe,
   seededBlueprints, hangarHeld, productCoverage, bestSeededBid, runOnce, tick, resetForTests};
