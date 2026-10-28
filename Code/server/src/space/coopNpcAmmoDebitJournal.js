@@ -47,9 +47,14 @@ function createAmmoDebitJournal({root,store,clock=()=>Date.now()}={}){
    throw Error("INVALID_JOURNAL_RECORD");
   return value;
  }
+ // Windows cannot open a directory for fsync at all; that is the platform
+ // refusing the call, not this journal losing its durable acknowledgement.
  function syncDir(dir){
-  const fd=fs.openSync(dir,"r");
-  try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+  let fd=null;
+  try{fd=fs.openSync(dir,"r");fs.fsyncSync(fd);}
+  catch(error){
+   if(process.platform!=="win32"||!["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+  }finally{if(fd!==null)try{fs.closeSync(fd);}catch(_ignored){}}
  }
  function atomic(file,value){
   const dir=path.dirname(file);

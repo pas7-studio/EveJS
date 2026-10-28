@@ -34,7 +34,15 @@ function createNpcWormholeTransit({store,service,registry,gameStore,
     fsApi.lstatSync(path.dirname(root)).isSymbolicLink())
    throw Error("EX03_WORMHOLE_JOURNAL_UNSAFE");
  }
- function syncDir(){const fd=fsApi.openSync(root,"r");try{fsApi.fsyncSync(fd)}finally{fsApi.closeSync(fd)}}
+ // Windows cannot open a directory for fsync at all; that is the platform
+ // refusing the call, not this transit losing its durable acknowledgement.
+ function syncDir(){
+  let fd=null;
+  try{fd=fsApi.openSync(root,"r");fsApi.fsyncSync(fd);}
+  catch(error){
+   if(process.platform!=="win32"||!["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+  }finally{if(fd!==null)try{fsApi.closeSync(fd);}catch(_ignored){}}
+ }
  const filename=(pilot,when,pair)=>"ex03-wh-"+pilot+"-"+when+"-"+pair+".json";
  function write(ticket,initial=false){
   directory();
