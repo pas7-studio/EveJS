@@ -3132,8 +3132,7 @@ function completeHaulCycle(scene, fleetRecord, now) {
 }
 
 function shouldTriggerHauling(scene, fleetRecord, noAsteroidsRemain = false, now = Date.now()) {
-  try{require("../../space/coopNpcRefineryTick").tick({systemID:Number(scene&&scene.systemID)||0,stationID:Number(fleetRecord&&fleetRecord.stationID)||0,fleetID:Number(fleetRecord&&fleetRecord.fleetID)||0,gameStore:require("../../gameStore"),marketRoot:process.env.EVEJS_COOP_NPC_MARKET_ROOT||process.env.EVEJS_COOP_NPC_MARKET_DIR||""});}catch(_coopRefineError){}
-  try{require("../../space/coopNpcManufactureTick").tick({systemID:+scene?.systemID});}catch(_e){}
+  try{require("../../space/coopLoopTick").tick({systemID:+scene?.systemID,stationID:+fleetRecord?.stationID,fleetID:+fleetRecord?.fleetID,gameStore:require("../../gameStore"),marketRoot:process.env.EVEJS_COOP_NPC_MARKET_ROOT||process.env.EVEJS_COOP_NPC_MARKET_DIR||""});}catch(_e){}
   if (!scene || !fleetRecord || fleetRecord.haulerEntityIDs.length <= 0) {
     return false;
   }
