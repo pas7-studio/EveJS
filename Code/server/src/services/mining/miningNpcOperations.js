@@ -1132,6 +1132,19 @@ function parkFleetMiners(scene, fleetRecord, reason) {
     try {
       const npcService = require("../../space/npc/npcService");
       if (typeof npcService.issueManualOrder !== "function") continue;
+      // Measured 2026-10-27: the identical manual orbit order stuck on the hauler but not
+      // on a miner, and the only other thing done to the hauler was rewriting its
+      // behaviour overrides first. A fleet spawned with issueStopOrder:false also parks its
+      // controller on nextThinkAtMs = MAX_SAFE_INTEGER, so it needs the same reset before an
+      // order can be flown. Profile stays "orbit": this only re-asserts it.
+      applyPassiveMiningFleetOverrides(minerEntityID, {
+        movementMode: "orbit",
+        orbitDistanceMeters: 1_200,
+        followRangeMeters: 800,
+        idleAnchorOrbit: false,
+        issueStopOrder: false,
+        clearCombatPreference: false,
+      });
       const ordered = npcService.issueManualOrder(minerEntityID, {
         type: "orbit", targetID: rockID, orbitDistanceMeters: 1_200,
         allowWeapons: false,
