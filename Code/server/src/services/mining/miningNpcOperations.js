@@ -3026,9 +3026,14 @@ function completeHaulCycle(scene, fleetRecord, now) {
                     issueStopOrder: false,
                     clearCombatPreference: false,
                   });
+                  // Measured 2026-10-27: orbiting the fleet's asteroid left the hauler 8.5 km
+                  // from its own miner, because the miners orbit that rock kilometres away
+                  // (toRock 3.1-6.4 km) - the shared rock is NOT a shared meeting point.
+                  // Station-keep on the MINER: the profile stays "orbit" so the behaviour loop
+                  // honours the order, and the target is the hull that actually holds the ore.
                   order = typeof npcService.issueManualOrder === "function"
                     ? npcService.issueManualOrder(haulerID, {
-                      type: "orbit", targetID: rockID, orbitDistanceMeters: 1_000,
+                      type: "orbit", targetID: minerID, orbitDistanceMeters: 1_200,
                       allowWeapons: false,
                     })
                     : null;
