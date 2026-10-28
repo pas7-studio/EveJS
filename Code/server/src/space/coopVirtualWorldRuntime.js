@@ -497,33 +497,57 @@ let warSovProjection=null;
 // holds strictly more resolved ships there than any other. Ties register nothing,
 // no ISK, hull or system is invented, and the record goes through the same
 // validated store the rest of the domain uses.
-function bootstrapTerritoriesFromPresence(state){
- if(!state||!state.territories)return {status:"NO_STATE",added:0};
- if(Object.keys(state.territories).length>0)return {status:"ALREADY_PROJECTED",added:0};
- let pilots=[];
- try{pilots=warPresencePilots()||[]}catch(_error){pilots=[]}
- if(!pilots.length)return {status:"NO_PRESENCE",added:0};
+// FW-044: military control needs a military presence.
+//
+// Measured right after FW-043: ownership derived from raw presence let ORE - a faction
+// with mining hulls and NO combat doctrine at all - own four systems, so every border
+// resolved to a party that cannot fight and FW-036 correctly refused every front. A
+// mining fleet is not a garrison. A system can only be owned when at least one ARMED
+// pilot (role patrol/pirate) of the winning faction is really there, and the owner is
+// still the faction with the most resolved pilots among those that can defend.
+// A tie owns nothing, and a system with no armed presence stays unowned.
+const ARMED_ROLES=new Set(["patrol","pirate"]);
+function deriveTerritoryOwners(pilots){
  const counts=new Map();
- for(const pilot of pilots){
+ for(const pilot of Array.isArray(pilots)?pilots:[]){
   const systemID=Number(pilot&&pilot.systemID),factionID=Number(pilot&&pilot.factionID);
   if(!Number.isSafeInteger(systemID)||systemID<=0||
    !Number.isSafeInteger(factionID)||factionID<=0)continue;
   const key=String(systemID);
   if(!counts.has(key))counts.set(key,new Map());
   const per=counts.get(key);
-  per.set(factionID,(per.get(factionID)||0)+1);
+  const row=per.get(factionID)||{ships:0,armed:0};
+  row.ships+=1;
+  if(ARMED_ROLES.has(String(pilot&&pilot.role||"")))row.armed+=1;
+  per.set(factionID,row);
  }
+ const owners=[];
+ for(const [key,per] of counts){
+  const eligible=[...per.entries()].filter(([,row])=>row.armed>0);
+  if(!eligible.length)continue;
+  eligible.sort((a,b)=>b[1].ships-a[1].ships||a[0]-b[0]);
+  const [factionID,row]=eligible[0];
+  if(eligible.length>1&&eligible[1][1].ships>=row.ships)continue; // a tie owns nothing
+  owners.push({systemID:Number(key),factionID,ships:row.ships,armed:row.armed});
+ }
+ owners.sort((a,b)=>a.systemID-b.systemID);
+ return owners;
+}
+function bootstrapTerritoriesFromPresence(state){
+ if(!state||!state.territories)return {status:"NO_STATE",added:0};
+ if(Object.keys(state.territories).length>0)return {status:"ALREADY_PROJECTED",added:0};
+ let pilots=[];
+ try{pilots=warPresencePilots()||[]}catch(_error){pilots=[]}
+ if(!pilots.length)return {status:"NO_PRESENCE",added:0};
+ const owners=deriveTerritoryOwners(pilots);
  const at=Date.now(),next={...state,territories:{...(state.territories||{})}};
  const added=[];
- for(const [key,per] of counts){
-  const ranked=[...per.entries()].sort((a,b)=>b[1]-a[1]||a[0]-b[0]);
-  if(ranked.length<1)continue;
-  const [factionID,ships]=ranked[0];
-  if(ranked.length>1&&ranked[1][1]>=ships)continue; // a tie owns nothing
-  if(ships<1)continue;
-  next.territories[key]={systemID:Number(key),originalOwnerFactionID:factionID,
-   militaryControllerFactionID:factionID,state:"SECURE",revision:1,changedAt:at};
-  added.push({systemID:Number(key),factionID,ships});
+ for(const owner of owners){
+  next.territories[String(owner.systemID)]={systemID:owner.systemID,
+   originalOwnerFactionID:owner.factionID,militaryControllerFactionID:owner.factionID,
+   state:"SECURE",revision:1,changedAt:at};
+  added.push({systemID:owner.systemID,factionID:owner.factionID,
+   ships:owner.ships,armed:owner.armed});
  }
  if(!added.length)return {status:"NO_DECISIVE_OWNER",added:0};
  warStateStore().write(next);
@@ -4901,4 +4925,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
