@@ -580,6 +580,12 @@ function miningShipDetail(systemID,fleet){
    const ship=scene?.getEntityByID?.(Number(id));
    if(!ship)return {id:Number(id)||0,missing:true};
    return {id:Number(id)||0,mode:String(ship.mode||""),
+     // Measured 2026-10-27: a hauler sat in mode FOLLOW with speedFraction 1 and a
+     // FROZEN gap for dozens of attempts. `inDynamic` answers whether the scene
+     // movement loop can even see the hull; advancedAgoMs whether it was advanced.
+     inDynamic:Boolean(scene?.dynamicEntities?.has?.(Number(id))),
+     advancedAgoMs:ship._lastMovementAdvancedAtMs?Math.max(0,Date.now()-Number(ship._lastMovementAdvancedAtMs)):null,
+     maxVelocity:Number(ship.maxVelocity)||0,
     target:Number(ship.targetID)||0,stacks:(ship.nativeCargoItems||[]).length,
     quantity:(ship.nativeCargoItems||[]).reduce((sum,item)=>sum+Math.max(0,Number(item.quantity)||0),0),
     toRockMeters:distanceBetween(ship.position,rockPosition),
