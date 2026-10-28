@@ -3012,8 +3012,43 @@ function ensureMineralLift(){
  return mineralLiftEngine;
 }
 
-function ensureMarketTrader(){
- if(nativeMarketTrader||nativeMarketBlocked)return nativeMarketTrader;
+// Close the world's own RPC_CALLING journals from proof the market itself provides. Runs
+// once per process, is read-only on the market side, and never repeats a fill: it settles
+// only what the market's own order row proves, and closes a journal without effect only on
+// three independent proofs. Every outcome is observable.
+let journalReconcileStarted=false,journalReconcileLastAtMs=0;
+function reconcileMarketJournalsAtBoot(force=false){
+ // A journal that appears while the world is running is retried at most every five
+ // minutes: the market call is cheap, but a hot loop against it is not.
+ if(journalReconcileStarted&&(!force||Date.now()-journalReconcileLastAtMs<300000))return;
+ journalReconcileStarted=true;journalReconcileLastAtMs=Date.now();
+ void (async()=>{
+  try{
+   const store=require("./npc/nativeNpcStore");
+   const runtime=require("./runtime");
+   const inventory=require("../services/inventory/itemTypeRegistry");
+   const marketClient=require("../services/market/marketDaemonClient").marketDaemonClient;
+   const result=await require("./coopNativeNpcMarketReconcile").reconcileJournals({
+    root:process.env.EVEJS_COOP_NPC_MARKET_ROOT||"/var/lib/evejs/coop-native-market",
+    inspectOrder:orderID=>marketClient.call("GetOrder",{order_id:String(orderID)}),
+    store,
+    sceneForSystem:systemID=>{
+     try{return runtime.ensureScene(systemID,{refreshStargates:false})}catch(_error){return null}
+    },
+    resolveType:typeID=>inventory.resolveItemByTypeID(typeID),
+   });
+   require("./coopRuntimeProbe").observe("living-npc-market-journal-reconciled",null,null,{
+    settled:result.settled.length,pending:result.pending.length,
+    settledNoEffect:result.settled.filter(x=>x.noEffect===true).length,
+    pendingReasons:result.pending.slice(0,3).map(x=>String(x.reason||"")).join(",")});
+  }catch(error){
+   // An unreachable market is not a proof of anything: the journal stays for the next boot.
+   require("./coopRuntimeProbe").observe("living-npc-market-journal-unreached",null,null,
+    {reason:String((error&&error.message)||error).slice(0,90)});
+  }
+ })();
+}
+function ensureMarketTrader(){ if(nativeMarketTrader||nativeMarketBlocked)return nativeMarketTrader;
  if(!identityRegistry||!world)return null;
  const runtime=require("./runtime"),store=require("./npc/nativeNpcStore");
  const worldData=require("./worldData"),inventory=require("../services/inventory/itemTypeRegistry");
@@ -3044,15 +3079,21 @@ function ensureMarketTrader(){
     return decision.price||0;
    }:null
  });
- // A pending RPC of unknown outcome can never be retried automatically.
+ // A pending RPC of unknown outcome can never be retried automatically - but it can be
+ // SETTLED from the market's own order row, and until that runs every later sale of the
+ // pilot is refused with UNRESOLVED_MARKET_JOURNAL (measured 2026-10-28: one crashed
+ // partial fill stopped the corporation from selling anything at all). The proof is
+ // read-only, so the world closes its own journal at boot instead of waiting for an
+ // operator; the per-trade journal guard still refuses every trade until it is closed.
  const recovered=market.recover();
  if(recovered.status==="NEEDS_OPERATOR_REPAIR"){
-  nativeMarketBlocked=true;
   require("./coopRuntimeProbe").observe("living-native-market-repair-required",null,null,recovered);
-  return null;
- }
- if(recovered.recovered)
+ } else if(recovered.recovered)
   require("./coopRuntimeProbe").observe("living-native-market-recovered",null,null,recovered);
+ // Always once per boot, whether or not recover() complained: a journal at RPC_CALLING is
+ // exactly what recover() leaves alone, and that is the one an operator had to close by
+ // hand. The reconcile is read-only and reports what it did either way.
+ reconcileMarketJournalsAtBoot();
  nativeMarketTrader=market;
  return market;
 }
@@ -3214,8 +3255,14 @@ async function advanceNativeMarket(){ if(process.env.EVEJS_COOP_NATIVE_NPC_MARKE
         marketCurrency:"NPC_LEDGER_ONLY_NOT_EVEJS_PLAYER_WALLET"});
       continue;
      }
-     if(["RPC_OUTCOME_UNKNOWN","RPC_ACK_NOT_VERIFIABLE","NEEDS_MARKET_REPAIR",
-      "UNRESOLVED_MARKET_JOURNAL"].includes(result.status)){
+     if(result.status==="UNRESOLVED_MARKET_JOURNAL"){
+      // The world refuses the trade (correct: the journal is not settled) but it also
+      // tries to settle it from the market own row instead of staying blocked until a
+      // restart: measured 2026-10-28 one crashed partial fill stopped every sale.
+      reconcileMarketJournalsAtBoot(true);
+      continue;
+     }
+     if(["RPC_OUTCOME_UNKNOWN","RPC_ACK_NOT_VERIFIABLE","NEEDS_MARKET_REPAIR"].includes(result.status)){
       nativeMarketBlocked=true;
       require("./coopRuntimeProbe").observe("living-native-market-repair-required",null,
        {spaceState:{systemID}},{pilotID:link.pilotID,status:result.status});
