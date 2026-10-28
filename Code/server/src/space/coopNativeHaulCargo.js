@@ -190,8 +190,14 @@ function strictTransferCargo(scene,fleet,miner,options,store,probe){
    for(const row of existing){
     const type=resolveType(Number(row?.typeID));
     const unit=Number(type?.volume);
+    // Measured 2026-10-27: a hold carrying the fleet's own lift-tagged minerals made the
+    // whole hold invalid (why "cargo-invalid", usedM3 0) because those rows belong to the
+    // corporation/station rather than to the miner's owner. They still occupy volume, so
+    // they are counted, but they never poison the ore transfer.
+    const coopLiftRow=/^coop-mineral-lift:v1:/.test(String(row?.customInfo||""));
     if(!integer(Number(row?.cargoID))||!integer(Number(row?.quantity))||
-      Number(row?.entityID)!==haulerID||Number(row?.ownerID)!==minerOwner||
+      Number(row?.entityID)!==haulerID||
+      (Number(row?.ownerID)!==minerOwner&&!coopLiftRow)||
       row.transient!==false||!Number.isFinite(unit)||unit<=0){valid=false;break;}
     used+=unit*Number(row.quantity);
    }

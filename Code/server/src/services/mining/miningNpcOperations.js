@@ -1139,14 +1139,14 @@ function parkFleetMiners(scene, fleetRecord, reason) {
       // order can be flown. Profile stays "orbit": this only re-asserts it.
       applyPassiveMiningFleetOverrides(minerEntityID, {
         movementMode: "orbit",
-        orbitDistanceMeters: 800,
+        orbitDistanceMeters: 600,
         followRangeMeters: 800,
         idleAnchorOrbit: false,
         issueStopOrder: false,
         clearCombatPreference: false,
       });
       const ordered = npcService.issueManualOrder(minerEntityID, {
-        type: "orbit", targetID: rockID, orbitDistanceMeters: 800,
+        type: "orbit", targetID: rockID, orbitDistanceMeters: 600,
         allowWeapons: false,
       });
       if (ordered && ordered.success === true) parked += 1;
@@ -3073,7 +3073,7 @@ function completeHaulCycle(scene, fleetRecord, now) {
                       // Both hulls orbit the same rock; with 1 000/1 200 m radii the mutual
                       // distance swept 327 m .. 5 812 m, i.e. above the 2 500 m transfer range for
                       // most of every orbit. Pull the hauler in so the whole orbit stays in range.
-                      type: "orbit", targetID: rockID, orbitDistanceMeters: 400,
+                      type: "orbit", targetID: rockID, orbitDistanceMeters: 250,
                       allowWeapons: false,
                     })
                     : null;
