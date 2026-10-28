@@ -152,7 +152,16 @@ function occupationStates(state) {
 // systems our war state touches left the rest with no entry, so the dashboard read
 // "no data". This fills every system the static table gives the warzone factions,
 // and overlays the live contested state where we really have one.
-function warzoneOccupationStates(state, { factionIDs = [], systems = [], militiaOf = (id) => id } = {}) {
+// The values are FACTIONS, never militia corporations. The client compares them with
+// its own faction sets and indexes faction-keyed tables with them:
+//   fwwarzone/client/dashboard/warzoneMap.py:  FACTION_ID_TO_COLOR[occupationState.occupierID]
+//   eve/client/script/ui/shared/maps/starModeHandler.py: nameByFaction[occupierID]
+//   eve/common/script/util/facwarCommon.py:    _OCCUPIER_FW_FACTIONS = {Amarr, Caldari, Gallente, Minmatar}
+// Measured on the live world: the payload carried militia corporations (1000180/1000181),
+// so the map's militia star colouring raised KeyError on every pass, never finished and
+// re-ran forever - 204 occupation states and ~36 victory-point calls a second, and the map
+// window never opened.
+function warzoneOccupationStates(state, { factionIDs = [], systems = [] } = {}) {
   const allowed = new Set((factionIDs || []).map(Number).filter((id) => id > 0));
   const live = occupationStates(state);
   const out = {};
@@ -162,8 +171,8 @@ function warzoneOccupationStates(state, { factionIDs = [], systems = [], militia
     if (!pos(systemID) || !allowed.has(staticOwner)) continue;
     const current = live[systemID] || null;
     out[systemID] = {
-      ownerID: militiaOf(current ? current.ownerID : staticOwner),
-      occupierID: militiaOf(current ? current.occupierID : staticOwner),
+      ownerID: num(current ? current.ownerID : staticOwner),
+      occupierID: num(current ? current.occupierID : staticOwner),
       contested: Boolean(current && current.contested),
     };
   }
@@ -173,8 +182,8 @@ function warzoneOccupationStates(state, { factionIDs = [], systems = [], militia
     if (!pos(systemID) || out[systemID]) continue;
     if (!allowed.has(num(current.ownerID)) && !allowed.has(num(current.occupierID))) continue;
     out[systemID] = {
-      ownerID: militiaOf(current.ownerID),
-      occupierID: militiaOf(current.occupierID),
+      ownerID: num(current.ownerID),
+      occupierID: num(current.occupierID),
       contested: Boolean(current.contested),
     };
   }
@@ -299,42 +308,132 @@ function liveCampaignSnapshots(options = {}) {
   }
 }
 
+// Front-line / second-line / back-line, exactly the three values the client knows
+// ('FL', 'SL', 'BL' in factionwarfare/const.py). The warzone map reads them without a
+// default: ADJACENCY_STATE_TO_ICON_PATH[occupationState.adjacencyState] and
+// GetAdjacencyOpacity(...), so a missing value breaks the tile instead of drawing a
+// plain one. Adjacency comes from the real gate graph and the real occupier of each
+// neighbouring system: a system that touches ground held by the other side is the
+// front line, the systems behind it are the second line, the rest is the back line.
+function adjacencyStates(occupiers, { getStargatesForSystem } = {}) {
+  const neighbors = new Map();
+  const around = (systemID) => {
+    if (neighbors.has(systemID)) return neighbors.get(systemID);
+    const out = [];
+    try {
+      for (const gate of (typeof getStargatesForSystem === "function"
+        ? getStargatesForSystem(systemID) || []
+        : [])) {
+        const other = num(gate && gate.destinationSolarSystemID);
+        if (pos(other) && other !== systemID && pos(occupiers[other])) out.push(other);
+      }
+    } catch (_error) { /* a system without gate data is simply not a border */ }
+    neighbors.set(systemID, out);
+    return out;
+  };
+  const result = {};
+  for (const key of Object.keys(occupiers)) {
+    const systemID = num(key);
+    const mine = num(occupiers[systemID]);
+    if (!pos(systemID) || !pos(mine)) continue;
+    const front = around(systemID).some((other) => num(occupiers[other]) !== mine);
+    result[systemID] = front ? "FL" : "";
+  }
+  for (const key of Object.keys(occupiers)) {
+    const systemID = num(key);
+    if (result[systemID]) continue;
+    result[systemID] = around(systemID).some((other) => result[other] === "FL") ? "SL" : "BL";
+  }
+  return result;
+}
+
+// The faction on the other side of the line for a system: the enemy of its occupier in
+// an ACTIVE war, or - for ground that changed hands without a running campaign - the
+// sovereign owner it was taken from.
+function attackerIDs(state, occupiers = {}) {
+  const rival = new Map();
+  for (const war of Object.values((state && state.wars) || {})) {
+    if (!war || war.state !== "ACTIVE") continue;
+    const attacker = num(war.attackerFactionID);
+    const defender = num(war.defenderFactionID);
+    if (!pos(attacker) || !pos(defender)) continue;
+    rival.set(attacker, defender);
+    rival.set(defender, attacker);
+  }
+  const live = occupationStates(state);
+  const out = {};
+  for (const key of Object.keys(occupiers)) {
+    const systemID = num(key);
+    const occupier = num(occupiers[systemID]);
+    const owner = num((live[systemID] || {}).ownerID);
+    const known = num(rival.get(occupier));
+    out[systemID] = known || (pos(owner) && owner !== occupier ? owner : 0);
+  }
+  return out;
+}
+
+// Gate topology for the front-line projection. Absent when this module is loaded by the
+// source tests instead of from the server's space directory, so the lookup never throws
+// and adjacency degrades to the back line.
+let spaceWorldDataCache;
+function spaceWorldData() {
+  if (spaceWorldDataCache !== undefined) return spaceWorldDataCache;
+  try { spaceWorldDataCache = require("./worldData"); }
+  catch (_error) { spaceWorldDataCache = {}; }
+  return spaceWorldDataCache;
+}
+
 // fwWarzoneSolarsystemService.js used to inline this projection twice, identically,
 // and a third time for the local system: same computation, three return shapes. The
 // service keeps the env gate and the log label; the projection lives here once.
-function occupationPairs(buildKeyVal, warzones) {
+function occupationPairs(buildKeyVal, warzones, { state = null, getStargatesForSystem = null } = {}) {
   const warzoneID = Number(process.env.EVEJS_COOP_WAR_CLIENT_WARZONE || DEFAULT_WARZONE_ID);
   const allowed = new Set(warzones[warzoneID] || []);
   const allSystems = Number(process.env.EVEJS_COOP_FW_ALL_SYSTEMS || 0) === 1;
+  if (!state) state = warState();
   const states = allSystems
-    ? warzoneOccupationStates(warState(), {
+    ? warzoneOccupationStates(state, {
         factionIDs: Array.from(allowed),
         systems: staticWarzoneSystems(),
-        militiaOf: (id) => id,
       })
-    : occupationStates(warState());
+    : occupationStates(state);
+  const occupiers = {};
+  for (const [systemID, entry] of Object.entries(states)) {
+    occupiers[systemID] = num(entry && entry.occupierID);
+  }
+  let adjacency = {};
+  try {
+    adjacency = adjacencyStates(occupiers, {
+      getStargatesForSystem: getStargatesForSystem || spaceWorldData().getStargatesForSystem,
+    });
+  } catch (_error) { adjacency = {}; }
+  const attackers = attackerIDs(state, occupiers);
   const entries = Object.entries(states).map(([systemID, entry]) => {
-    const ownerID = Number(entry.ownerID);
-    const occupierID = Number(entry.occupierID);
+    const ownerID = num(entry && entry.ownerID);
+    const occupierID = num(entry && entry.occupierID);
     if (!allSystems && !allowed.has(ownerID) && !allowed.has(occupierID)) return null;
     return [Number(systemID), buildKeyVal([
-      ["ownerID", ownerID], ["occupierID", occupierID], ["contested", entry.contested],
+      ["ownerID", ownerID],
+      ["occupierID", occupierID],
+      ["attackerID", num(attackers[systemID])],
+      ["contested", Boolean(entry && entry.contested)],
+      ["adjacencyState", adjacency[Number(systemID)] || "BL"],
     ])];
   }).filter(Boolean);
   return { warzoneID, entries };
 }
 
 /** GetWarzonesOccupationStates(+Uncached): every warzone key, entries for ours only. */
-function warzonesResponse(buildKeyVal, buildDict, warzones) {
-  const { warzoneID, entries } = occupationPairs(buildKeyVal, warzones);
+function warzonesResponse(buildKeyVal, buildDict, warzones, options = {}) {
+  const { warzoneID, entries } = occupationPairs(buildKeyVal, warzones, options);
   return buildDict(Object.keys(warzones).map((key) => [
     Number(key), Number(key) === warzoneID ? buildDict(entries) : buildDict([]),
   ]));
 }
 
 /** GetLocalOccupationState: the caller answers with this when the system is ours. */
-function localOccupationResponse(buildKeyVal, warzones, args, session) {
-  const { entries } = occupationPairs(buildKeyVal, warzones);
+function localOccupationResponse(buildKeyVal, warzones, args, session, options = {}) {
+  const { entries } = occupationPairs(buildKeyVal, warzones, options);
   const wanted = Number(args && args.length > 0
     ? args[0]
     : (session && (session.solarsystemid2 || session.solarsystemid))) || 0;
@@ -346,6 +445,7 @@ module.exports = {
   CAMPAIGN_STATE_ACTIVE, DEFAULT_WARZONE_ID, DEFAULT_EXPIRY_MS,
   numericID, filetime, liveCampaigns, campaignSnapshots, occupationStates, frontReport,
   warzoneOccupationStates, staticWarzoneSystems, warzoneSystems,
+  adjacencyStates, attackerIDs,
   occupationPairs, warzonesResponse, localOccupationResponse,
   objectiveStructureID,
   warState, liveCampaignSnapshots,
