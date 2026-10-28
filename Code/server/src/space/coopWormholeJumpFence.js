@@ -20,11 +20,17 @@ function createFence({root,fsApi = fs,clock = () => Date.now()} = {}) {
       if (fsApi.lstatSync(parent).isSymbolicLink()) throw Error("UNSAFE_PARENT");
     } catch {throw Error("WORMHOLE_JOURNAL_UNAVAILABLE");}
   };
+  // Windows cannot open a directory for fsync at all. That is the platform
+  // refusing the call, not this journal losing its durable acknowledgement.
   const syncDir=()=>{
     let fd;
     try {fd=fsApi.openSync(root,"r");fsApi.fsyncSync(fd);}
-    catch {throw Error("WORMHOLE_JOURNAL_DIRSYNC_FAILED");}
-    finally {if(fd!==undefined)fsApi.closeSync(fd);}
+    catch (error) {
+      if (process.platform!=="win32"||
+       !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))
+        throw Error("WORMHOLE_JOURNAL_DIRSYNC_FAILED");
+    }
+    finally {if(fd!==undefined)try{fsApi.closeSync(fd);}catch(_ignored){}}
   };
   function write(record, initial=false){
     ensureDir();

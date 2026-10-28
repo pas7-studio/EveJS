@@ -16,7 +16,16 @@ function createFence({file,storage=fs,clock=()=>Date.now(),getBossWreck,
   throw Error("INVALID_BOSS_LOOT_FENCE");
  const dir=path.dirname(file),lock=file+".writer.lock",tmp=file+".tmp-";
  let unsafe=false;
- const persistDir=()=>{const fd=storage.openSync(dir,"r");try{storage.fsyncSync(fd)}finally{storage.closeSync(fd)}};
+ // Windows cannot open a directory for fsync at all; that is the platform
+ // refusing the call, not this journal losing its durable acknowledgement.
+ const persistDir=()=>{
+  let fd=null;
+  try{fd=storage.openSync(dir,"r");storage.fsyncSync(fd);}
+  catch(error){
+   if(process.platform!=="win32"||
+    !["EPERM","EACCES","EINVAL","ENOTSUP","EBADF","EISDIR"].includes(error?.code))throw error;
+  }finally{if(fd!==null)try{storage.closeSync(fd);}catch(_ignored){}}
+ };
  function read(){
   if(storage.existsSync(dir)&&storage.readdirSync(dir).some(n=>n.startsWith(path.basename(tmp))))
    throw Error("UNFINISHED_BOSS_LOOT_JOURNAL");
