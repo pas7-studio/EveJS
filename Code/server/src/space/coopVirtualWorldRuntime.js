@@ -4191,6 +4191,43 @@ function confirmedNativeNpcWreck(systemID,npcID,wreckID,destroyedShip=null){
 // cargo. The native arrival tick is synchronous, so the first call starts the
 // market job and the arrival pauses until it settles, bounded by a hard
 // timeout: a hung RPC can never freeze a hauler or fake a sale.
+// A hull parked at a station is not engaged, but the market refuses ANY sale while
+// the controller still holds a target. The fleet's own approach uses an orbit order
+// on its asteroid, and that sets controller.currentTargetID (measured 2026-10-28:
+// NATIVE_NPC_BUSY with target 5020484740197 while the hauler sat at station 60003724
+// with its minerals ready to sell). Only a NON-COMBAT target is released here: a ship
+// target, an attack order or a fresh aggressor keeps the refusal exactly as before.
+function releaseStationIdleTarget({systemID,stationID,haulerID,scene=null}={}){
+ try{
+  const live=scene||require("./runtime").ensureScene(Number(systemID),{refreshStargates:false});
+  const ship=live?.getEntityByID?.(Number(haulerID));
+  if(!ship||ship.kind!=="ship"||ship.nativeNpc!==true)return false;
+  if(String(ship.mode||"").toUpperCase()==="WARP"||ship.pendingWarp||ship.warpState)return false;
+  const controller=require("./npc/npcRegistry").getControllerByEntityID(Number(haulerID));
+  if(!controller||Number(controller.entityID)!==Number(haulerID))return false;
+  const targetID=Number(controller.currentTargetID||0);
+  if(!(targetID>0))return false;
+  if(String(controller.manualOrder?.type||"")==="attack")return false;
+  const aggressionAge=Date.now()-Number(controller.lastAggressedAtMs);
+  if(Number(controller.lastAggressorID)>0&&Number.isFinite(aggressionAge)&&
+   aggressionAge>=0&&aggressionAge<=120000)return false;
+  // A static object (asteroid, belt, station, planet) cannot be an engagement. A
+  // hull, drone, fighter or missile keeps its target and keeps the sale refused.
+  const target=live?.getEntityByID?.(targetID)||null;
+  const staticList=Array.isArray(live?.staticEntities)?live.staticEntities:[];
+  const isStatic=staticList.some(x=>Number(x?.itemID)===targetID)||
+   String(target?.kind||"")==="asteroid";
+  if(!isStatic)return false;
+  controller.currentTargetID=0;
+  controller.preferredTargetID=0;
+  if(String(controller.manualOrder?.type||"")==="orbit")controller.manualOrder=null;
+  try{require("./coopRuntimeProbe").observe("living-npc-station-target-cleared",null,
+   {spaceState:{systemID:Number(systemID),stationID:Number(stationID)}},
+   {haulerID:Number(haulerID),releasedTargetID:targetID,
+    kind:String(target?.kind||"static")});}catch(_error){}
+  return true;
+ }catch(_error){return false;}
+}
 function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
  if(process.env.EVEJS_COOP_NPC_MARKET_SELL_ON_ARRIVAL!=="1")return {status:"DISABLED"};
  if(process.env.EVEJS_COOP_NATIVE_NPC_MARKET!=="1")return {status:"MARKET_OFF"};
@@ -4324,6 +4361,9 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
     }
    }
  }
+ // The market refuses a sale while the hauler's controller holds a target, and the
+ // fleet's asteroid orbit sets one. Release only a non-combat target (see above).
+ releaseStationIdleTarget({systemID,stationID,haulerID,scene:scene||null});
  const trader=ensureMarketTrader();
  if(!trader){noteSaleSkip(systemID,stationID,haulerID,"MARKET_UNAVAILABLE");return {status:"NOT_SOLD",reason:"MARKET_UNAVAILABLE"};}
  const wanted=[...new Set(sellTypes.filter(typeID=>
