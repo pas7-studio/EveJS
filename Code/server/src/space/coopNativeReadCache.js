@@ -101,10 +101,16 @@ function createCache({ listNativeEntities, listNativeCargo, ttlMs = DEFAULT_TTL_
 let singleton = null;
 function nativeCache() {
   if (!singleton) {
-    const store = require("./npc/nativeNpcStore");
+    // The cache is an optimisation, never the authority: the caller still holds
+    // the store it proves against, and every miss falls back to it. When the
+    // native store is not installed at all (a sandbox that only mirrors this
+    // module, a partially deployed tree) an empty cache makes every lookup miss
+    // instead of throwing a cache error the caller reports as operator repair.
+    let store = null;
+    try { store = require("./npc/nativeNpcStore"); } catch (_error) { store = null; }
     singleton = createCache({
-      listNativeEntities: () => store.listNativeEntities(),
-      listNativeCargo: () => (typeof store.listNativeCargo === "function" ? store.listNativeCargo() : []),
+      listNativeEntities: () => (store ? store.listNativeEntities() : []),
+      listNativeCargo: () => (store && typeof store.listNativeCargo === "function" ? store.listNativeCargo() : []),
     });
   }
   return singleton;
