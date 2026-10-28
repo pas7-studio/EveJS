@@ -21,8 +21,8 @@ const ENABLED = () => String(process.env.EVEJS_COOP_STATION_DRAIN || "") === "1"
 const PHASE = "coopDrain";
 const MINERAL_CATEGORY = 4; // Tritanium, Pyerite, ... (refinery output)
 const ARRIVAL_METERS = 10000; // the market's own station-range for a sale
-const CALL_SPACING_MS = 14000; // the lift is async; a later call sells what it loaded
-const MAX_CALLS = 4; // the last call reads the settlement the earlier ones started
+const CALL_SPACING_MS = 3000; // the settled answer is only readable for ~5 s after it lands
+const MAX_CALLS = 12; // ~36 s of polling: never a hot loop, never a missed answer
 
 function intervalMs() {
   const value = Number(process.env.EVEJS_COOP_STATION_DRAIN_INTERVAL_MS || 15 * 60 * 1000);
@@ -129,6 +129,13 @@ function tick(scene, fleetRecord, now) {
       state.warpIssuedAtMs = 0;
       return true;
     }
+    // Once a settlement is known there is nothing left to ask for in this visit.
+    if (state.settlement && state.settlement.status === "SOLD" &&
+      state.calls > 1) {
+      state.step = "back";
+      state.warpIssuedAtMs = 0;
+      return true;
+    }
     state.calls += 1;
     state.nextCallAtMs = now + CALL_SPACING_MS;
     // The proven arrival sale: it lifts the station's refined minerals into this
@@ -186,13 +193,25 @@ function tick(scene, fleetRecord, now) {
   return false;
 }
 
+const skipNotes = new Map();
+function skip(reason, fleetRecord, extra = {}) {
+  const key = String((fleetRecord && fleetRecord.fleetID) || 0) + ":" + reason;
+  const now = Date.now();
+  if (now - (skipNotes.get(key) || 0) < 300000) return false;
+  skipNotes.set(key, now);
+  note("SKIPPED_" + reason, fleetRecord, extra);
+  return false;
+}
+
 // Start a drain trip if one is due. Returns true when the fleet is now busy with
 // it, so the caller can skip the held mining work for this tick.
 function start(scene, fleetRecord, now) {
   if (!ENABLED() || !scene || !fleetRecord) return false;
   if (String(fleetRecord.state || "") !== "mining") return false;
   if (active(fleetRecord)) return true;
-  if (now < num(fleetRecord.coopDrainNextAtMs)) return false;
+  if (now < num(fleetRecord.coopDrainNextAtMs)) {
+    return skip("NOT_DUE", fleetRecord, { dueInMs: Math.round(num(fleetRecord.coopDrainNextAtMs) - now) });
+  }
   // Drain only what is really overstocked. The governor's own measurement is used
   // (stock the corporation owns, against the same floor), and an unreadable demand
   // falls back to the floor - never to "nothing to do": measured 2026-10-28 the
@@ -205,29 +224,42 @@ function start(scene, fleetRecord, now) {
     const floorUnits = Math.max(0, num(process.env.EVEJS_COOP_MINING_DEMAND_FLOOR) || 20000);
     decision = governor.decide({ stock: num(measured.stockUnits), demand: num(measured.demand),
       floorUnits, now });
-  } catch (_error) { return false; }
+  } catch (error) {
+    return skip("GOVERNOR_UNAVAILABLE", fleetRecord,
+      { reason: String((error && error.message) || error).slice(0, 80) });
+  }
   if (!decision || decision.action === "ALLOW") {
-    // Within demand: nothing to drain.
-    fleetRecord.coopDrainNextAtMs = now + intervalMs();
-    return false;
+    // Within demand: nothing to drain. The schedule is NOT pushed here - an ALLOW
+    // every tick used to postpone the drain for ever (measured 2026-10-28: the trip
+    // was due at 12:29 and had drifted to 12:49 without ever running).
+    return skip("WITHIN_DEMAND", fleetRecord, { held: num(decision && decision.held),
+      allowance: num(decision && decision.allowance) });
   }
   const haulerID = pos((fleetRecord.haulerEntityIDs || [])[0]);
-  if (!haulerID) return false;
+  if (!haulerID) return skip("NO_HAULER", fleetRecord, {});
   const hauler = scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
-  if (!hauler) return false;
-  if (String(hauler.mode || "").toUpperCase() === "WARP" || hauler.pendingWarp || hauler.warpState) return false;
+  if (!hauler) return skip("HAULER_NOT_IN_SCENE", fleetRecord, { haulerID });
+  if (String(hauler.mode || "").toUpperCase() === "WARP" || hauler.pendingWarp || hauler.warpState) {
+    return skip("HAULER_WARPING", fleetRecord, { haulerID, mode: String(hauler.mode || "") });
+  }
   const corpID = Math.max(1, num(process.env.EVEJS_COOP_FACTORY_CORP_ID) || 1000129);
   let rows = [];
-  try { rows = stockRows(corpID); } catch (_error) { return false; }
+  try { rows = stockRows(corpID); } catch (error) {
+    return skip("STOCK_UNREADABLE", fleetRecord,
+      { reason: String((error && error.message) || error).slice(0, 80) });
+  }
   const chosen = chooseStation(rows, { corpID, isMineral: isMineralType });
-  if (!chosen) return false;
+  if (!chosen) return skip("NO_MINERAL_STOCK", fleetRecord, { rows: rows.length });
   const point = stationPoint(scene, chosen.stationID);
-  if (!point) return false;
+  if (!point) return skip("STATION_NOT_PHYSICAL", fleetRecord, { stationID: chosen.stationID });
   fleetRecord[PHASE] = { step: "travel", haulerID, stationID: chosen.stationID,
     units: chosen.units, startedAtMs: now, warpIssuedAtMs: 0, calls: 0, nextCallAtMs: 0,
     held: decision.held, allowance: decision.allowance };
   note("STARTED", fleetRecord, { haulerID, stationID: chosen.stationID, units: chosen.units,
     held: decision.held, allowance: decision.allowance });
+  // The trip itself now owns the schedule; a failed one is retried after a full
+  // interval, never in a hot loop.
+  fleetRecord.coopDrainNextAtMs = now + intervalMs();
   try {
     require("./npc/npcRuntime").warpToPoint(haulerID, point,
       { forceImmediateStart: true, broadcastWarpStartToVisibleSessions: true });
