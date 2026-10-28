@@ -3178,41 +3178,22 @@ function ensureMineralLift(){
  return mineralLiftEngine;
 }
 
-// Close the world's own RPC_CALLING journals from proof the market itself provides. Runs
-// once per process, is read-only on the market side, and never repeats a fill: it settles
-// only what the market's own order row proves, and closes a journal without effect only on
-// three independent proofs. Every outcome is observable.
-let journalReconcileStarted=false,journalReconcileLastAtMs=0;
+// Close the world's own RPC_CALLING journals from market proof (space/coopMarketJournalBoot.js
+// owns the logic; every authority is injected so this file keeps no state for it).
+let journalBootReconciler=null;
 function reconcileMarketJournalsAtBoot(force=false){
- // A journal that appears while the world is running is retried at most every five
- // minutes: the market call is cheap, but a hot loop against it is not.
- if(journalReconcileStarted&&(!force||Date.now()-journalReconcileLastAtMs<300000))return;
- journalReconcileStarted=true;journalReconcileLastAtMs=Date.now();
- void (async()=>{
-  try{
-   const store=require("./npc/nativeNpcStore");
-   const runtime=require("./runtime");
-   const inventory=require("../services/inventory/itemTypeRegistry");
-   const marketClient=require("../services/market/marketDaemonClient").marketDaemonClient;
-   const result=await require("./coopNativeNpcMarketReconcile").reconcileJournals({
-    root:process.env.EVEJS_COOP_NPC_MARKET_ROOT||"/var/lib/evejs/coop-native-market",
-    inspectOrder:orderID=>marketClient.call("GetOrder",{order_id:String(orderID)}),
-    store,
-    sceneForSystem:systemID=>{
-     try{return runtime.ensureScene(systemID,{refreshStargates:false})}catch(_error){return null}
-    },
-    resolveType:typeID=>inventory.resolveItemByTypeID(typeID),
-   });
-   require("./coopRuntimeProbe").observe("living-npc-market-journal-reconciled",null,null,{
-    settled:result.settled.length,pending:result.pending.length,
-    settledNoEffect:result.settled.filter(x=>x.noEffect===true).length,
-    pendingReasons:result.pending.slice(0,3).map(x=>String(x.reason||"")).join(",")});
-  }catch(error){
-   // An unreachable market is not a proof of anything: the journal stays for the next boot.
-   require("./coopRuntimeProbe").observe("living-npc-market-journal-unreached",null,null,
-    {reason:String((error&&error.message)||error).slice(0,90)});
-  }
- })();
+ if(!journalBootReconciler){
+  const marketClient=require("../services/market/marketDaemonClient").marketDaemonClient;
+  const runtime=require("./runtime"),inventory=require("../services/inventory/itemTypeRegistry");
+  journalBootReconciler=require("./coopMarketJournalBoot").createJournalBootReconciler({
+   root:process.env.EVEJS_COOP_NPC_MARKET_ROOT||"/var/lib/evejs/coop-native-market",
+   inspectOrder:orderID=>marketClient.call("GetOrder",{order_id:String(orderID)}),
+   store:require("./npc/nativeNpcStore"),
+   sceneForSystem:systemID=>{try{return runtime.ensureScene(systemID,{refreshStargates:false})}catch(_error){return null}},
+   resolveType:typeID=>inventory.resolveItemByTypeID(typeID),
+   observe:require("./coopRuntimeProbe").observe});
+ }
+ return journalBootReconciler(force);
 }
 function ensureMarketTrader(){ if(nativeMarketTrader||nativeMarketBlocked)return nativeMarketTrader;
  if(!identityRegistry||!world)return null;
