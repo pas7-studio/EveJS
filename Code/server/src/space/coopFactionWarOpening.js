@@ -23,6 +23,52 @@ const LIVE_CAMPAIGN_STATES = new Set(["PREPARING", "ASSAULT"]);
 
 const refuse = (reason, extra) => Object.assign({ status: "REFUSED", reason }, extra || {});
 
+// A campaign waiting for its assault deployment proof holds its target system in
+// CONTESTED. If that proof never comes - a defender with no navy, a fleet that is
+// never deployed - nothing can open that border again: `liveCampaignFor` keeps
+// answering for the stalled campaign and every other front is refused with
+// TARGET_ALREADY_CONTESTED. MEASURED 2026-10-28: one PREPARING campaign on 30045344
+// starved the whole frontier for hours and the client's war map showed no front at
+// all. Expiry invents nothing: it drops a claim that never produced evidence and
+// releases the territory only when no other live campaign holds it.
+const STALL_ENV = "EVEJS_COOP_WAR_OPENING_STALL_MS";
+const DEFAULT_STALL_MS = 45 * 60 * 1000;
+function stallMs() {
+  const configured = num(process.env[STALL_ENV]);
+  return configured > 0 ? configured : DEFAULT_STALL_MS;
+}
+
+function expireStalledCampaigns(state, { nowMs = Date.now(), ttlMs = stallMs() } = {}) {
+  const campaignIDs = [];
+  if (!state || !state.campaigns || !(num(ttlMs) > 0)) return { campaignIDs };
+  const at = num(nowMs) > 0 ? num(nowMs) : Date.now();
+  for (const campaign of Object.values(state.campaigns)) {
+    if (!campaign || campaign.state !== "PREPARING") continue;
+    // An assault already proved itself; a campaign with evidence is never expired.
+    if (Array.isArray(campaign.objectiveEvidence) && campaign.objectiveEvidence.length) continue;
+    const startedAt = num(campaign.startedAt);
+    if (!pos(startedAt) || at - startedAt < num(ttlMs)) continue;
+    campaign.state = "EXPIRED";
+    campaign.revision = num(campaign.revision) + 1;
+    campaign.expiredAt = at;
+    campaign.expiredReason = "NO_ASSAULT_DEPLOYMENT_PROOF";
+    campaignIDs.push(campaign.campaignID);
+    const target = state.territories && state.territories[String(campaign.targetSystemID)];
+    // Only release the claim when this was the last live campaign on it.
+    const stillContested = liveCampaignFor(state, campaign.targetSystemID);
+    if (target && target.state === "CONTESTED" && !stillContested) {
+      state.territories[String(campaign.targetSystemID)] = {
+        ...target,
+        state: "SECURE",
+        revision: num(target.revision) + 1,
+        changedAt: at,
+      };
+    }
+  }
+  return { campaignIDs };
+}
+
+
 // A gate is a proof only when it is reciprocal: one-way and unresolved gates are
 // not a route a fleet can cross.
 function gateBetween(fromSystemID, toSystemID, getStargatesForSystem, getGate) {
@@ -493,6 +539,17 @@ function createWarOpening({
       } catch (_error) { return { status: "NATIVE_AUTHORITIES_UNAVAILABLE" }; }
       if (!state) return { status: "NO_WAR_STATE" };
       try { core.validateState(state); } catch (_error) { return { status: "INVALID_WAR_STATE" }; }
+      // Release borders whose campaign never produced an assault proof, before the
+      // planner asks which targets are already contested.
+      let expiredCampaignIDs = [];
+      try {
+        const expiry = expireStalledCampaigns(state, { nowMs: num(now()) });
+        if (expiry.campaignIDs.length) {
+          core.validateState(state);
+          writeWarState(state);
+          expiredCampaignIDs = expiry.campaignIDs;
+        }
+      } catch (_error) { expiredCampaignIDs = []; }
       const presence = collectPresence({ links, systemIDs, getNativeEntity, getFactionForCorporation, maxLinks });
       if (presence.status !== "PRESENCE") return { status: presence.status };
       let fleetShips = 0;
@@ -528,7 +585,8 @@ function createWarOpening({
         navyCapability: typeof navyCapability === "function" ? navyCapability : null,
       });
       if (plan.status !== "READY")
-        return { status: "NO_OPENING", reason: plan.reason || "PLAN_REFUSED", plan };
+        return { status: "NO_OPENING", reason: plan.reason || "PLAN_REFUSED", plan,
+          expiredCampaignIDs };
       const opened = applyOpenings({ state, plan, nowMs: num(now()),
         reserveBounty, persistState: writeWarState });
       if (opened.status !== "OPENED") return opened;
@@ -537,6 +595,7 @@ function createWarOpening({
         status: "OPENED", warIDs: opened.warIDs, campaignIDs: opened.campaignIDs,
         applied: opened.applied, fundings: opened.fundings,
         presence: { pilots: presence.pilots.length, skipped: presence.skipped, fleetShips },
+        expiredCampaignIDs,
         territories: plan.territories, fronts: plan.fronts.length,
         // A border refused for funding is named here instead of vanishing.
         skipped: plan.skipped.concat(Array.isArray(opened.skipped) ? opened.skipped : []),
@@ -550,5 +609,6 @@ module.exports = {
   gateBetween, collectPresence, territoriesForFronts, paperFunding, presenceSummary,
   fundingRequired, supplyFor,
   activeWarFor, liveCampaignFor, buildProofs, planWars, applyOpenings, applyOpening,
+  expireStalledCampaigns, stallMs,
   createWarOpening,
 };
