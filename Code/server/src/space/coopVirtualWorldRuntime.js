@@ -341,7 +341,44 @@ function diagnoseWarFunding(){
    sides:[Number(w.attackerFactionID),Number(w.defenderFactionID)].map(factionID=>({
     factionID,corporationID:warFactionCorporation(factionID,pilots,ledger),
     plan:plan({factionID,pilots,ledger,needCents:need})}))})),
+  // FW-038: money and navies can sit on opposite sides. Report which faction
+  // could hire which, with the real wallet balance that would pay for it.
+  mercenary:diagnoseMercenary(wars,pilots,ledger,need),
  };
+}
+// FW-038 read-only: pair a funded faction with a navy-capable faction using the
+// real corporation wallets (division 1000). Proposes only; moves no ISK.
+function diagnoseMercenary(wars,pilots,ledger,needCents){
+ try{
+  const capability=warNavyCapability();
+  if(!capability)return {status:"UNAVAILABLE",proposals:[]};
+  const factions=new Set();
+  for(const w of Array.isArray(wars)?wars:[]){
+   for(const id of [Number(w.attackerFactionID),Number(w.defenderFactionID)])
+    if(Number.isSafeInteger(id)&&id>0)factions.add(id);
+  }
+  const capabilities=[...factions].map(factionID=>({
+   factionID,status:capability.faction(factionID).status}));
+  const wallet=require("./coopCorpWallet");
+  const treasuries=[];
+  for(const factionID of factions){
+   const corporationID=warFactionCorporation(factionID,pilots,ledger);
+   if(!Number.isSafeInteger(corporationID)||corporationID<=0)continue;
+   let balanceCents=0;
+   try{
+    const read=wallet.readWallet({gameStore:require("../gameStore"),
+     corporationID});
+    const division=read&&read.status==="OK"&&read.divisions?read.divisions["1000"]:null;
+    const isk=Number(division&&division.balance);
+    balanceCents=Number.isFinite(isk)&&isk>0?Math.round(isk*100):0;
+   }catch(_error){balanceCents=0}
+   treasuries.push({factionID,corporationID,balanceCents});
+  }
+  return require("./coopWarMercenaryContract").proposeContracts({
+   capabilities,treasuries,needCents});
+ }catch(error){
+  return {status:"UNAVAILABLE",reason:String(error&&error.message||error),proposals:[]};
+ }
 }
 // FW-011A: read-only sovereignty projection. Military control is always
 // reported; a native sov claim is reported only where a real sov structure and
