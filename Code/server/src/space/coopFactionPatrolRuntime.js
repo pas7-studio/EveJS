@@ -29,7 +29,7 @@ function createPatrolDirector({spawn,exists,clock=()=>Date.now(),cooldownMs=3000
    // materializer in the same tick reported SPAWN_LIMIT_REACHED (occupied 3, limit 3) -
    // a reader had no way to tell a full system from a broken spawn.
    else failures.push({
-    faction:Number(faction&&faction.faction)||0,
+    faction:Number((faction&&(faction.factionID??faction.faction))||0),
     reason:String(result?.errorMsg||result?.reason||
      (result?.success?"NO_ENTITY_ID":"SPAWN_REFUSED")).slice(0,160)
    });

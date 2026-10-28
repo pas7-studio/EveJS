@@ -71,8 +71,13 @@ function isEntityTypeAllowed(value, expectedEntityType = "") {
     return true;
   }
 
-  return String(value || "").trim().toLowerCase() ===
-    String(expectedEntityType || "").trim().toLowerCase();
+  // A profile that does not name an entity type IS an NPC: the field is optional in the
+  // seeded profile data and every pool entry points at a ship profile. Measured live: the
+  // `concord_police` pool (concord_response, concord_police_cruiser, concord_police_battleship,
+  // all with entityType undefined) was rejected for entityType "npc", so every faction patrol
+  // answered POOL_EMPTY and no patrol could ever deploy.
+  const actual = String(value || "").trim().toLowerCase() || "npc";
+  return actual === String(expectedEntityType || "").trim().toLowerCase();
 }
 
 function chooseWeightedEntry(entries) {
@@ -582,6 +587,7 @@ function resolveNpcSpawnPlan(query, options = {}) {
 }
 
 module.exports = {
+  _testing: { isEntityTypeAllowed },
   resolveNpcSpawnPlan,
   buildDefinitionsForSpawnGroup,
   resolveNpcSpawnGroupPlan,
