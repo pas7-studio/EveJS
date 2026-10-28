@@ -106,8 +106,15 @@ function warStateStore(){
   },
   write(state){
    core.validateState(state);
-   rows.transact([TABLE],tx=>{tx.put(TABLE,KEY,state);});
-   mirrorWarState(state);
+   // Every phase writes the WHOLE state after reading it, so a write that is not
+   // merged can erase a record another phase just added (core.mergeWarRecords has the
+   // measurement and the reasoning).
+   let committed=state;
+   rows.transact([TABLE],tx=>{
+    committed=core.mergeWarRecords(tx.get(TABLE,KEY)||null,state);
+    tx.put(TABLE,KEY,committed);
+   });
+   mirrorWarState(committed);
    // FW-042: keep the SECOND view in sync. Measured in the SQLite file: the legacy
    // namespace blob ("coop-faction-war", 9018 B) held treasury-v1 and merit-v1 but an
    // EMPTY state-v1, and the blob is what survives a container recreate, so the war
@@ -115,7 +122,7 @@ function warStateStore(){
    // Writing the same validated document into the legacy path means whichever view
    // the boot reconciliation prefers, it now contains the real war.
    if(String(process.env.EVEJS_COOP_WAR_STATE_LEGACY_MIRROR??"1")!=="0"){
-    try{gameStore.write(TABLE,"/coop-faction-war/state-v1",state);}
+    try{gameStore.write(TABLE,"/coop-faction-war/state-v1",committed);}
     catch(_error){/* the atomic row stays authoritative; this is a second copy */}
    }
   }

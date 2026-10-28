@@ -139,5 +139,26 @@ function transition(source,command,{now=Date.now(),proofs={}}={}){
 const paperSupplyID=campaignID=>"paper-supply:"+String(campaignID||"");
 const paperSupply=campaign=>
  campaign?.supplyReservationID===paperSupplyID(campaign?.campaignID);
+// A full-state writer must never erase a record it never saw.
+//
+// Every war phase here does read -> change one thing -> write the WHOLE state, and the
+// write is not conditional, so a phase that read a moment before another one wrote puts
+// its older copy back. MEASURED on the live world: the opening published "war opened"
+// every 30 seconds while the durable row kept answering with four campaigns, because the
+// freshly opened campaign was erased by the next phase's stale copy.
+//
+// Wars and campaigns are never deleted by any phase - they change state (ENDED,
+// CANCELLED, EXPIRED) - so keeping the stored records the caller does not carry is
+// lossless. Territories are deliberately NOT merged: releasing ground is a real
+// bootstrap action and must still be able to remove one.
+function mergeWarRecords(before,next){
+ if(!before||!next)return next;
+ const merge=(left,right)=>Object.assign({},left||{},right||{});
+ return Object.assign({},next,{
+  wars:merge(before.wars,next.wars),
+  campaigns:merge(before.campaigns,next.campaigns),
+ });
+}
+
 module.exports={VERSION,MAX_EVENTS,empty,validateState,transition,
- paperSupply,paperSupplyID};
+ paperSupply,paperSupplyID,mergeWarRecords};
