@@ -27,14 +27,23 @@ function createWarehouse({root, store, items, flush, getStation, getCorporation,
  function withCustodyLock(id,action){
   let fd=null,held=false,result;
   try{
-   fsApi.mkdirSync(dir,{recursive:true});
-   fd=fsApi.openSync(lockPath(id),"wx",0o600);held=true;
-   fsApi.writeFileSync(fd,String(process.pid));fsApi.fsyncSync(fd);
-   fsApi.closeSync(fd);fd=null;
+   try{
+    fsApi.mkdirSync(dir,{recursive:true});
+    fd=fsApi.openSync(lockPath(id),"wx",0o600);held=true;
+    fsApi.writeFileSync(fd,String(process.pid));fsApi.fsyncSync(fd);
+    fsApi.closeSync(fd);fd=null;
+   }catch(error){
+    // Only the custody lock's own EEXIST means another writer holds it. Any
+    // other failure, notably a foreign receipt already sitting at the temp
+    // name, is that writer's evidence: preserve it and ask for repair instead
+    // of reporting a lock that was never taken.
+    return answer(error?.code==="EEXIST"?"WAREHOUSE_CUSTODY_LOCKED":
+     "NEEDS_OPERATOR_REPAIR",{cargoID:id},
+     {reason:String(error?.message||error).slice(0,95)});
+   }
    result=action();
   }catch(error){
-   result=answer(error?.code==="EEXIST"?"WAREHOUSE_CUSTODY_LOCKED":
-    "NEEDS_OPERATOR_REPAIR",{cargoID:id},
+   result=answer("NEEDS_OPERATOR_REPAIR",{cargoID:id},
     {reason:String(error?.message||error).slice(0,95)});
   }finally{
    if(fd!==null)try{fsApi.closeSync(fd);}catch(_ignored){}
