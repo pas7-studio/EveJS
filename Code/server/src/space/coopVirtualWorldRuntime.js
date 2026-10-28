@@ -347,76 +347,6 @@ function warBountyStore(){
  });
  return warBountyInstance;
 }
-// FW-053B: the same refund has to happen for a campaign that expired BEFORE this
-// process existed. The tick-triggered refund only fires on the tick that expires a
-// campaign, so a restart between the expiry and the money left the escrow HELD with
-// no owner - measured: `war:500011-500020:campaign:30045343` was already EXPIRED when
-// this code was deployed. This pass is event-driven by the state itself, idempotent
-// (same `fw:refund:<campaignID>:<factionID>` event) and does nothing when every
-// reservation still belongs to a live campaign.
-function reconcileTerminalEscrow(){
- let treasury=null,state=null;
- try{treasury=warTreasuryStore();state=warStateStore().read();}
- catch(_error){return []}
- if(!treasury||!state)return [];
- const terminal=(row)=>{
-  const campaign=(state.campaigns||{})[row.campaignID];
-  const war=(state.wars||{})[row.warID];
-  if(war&&war.state==="ENDED")return true;
-  return ["CANCELLED","EXPIRED"].includes(String(campaign&&campaign.state||""));
- };
- let snapshot=null;
- try{snapshot=treasury.snapshot()}catch(_error){return []}
- const stale=Object.values((snapshot&&snapshot.reservations)||{})
-  .filter(row=>row&&row.status==="HELD"&&terminal(row))
-  .map(row=>row.campaignID);
- return stale.length?refundExpiredCampaigns([...new Set(stale)]):[];
-}
-// FW-053: escrow of an expired campaign must go back to the corporation that paid it.
-//
-// A campaign that never produced an assault proof is expired by the opener (that is
-// how a squatted target is released), but nothing released its money: the treasury
-// only refunded a war that ENDED or a campaign that was CANCELLED, and the live
-// runtime supplied no authorizeRefund at all, so every lazy refusal defaulted to
-// "no". Measured 22:5xZ: `war:500011-500020:campaign:30045343` was EXPIRED while its
-// 2 500 000-cent reservation stayed HELD. The refund is idempotent per campaign side
-// (eventID `fw:refund:<campaignID>:<factionID>`), returns the exact cents the
-// reservation holds, and is recorded with a status either way.
-function refundExpiredCampaigns(campaignIDs){
- const ids=Array.isArray(campaignIDs)?campaignIDs.filter(x=>typeof x==="string"&&x):[];
- if(!ids.length)return [];
- let treasury=null;
- try{treasury=warTreasuryStore()}catch(_error){return []}
- const out=[];
- for(const campaignID of ids){
-  let snapshot=null;
-  try{snapshot=treasury.snapshot()}catch(_error){snapshot=null}
-  const held=Object.values((snapshot&&snapshot.reservations)||{})
-   .filter(row=>row&&row.status==="HELD"&&row.campaignID===campaignID);
-  for(const row of held){
-   let refunded=null;
-   try{
-    refunded=treasury.execute({type:"REFUND",
-     eventID:"fw:refund:"+campaignID+":"+row.factionID,
-     reservationID:row.reservationID,corporationID:row.corporationID,
-     proofID:"expire:"+campaignID});
-   }catch(error){
-    refunded={status:"BLOCKED",reason:String(error&&error.message||error).slice(0,120)};
-   }
-   const detail={status:String(refunded&&refunded.status||"UNKNOWN"),
-    reason:String(refunded&&refunded.reason||""),
-    campaignID,factionID:Number(row.factionID)||0,
-    corporationID:Number(row.corporationID)||0,
-    reservationID:row.reservationID,amountCents:Number(row.cents)||0,
-    refundJournalID:Number(refunded&&refunded.receipt&&refunded.receipt.journalID)||0,
-    evidence:"REAL_ESCROW_RETURNED_TO_THE_CORPORATION_THAT_PAID_IT"};
-   out.push(detail);
-   try{require("./coopRuntimeProbe").observe("living-native-war-bounty-refunded",null,null,detail);}
-   catch(_error){/* probe is best effort */}
-  }
- }
- return out;
-}
 // One real reservation per campaign side, taken before START_CAMPAIGN.
 //
 // FW-046: this used to RETURN on the first side it could fund, so a war had a
@@ -834,18 +764,6 @@ function advanceNativeWarOpening(){
  catch(error){
   warSkip("opening","OPENING_THROW:"+String(error&&error.message||error));
   return;
- }
- // FW-053: an expired campaign releases its escrow on the same tick it expires, and
- // any escrow left over from before a restart is reconciled in the same pass.
- if(Array.isArray(result.expiredCampaignIDs)&&result.expiredCampaignIDs.length){
-  try{refundExpiredCampaigns(result.expiredCampaignIDs);}
-  catch(error){
-   console.warn("[CoopFactionWar] expired escrow refund failed",String(error&&error.message||error));
-  }
- }
- try{reconcileTerminalEscrow();}
- catch(error){
-  console.warn("[CoopFactionWar] terminal escrow reconcile failed",String(error&&error.message||error));
  }
  if(result.status!=="OPENED"){
   const reason=String(result.reason||result.status||"UNKNOWN");
@@ -4486,7 +4404,10 @@ function observeSession(session,ship){
             const anchor=require("./coopNpcTopology").anchorOptions(nativeScene);
             if(!anchor)return {success:false,errorMsg:"NO_NATIVE_SYSTEM_ANCHOR"};
             return npc.spawnBatchInSystem(id,{
-              ...anchor,amount:1,entityType:"npc",transient:true,broadcast:true,
+              // No entityType filter: the pool is explicit and its profiles type themselves
+              // ("concord" for concord_police), so demanding "npc" rejected the whole pool and
+              // every patrol answered POOL_EMPTY while the same pool resolves fine without it.
+              ...anchor,amount:1,transient:true,broadcast:true,
               // Faction patrols are law enforcement, not pirates: CONCORD-owned
               // hulls read as friendly/neutral brackets in the client.
               ...require("./coopNpcSpawnPools").spawnPoolForRole("patrol",
@@ -5088,4 +5009,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={nativeGateTransferAdapter,identityRegistryAdapter,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={nativeGateTransferAdapter,identityRegistryAdapter,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
