@@ -431,6 +431,13 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState } = {})
       campaignIDs.push(campaign.campaignID);
       if (!realReservation) fundings.push(opening.funding);
     }
+    // OPENED must mean "something was really opened". Measured: a batch where
+    // every border was skipped for funding still answered OPENED with zero
+    // campaigns, so the runtime published a success event with empty lists and the
+    // real refusal disappeared for an hour. Nothing opened = a refusal, with the
+    // per-border reasons attached.
+    if (!campaignIDs.length)
+      return refuse("NO_FUNDED_FRONT", { state: current, applied, fundings, skipped });
     return { status: "OPENED", state: current, warIDs, campaignIDs, applied, fundings, skipped };
   } catch (error) {
     return refuse(error.reason || String((error && error.message) || error), { state: current, applied });
