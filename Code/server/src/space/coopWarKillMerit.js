@@ -10,7 +10,10 @@
 //
 // Nothing is spawned, moved or repaired here, and the payout is refused when the
 // evidence is not strict or the war merit feature is off.
-const pilotOf = (value) => (typeof value === "string" && /^coop-pilot-[0-9]{3,}$/.test(value) ? value : "");
+// FW-057: a player pilot is a real war participant too (coopMilitiaWarPlayer names
+// it coop-player-<characterID>); the shared predicate accepts both, and nothing else.
+const { isWarPilotID } = require("./coopWarPilotID" + (typeof __filename === "string" && __filename.endsWith(".js") ? "" : ".cjs"));
+const pilotOf = (value) => (isWarPilotID(value) ? value : "");
 const pos = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0;
 
 let ledger = null;

@@ -8,8 +8,9 @@
 // into the pilot's real earned balance - never from thin air.
 const num = (value) => Number(value) || 0;
 const pos = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0;
-const pilotOf = (value) => (typeof value === "string" &&
-  /^coop-pilot-[0-9]{3,}$/.test(value) ? value : "");
+// FW-057: same predicate as the merit ledger - a player who really killed earns too.
+const { isWarPilotID } = require("./coopWarPilotID" + (typeof __filename === "string" && __filename.endsWith(".js") ? "" : ".cjs"));
+const pilotOf = (value) => (isWarPilotID(value) ? value : "");
 const key = (value) => typeof value === "string" &&
   /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(value);
 

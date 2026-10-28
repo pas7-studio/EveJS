@@ -17,6 +17,7 @@
 // journal that `recover()` finishes from the recorded numbers.
 const fs = require("node:fs");
 const path = require("node:path");
+const { isWarPilotID } = require("./coopWarPilotID" + (typeof __filename === "string" && __filename.endsWith(".js") ? "" : ".cjs"));
 
 const TABLE = "corporationRuntime";
 const CORP_PREFIX = "corporations\u001f";
@@ -305,7 +306,8 @@ function createWarChestFunding({gameStore, verifyCorporation, adjustEarned,
   // earned balance. Exactly once per payout id.
   function creditPilot({pilotID, cents: amount, eventID, reason = ""} = {}) {
     if (!enabled()) return {status: "DISABLED"};
-    if (!/^coop-pilot-[0-9]{3,}$/.test(String(pilotID)) || !pos(amount) || !key(eventID))
+    // FW-057: the escrow may be released to an NPC pilot or to a real player.
+    if (!isWarPilotID(pilotID) || !pos(amount) || !key(eventID))
       return {status: "BLOCKED", reason: "INVALID_WAR_BOUNTY_CREDIT"};
     return adjustEarned({pilotID, cents: amount, eventID, reason});
   }

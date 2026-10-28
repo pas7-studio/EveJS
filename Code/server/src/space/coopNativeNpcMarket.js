@@ -4,7 +4,12 @@
 // All external market calls are journaled; ambiguous RPC failures halt the pilot.
 const fs=require("node:fs"),path=require("node:path");
 const pos=x=>Number.isSafeInteger(Number(x))&&Number(x)>0?Number(x):null;
-const pilotName=x=>typeof x==="string"&&/^coop-pilot-[0-9]{3,}$/.test(x);
+// FW-057: the earned ledger is the one real ISK store, and a war bounty can be
+// owed to a real player (coop-player-<characterID>) as well as to an NPC pilot.
+// The market itself still only ever names NPC pilots; this only widens the KEY,
+// never a trade path.
+const {isWarPilotID}=require("./coopWarPilotID" + (typeof __filename === "string" && __filename.endsWith(".js") ? "" : ".cjs"));
+const pilotName=x=>isWarPilotID(x);
 const amount=x=>Number.isFinite(Number(x))&&Number(x)>=0?Math.round(Number(x)*100)/100:null;
 const vec=p=>p&&["x","y","z"].every(k=>Number.isFinite(p[k]));
 const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z);
