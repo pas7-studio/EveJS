@@ -2796,6 +2796,7 @@ function handleSceneCreated(scene) {
   if (process.env.EVEJS_COOP_NATIVE_MINING_FLEET_DURABLE === "1") {
     return require("../../space/coopNativeMiningFleetDurable").start({
       scene, fleetCount:resolveStartupFleetCount(),
+      destroy:(id)=>npcService.destroyNpcControllerByEntityID(id,{removeContents:true}),
       ensureState:()=>ensureSceneMiningState(scene),
       getFleets:()=>getMiningFleetsForSystem(scene.systemID),
       spawn:(slot,wing={})=>spawnMiningFleetInternal(scene,{

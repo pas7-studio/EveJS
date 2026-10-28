@@ -179,7 +179,39 @@ function adoptStaleRuntimeFleet({scene,store,fleet,key,minerIDs,haulerIDs}){
 // the slot must not be re-seeded wholesale and must not stay blocked forever:
 // only the provably missing roles are allocated again, and the witness is merged.
 // A missing ID that still owns cargo or modules is never replaced.
-function repairPartialSlot({scene,store,systemID,slot,key,db,spawn,ensureState,minerIDs,haulerIDs}){
+// A failed boot repair spawns a wing; the next boot spawns another because the witness
+// still does not match. Measured 2026-10-28: 30000145-1 marked 120 miners and 118
+// haulers around a 2+1 witness, so every repair refused itself with MARKER_MISMATCH and
+// the fleet never came back. Hulls this slot marks but does not own are duplicates of
+// earlier failed generations: they are destroyed here (the witness in the slot record is
+// what survives), and the count is reported.
+function pruneStaleSlotHulls({store,systemID,slot,keep,destroy,log}){
+  if(typeof destroy!=="function")return {extra:0,destroyed:0,skipped:true};
+  const found=markers(store,systemID,slot);
+  const keepSet=new Set((Array.isArray(keep)?keep:[]).map(Number).filter(Boolean));
+  const extra=[...found.miners,...found.haulers].filter(id=>!keepSet.has(Number(id)));
+  let destroyed=0;
+  for(const id of extra){
+    try{
+      const result=destroy(id);
+      if(result&&result.success===true){destroyed+=1;continue;}
+    }catch(_error){/* fall through to the durable removal */}
+    // A phantom from an earlier generation has no live controller, so the physical
+    // destroy refuses (measured: 2/268). Its durable rows are the whole ship, and
+    // the store is the authority that owns them.
+    try{
+      const removed=typeof store.removeNativeEntityCascade==="function"
+        ? store.removeNativeEntityCascade(id)
+        : null;
+      if(removed&&removed.success!==false)destroyed+=1;
+    }catch(_error){/* one stubborn hull must not stop the repair */}
+  }
+  if(destroyed&&typeof log==="function")
+    log("slot "+systemID+"-"+slot+" pruned "+destroyed+"/"+extra.length+" stale hulls");
+  return {extra:extra.length,destroyed,skipped:false};
+}
+
+function repairPartialSlot({scene,store,systemID,slot,key,db,spawn,ensureState,minerIDs,haulerIDs,destroy,log}){
  if(process.env.EVEJS_COOP_NATIVE_MINING_SLOT_RECONCILE!=="1")return null;
  const aliveMin=minerIDs.filter(id=>store.getNativeEntity(id)||scene.getEntityByID(id));
  const aliveHau=haulerIDs.filter(id=>store.getNativeEntity(id)||scene.getEntityByID(id));
@@ -215,11 +247,18 @@ function repairPartialSlot({scene,store,systemID,slot,key,db,spawn,ensureState,m
  const merged={minerEntityIDs:[...aliveMin,...newMin],haulerEntityIDs:[...aliveHau,...newHau]};
  if(merged.minerEntityIDs.length+merged.haulerEntityIDs.length>MAX_WING)
   throw Error("ALIFE08_REPAIR_WING_TOO_LARGE");
+ // Duplicates from earlier failed repairs are removed first, so the witness below can
+ // match what this slot really owns.
+ const pruned=pruneStaleSlotHulls({store,systemID,slot,
+  keep:[...merged.minerEntityIDs,...merged.haulerEntityIDs],destroy,log});
  const found=markers(store,systemID,slot);
  const sameSet=(a,b)=>a.length===b.length&&a.every(x=>b.includes(x));
  if(found.invalid.length||!sameSet(found.miners,merged.minerEntityIDs)||
      !sameSet(found.haulers,merged.haulerEntityIDs))
-  throw Error("ALIFE08_REPAIR_MARKER_MISMATCH");
+  throw Error("ALIFE08_REPAIR_MARKER_MISMATCH"+
+   ":invalid="+String(found.invalid.join(","))+
+   " foundMin="+String(found.miners.join(","))+" wantMin="+String(merged.minerEntityIDs.join(","))+
+   " foundHau="+String(found.haulers.join(","))+" wantHau="+String(merged.haulerEntityIDs.join(",")));
  const synced=db.flushTablesSync(["npcEntities","npcRuntimeControllers","npcModules","npcCargo"]);
  if(synced?.success!==true)throw Error("ALIFE08_NATIVE_ACTOR_FLUSH_FAILED");
  const notStored=[...merged.minerEntityIDs,...merged.haulerEntityIDs]
@@ -410,7 +449,7 @@ function registerOnce({scene,store,getFleets,register,slot,minerIDs,haulerIDs,or
    throw Error("ALIFE08_NATIVE_FLEET_REGISTRATION_UNKNOWN");
  return true;
 }
-function createService({db,store,nativeService,ensureState,spawn,register,
+function createService({db,store,nativeService,ensureState,spawn,register,destroy=null,
   getFleets,auditStartupCargo=null,log=()=>{}}={}){
  if(!db||typeof db.read!=="function"||typeof db.write!=="function"||
     typeof db.flushTableSync!=="function"||typeof db.flushTablesSync!=="function"||
@@ -550,7 +589,7 @@ function createService({db,store,nativeService,ensureState,spawn,register,
      }
      // A slot that lost only some ships keeps the survivors and their cargo.
      const healed=repairPartialSlot({scene,store,systemID,slot,key,db,spawn,ensureState,
-      minerIDs,haulerIDs});
+      minerIDs,haulerIDs,destroy,log});
      if(healed){
       minerIDs=healed.minerEntityIDs;
       haulerIDs=healed.haulerEntityIDs;
@@ -616,7 +655,7 @@ function createService({db,store,nativeService,ensureState,spawn,register,
  return Object.freeze({start});
 }
 function start(args){
- const {scene,spawn,register,getFleets,ensureState,fleetCount}=args||{};
+ const {scene,spawn,register,getFleets,ensureState,fleetCount,destroy}=args||{};
  const db=require("../gameStore"),store=require("./npc/nativeNpcStore");
  const enabled=process.env.EVEJS_COOP_ALIFE_STARTUP_CARGO_AUDIT==="1";
  if(enabled&&[
@@ -633,7 +672,7 @@ function start(args){
    getNativeEntity:store.getNativeEntity}).audit}
   catch(error){return {status:"BLOCKED",reason:"ALIFE13_NATIVE_AUDITOR_INITIALIZATION_FAILED",slots:[]}}
  }
- return createService({db,store,auditStartupCargo,
+ return createService({db,store,auditStartupCargo,destroy,
    nativeService:require("./npc/nativeNpcService"),
    spawn,register,getFleets,ensureState,log:message=>console.warn("[ALIFE08]",message)
  }).start({scene,fleetCount});
