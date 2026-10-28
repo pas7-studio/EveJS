@@ -23,6 +23,9 @@ const amount = (x) => Number.isFinite(Number(x)) && Number(x) >= 0 ? Math.round(
 const sameID = (a, b) => String(a) === String(b);
 // An order ID is far beyond Number.MAX_SAFE_INTEGER, so it is compared as text.
 const PROOF_TOLERANCE_MS = 120000;
+// A journal is only closed without effect after this long, so a call that is still in
+// flight at the market can never be mistaken for one that never happened.
+const NO_EFFECT_GRACE_MS = 60 * 1000;
 
 function atomic(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -50,7 +53,6 @@ function proveFill(tx, order, { toleranceMs = PROOF_TOLERANCE_MS } = {}) {
   if (!Number.isSafeInteger(tx.quantity) || tx.quantity < 1) return { ok: false, reason: "JOURNAL_QUANTITY_INVALID" };
   if (!order || typeof order !== "object") return { ok: false, reason: "MARKET_ORDER_UNAVAILABLE" };
   if (!sameID(order.order_id, tx.marketOrderID)) return { ok: false, reason: "MARKET_ORDER_ID_MISMATCH" };
-  if (String(order.state || "") !== "filled") return { ok: false, reason: "MARKET_ORDER_NOT_FILLED" };
   const row = order.row;
   if (!row || typeof row !== "object") return { ok: false, reason: "MARKET_ORDER_ROW_MISSING" };
   if (!sameID(row.order_id, tx.marketOrderID)) return { ok: false, reason: "MARKET_ROW_ORDER_ID_MISMATCH" };
@@ -58,9 +60,26 @@ function proveFill(tx, order, { toleranceMs = PROOF_TOLERANCE_MS } = {}) {
   if (Number(row.station_id) !== Number(tx.stationID)) return { ok: false, reason: "MARKET_ROW_STATION_MISMATCH" };
   if (Number(row.type_id) !== Number(tx.typeID)) return { ok: false, reason: "MARKET_ROW_TYPE_MISMATCH" };
   if (Number(row.price) !== Number(tx.price)) return { ok: false, reason: "MARKET_ROW_PRICE_MISMATCH" };
-  if (Number(row.vol_remaining) !== 0) return { ok: false, reason: "MARKET_ROW_STILL_OPEN" };
-  // The fill must be exactly ours: the row carries our quantity and nothing more.
-  if (Number(row.vol_entered) !== tx.quantity) return { ok: false, reason: "MARKET_ROW_VOLUME_MISMATCH" };
+  const state = String(order.state || "");
+  const entered = Number(row.vol_entered);
+  const remaining = Number(row.vol_remaining);
+  // A seeded bid is eaten unit by unit, so a real sale of 5 manufactured chipsets into a
+  // 5 000-unit bid leaves the order "open" and the row short by exactly our quantity.
+  // Measured 2026-10-28: the journal named order 4257700966927696316, the row was issued
+  // 3 ms after the journal and its remaining volume had fallen by exactly 5 - the fill had
+  // happened, and the crash before the local apply left the hull holding goods the market
+  // had already paid for.
+  const soldFromRow = Number.isFinite(entered) && Number.isFinite(remaining) ? entered - remaining : NaN;
+  // A partial fill is only a live bid that is short by exactly our quantity: a row with
+  // nothing remaining is a closed order, and a closed order must say so.
+  const partial = state === "open" && remaining > 0 && soldFromRow === Number(tx.quantity);
+  if (state !== "filled" && !partial) {
+    return { ok: false, reason: state === "open" ? "MARKET_ORDER_NOT_FILLED" : "MARKET_ORDER_STATE_UNKNOWN" };
+  }
+  if (state === "filled" && remaining !== 0) return { ok: false, reason: "MARKET_ROW_STILL_OPEN" };
+  // The fill must be exactly ours: a closed order carries our quantity and nothing more,
+  // and a still-open bid is short by exactly our quantity.
+  if (state === "filled" && entered !== tx.quantity) return { ok: false, reason: "MARKET_ROW_VOLUME_MISMATCH" };
   const issuedAt = parseTime(row.issued_at);
   if (issuedAt === null) return { ok: false, reason: "MARKET_ROW_ISSUED_AT_MISSING" };
   if (Math.abs(issuedAt - Number(tx.at)) > toleranceMs) return { ok: false, reason: "MARKET_ROW_ISSUED_AT_NOT_THIS_TRADE" };
@@ -78,8 +97,9 @@ function proveFill(tx, order, { toleranceMs = PROOF_TOLERANCE_MS } = {}) {
     proof: {
       orderID: String(tx.marketOrderID),
       state: String(order.state),
-      volEntered: Number(row.vol_entered),
-      volRemaining: Number(row.vol_remaining),
+      volEntered: entered,
+      volRemaining: remaining,
+      partialFill: partial === true,
       price: Number(row.price),
       stationID: Number(row.station_id),
       typeID: Number(row.type_id),
@@ -113,17 +133,28 @@ async function reconcileJournals({ root = "/var/lib/evejs/coop-native-market", i
     }
     // Anything else belongs to the normal recover() path.
     if (tx.phase !== "RPC_CALLING") continue;
-    let order;
+    let order = null;
+    let absent = false;
     try {
       // The market client's RPC is asynchronous; a rejected or timed-out read is
       // an unknown outcome, never a proof.
       order = await inspectOrder(tx.marketOrderID);
-    } catch (_error) {
-      pending.push({ file, reason: "RPC_OUTCOME_UNKNOWN" });
-      continue;
+    } catch (error) {
+      const text = String((error && error.message) || error);
+      // "order <id> not found" is the market's own statement that no such order ever
+      // existed. A timeout, a refused socket or a daemon restart says nothing of the
+      // kind, so only that exact answer is allowed to mean "absent".
+      if (/order\s+\S+\s+not found/i.test(text)) {
+        absent = true;
+      } else {
+        pending.push({ file, reason: "RPC_OUTCOME_UNKNOWN" });
+        continue;
+      }
     }
-    const proof = proveFill(tx, order, { toleranceMs });
-    if (proof.ok !== true) {
+    const proof = absent
+      ? { ok: false, reason: "MARKET_ORDER_ABSENT" }
+      : proveFill(tx, order, { toleranceMs });
+    if (absent !== true && proof.ok !== true) {
       pending.push({ file, reason: proof.reason || "RPC_OUTCOME_UNKNOWN" });
       continue;
     }
@@ -165,6 +196,42 @@ async function reconcileJournals({ root = "/var/lib/evejs/coop-native-market", i
       : [];
     const cargo = cargoRows.find((row) => Number(row.cargoID) === Number(tx.cargoID)) || null;
     let cargoState = "ABSENT_SINCE";
+    // A journal whose order never existed can still not be closed on hope. It is closed
+    // WITHOUT EFFECT only when three independent facts agree: the market says it has no
+    // order with this id, the declared stack is still exactly where it was in exactly the
+    // declared quantity, and no ISK ever reached the pilot (checked above). Nothing is
+    // credited and no cargo moves, because nothing happened.
+    if (absent === true) {
+      if (now() - Number(tx.at) < NO_EFFECT_GRACE_MS) {
+        pending.push({ file, reason: "RPC_STILL_IN_FLIGHT" });
+        continue;
+      }
+      if (!cargo || Number(cargo.entityID) !== Number(tx.entityID) ||
+          Number(cargo.typeID) !== Number(tx.typeID) ||
+          Number(cargo.quantity) !== Number(tx.beforeQuantity)) {
+        pending.push({ file, reason: "NO_EFFECT_UNPROVEN" });
+        continue;
+      }
+      const receipt = { version: 1, status: "CLOSED_NO_EFFECT", pilotID: tx.pilotID,
+        entityID: Number(tx.entityID), systemID: Number(tx.systemID),
+        stationID: Number(tx.stationID), typeID: Number(tx.typeID),
+        quantity: Number(tx.quantity), price: Number(tx.price), isk: 0,
+        cargoID: Number(tx.cargoID), beforeBalance: Number(tx.beforeBalance),
+        afterBalance: Number(tx.afterBalance), marketOrderID: String(tx.marketOrderID),
+        marketRPC: "FillOrder", replayed: false,
+        proof: { reason: "MARKET_ORDER_ABSENT", orderID: String(tx.marketOrderID),
+          cargoIntactQuantity: Number(cargo.quantity), balanceIntact: Number(account.balance) },
+        at: Number(tx.at), reconciledAt: now() };
+      if (dryRun) {
+        settled.push({ file, pilotID: tx.pilotID, noEffect: true, dryRun: true,
+          proof: receipt.proof });
+        continue;
+      }
+      atomic(path.join(root, "reconciled", file), receipt);
+      fs.unlinkSync(journalFile);
+      settled.push({ file, pilotID: tx.pilotID, noEffect: true });
+      continue;
+    }
     if (dryRun) {
       settled.push({ file, pilotID: tx.pilotID, entityID: Number(tx.entityID), quantity: Number(tx.quantity),
         price: Number(tx.price), isk: Math.round(Number(tx.price) * Number(tx.quantity) * 100) / 100,
