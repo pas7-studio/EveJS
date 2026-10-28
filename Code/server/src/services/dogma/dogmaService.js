@@ -402,6 +402,20 @@ const DBTYPE_BOOL = 0x0b;
 const DBTYPE_I8 = 0x14;
 const DBTYPE_STR = 0x81;
 const ONLINE_CAPACITOR_CHARGE_RATIO = 95;
+
+// A sessionless native NPC has no capacitor manager, so the player rule ("95% capacitor to
+// online a module") permanently blocks its modules. See space/coopNpcCapacitor.js.
+function bypassesOnlineCapacitorForNpc(session) {
+  if (process.env.EVEJS_COOP_NPC_CAPACITOR !== "1") return false;
+  try {
+    return require("../../space/coopNpcCapacitor").allowsOnlineWithoutCapacitor(
+      session,
+      require("../../space/runtime"),
+    ) === true;
+  } catch (_coopError) {
+    return false;
+  }
+}
 const ONLINE_CAPACITOR_REMAINDER_RATIO = 5;
 const USER_ERROR_TYPE_ID = 4;
 const USER_ERROR_GROUP_ID = 7;
@@ -7069,7 +7083,7 @@ class DogmaService extends BaseService {
           errorMsg: "NOT_ENOUGH_POWER",
         };
       }
-      if (inSpace && !isStructureHost) {
+      if (inSpace && !isStructureHost && !bypassesOnlineCapacitorForNpc(session)) {
         const capacitorState = spaceRuntime.getShipCapacitorState(session);
         if (
           !capacitorState ||

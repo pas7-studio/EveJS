@@ -40,6 +40,25 @@ function topUp(entity) {
   return true;
 }
 
+// Onlining a module needs 95% capacitor (ONLINE_CAPACITOR_CHARGE_RATIO). That is a rule
+// for a hull with a capacitor manager; a native NPC has none, so a pirate that has just
+// fired its weapons can never reach 95% again and never online its warp scrambler.
+// Measured live: 20 `living-native-warp-point-refused` events with reason
+// NOT_ENOUGH_CAPACITOR for a pirate trying to online module 980100142793, while the same
+// hull regenerates at tau ~150 s. A sessionless native NPC is allowed past that one check;
+// a player ship never is, and the flag stays the same one that governs the refills.
+function allowsOnlineWithoutCapacitor(session, runtime) {
+  if (!enabled()) return false;
+  if (!session) return false;
+  if (session.characterID || session.charid) return false;
+  const entity = runtime && typeof runtime.getShipEntityForSession === "function"
+    ? runtime.getShipEntityForSession(session)
+    : null;
+  if (!entity || entity.kind !== "ship") return false;
+  if (entity.session) return false;
+  return true;
+}
+
 function refill(scene, controller) {
   if (!enabled() || !scene || !controller) return false;
   const entityID = Number(controller.entityID || controller.itemID || 0);
@@ -49,4 +68,4 @@ function refill(scene, controller) {
   return topUp(entity);
 }
 
-module.exports = { refill, topUp, FULL_RATIO };
+module.exports = { refill, topUp, allowsOnlineWithoutCapacitor, FULL_RATIO };
