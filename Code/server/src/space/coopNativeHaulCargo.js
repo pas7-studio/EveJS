@@ -201,8 +201,13 @@ function strictTransferCargo(scene,fleet,miner,options,store,probe){
     // every printed field was still refused).
     const rowCargoID=Number(row?.cargoID);
     const rowQuantity=Number(row?.quantity);
+    // Measured 2026-10-27: the store returns `transient` as 0/1 from SQLite, so the old
+    // `row.transient === false` refused every durable cargo row (diagnosed live:
+    // rowReadable false while integerCargoID, integerQuantity, unit 0.01 and the owner were
+    // all fine), and the fleet could never load again.
+    const rowTransient=row?.transient===true||Number(row?.transient)===1;
     const rowReadable=integer(rowCargoID)&&integer(rowQuantity)&&
-      row?.transient===false&&Number.isFinite(unit)&&unit>0;
+      !rowTransient&&Number.isFinite(unit)&&unit>0;
     const rowOurs=Number(row?.entityID)===haulerID&&
       allowedOwners.has(Number(row?.ownerID));
     if(!rowReadable||!rowOurs){
@@ -211,7 +216,7 @@ function strictTransferCargo(scene,fleet,miner,options,store,probe){
       typeID:Number(row?.typeID)||0,ownerID:Number(row?.ownerID)||0,
       entityID:Number(row?.entityID)||0,haulerID,
       owners:[...allowedOwners].map(x=>Number(x)||0),
-      transient:row?.transient===true,unit:Number.isFinite(unit)?unit:null,
+      transient:rowTransient,unit:Number.isFinite(unit)?unit:null,
       rowReadable,rowOurs,integerCargoID:integer(rowCargoID),
       integerQuantity:integer(rowQuantity)};
      break;
