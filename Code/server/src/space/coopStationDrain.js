@@ -185,6 +185,9 @@ function active(fleetRecord) {
 // Called at the top of the mining tick while a drain is in flight, so mining work
 // and the drain never fight over the same hauler.
 function tick(scene, fleetRecord, now) {
+ // A journaled gate crossing is advanced from here as well: the drain is the one co-op
+ // phase that keeps ticking even when the mining think stops at a broken fleet slot.
+ try{require("./coopLoopTick").advanceDistribution({});}catch(_crossingError){}
   if (!ENABLED() || !scene || !fleetRecord) return false;
   const state = fleetRecord[PHASE];
   if (!state || !state.step) return false;

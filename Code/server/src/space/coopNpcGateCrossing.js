@@ -20,6 +20,7 @@ const path = require("node:path");
 
 const MAX_ATTEMPTS = 5;
 const DEFAULT_GATE_RANGE_M = 2500;
+const FOLLOW_RANGE_M = 200000;
 
 const pos = (x) => (Number.isSafeInteger(Number(x)) && Number(x) > 0 ? Number(x) : 0);
 
@@ -117,7 +118,8 @@ function plan({entityID, pilotID = null, gate = null, now = Date.now()} = {}) {
  * `transfer` is the native adapter (coopNativeGateTransfer.transfer); without it a run
  * stays at AT_GATE and says TRANSFER_UNAVAILABLE instead of pretending to cross.
  */
-function tick({ sceneForSystem, getGate, getController, warpToGate, transfer,
+function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, transfer,
+  materialize = null,
   now = Date.now(), observe = null, maxMeters = DEFAULT_GATE_RANGE_M } = {}) {
   const entries = read().filter((row) =>
     ["APPROACH", "AT_GATE", "CROSSING"].includes(String(row.phase)));
@@ -133,8 +135,23 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, transfer,
     const ship = sourceScene && typeof sourceScene.getEntityByID === "function"
       ? sourceScene.getEntityByID(entry.entityID) : null;
     if (!ship) {
-      entry.phase = "BLOCKED";
-      entry.lastReason = "SHIP_NOT_IN_SOURCE_SCENE";
+      // The ship may be durable but not live (a restart rebuilt the scene). Bringing it
+      // back from its own store record is the narrow road; anything else stays blocked.
+      let revived = false;
+      try {
+        const answer = typeof materialize === "function"
+          ? materialize(sourceScene, entry.entityID) : null;
+        revived = Boolean(answer && answer.success === true);
+      } catch (_error) { revived = false; }
+      entry.updatedAt = now;
+      entry.lastReason = revived ? "REMATERIALIZED_FROM_STORE" : "SHIP_NOT_IN_SOURCE_SCENE";
+      entry.phase = revived ? "APPROACH" : "BLOCKED";
+      write(entry);
+      note(entry, { entityID: entry.entityID, status: entry.lastReason });
+      advanced.push(entry);
+      continue;
+    }
+    if (false) {
       entry.updatedAt = now;
       write(entry);
       note(entry, { entityID: entry.entityID, status: entry.lastReason });
@@ -152,13 +169,23 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, transfer,
       continue;
     }
     if (!inRange({ ship, gate, maxMeters })) {
-      // One warp per minute at most: a hull that is already flying must not be re-ordered.
-      if (entry.phase === "APPROACH" && now - Number(entry.warpAt || 0) > 60000) {
-        let issued = false;
-        try { issued = typeof warpToGate === "function" && warpToGate(entry.entityID, entry.sourceGateID) !== false; }
-        catch (_error) { issued = false; }
+      const gap = surfaceGap({ ship, gate });
+      // Close range is a FOLLOW order, not a warp: the native warp refuses a target that
+      // is already a few kilometres away, so a warp loop never reaches the gate.
+      const closeRange = gap !== null && gap <= FOLLOW_RANGE_M;
+      const waitMs = closeRange ? 30000 : 60000;
+      if (entry.phase === "APPROACH" && now - Number(entry.warpAt || 0) > waitMs) {
+        let issued = false, how = "WARP_TO_GATE";
+        try {
+          if (closeRange && typeof followGate === "function") {
+            issued = followGate(entry.entityID, entry.sourceGateID) === true;
+            how = "FOLLOW_GATE";
+          } else if (typeof warpToGate === "function") {
+            issued = warpToGate(entry.entityID, entry.sourceGateID) !== false;
+          }
+        } catch (_error) { issued = false; }
         entry.warpAt = now;
-        entry.lastReason = issued ? "WARP_TO_GATE" : "WARP_REFUSED";
+        entry.lastReason = issued ? how : (closeRange ? "FOLLOW_GATE_REFUSED" : "WARP_REFUSED");
         entry.updatedAt = now;
         write(entry);
         note(entry, { entityID: entry.entityID, status: entry.lastReason,
@@ -168,6 +195,37 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, transfer,
       continue;
     }
     entry.phase = "AT_GATE";
+    const controller = typeof getController === "function" ? getController(entry.entityID) : null;
+    const busy = [];
+    if (String(ship && ship.mode || "").toUpperCase().includes("WARP")) busy.push("WARP");
+    if (Number(controller && controller.currentTargetID) > 0) busy.push("TARGET_LOCKED");
+    if (ship && ship.activeModuleEffects && ship.activeModuleEffects.size > 0) busy.push("MODULE_EFFECTS");
+    // A target lock is transient in this world (the durable controller record shows none),
+    // so it must not veto the attempt: the adapter still refuses anything truly unsafe.
+    const blocking = busy.filter((why) => why !== "TARGET_LOCKED");
+    if (blocking.length) {
+      // A follow order both closes the distance and makes the behaviour loop drop its own
+      // target, so a locked target is cleared by the same legitimate order, rate-limited.
+      let acted = false;
+      if (busy.includes("TARGET_LOCKED") && typeof followGate === "function" &&
+        now - Number(entry.warpAt || 0) > 15000) {
+        try { acted = followGate(entry.entityID, entry.sourceGateID) === true; }
+        catch (_error) { acted = false; }
+        entry.warpAt = now;
+      }
+      entry.lastReason = "WAITING_CALM:" + blocking.join("+") + (acted ? ":FOLLOW_ISSUED" : "");
+      entry.updatedAt = now;
+      write(entry);
+      note(entry, { entityID: entry.entityID, status: entry.lastReason, gap });
+      advanced.push(entry);
+      continue;
+    }
+    // At most one real attempt every 10 s: a refusal is information, not a retry race.
+    if (now - Number(entry.attemptAt || 0) < 10000) {
+      advanced.push(entry);
+      continue;
+    }
+    entry.attemptAt = now;
     if (typeof transfer !== "function") {
       entry.lastReason = "TRANSFER_UNAVAILABLE";
       entry.updatedAt = now;
@@ -180,8 +238,13 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, transfer,
     entry.attempts = Number(entry.attempts || 0) + 1;
     let result = null;
     try {
-      result = transfer({ pilotID: entry.pilotID, entityID: entry.entityID, gate,
-        sourceScene, ship, controller: typeof getController === "function" ? getController(entry.entityID) : null });
+      // The adapter expects the proven GATE PAIR, not the stargate record: it re-reads both
+      // gates and refuses the crossing unless they are reciprocal in the named systems.
+      result = transfer({ pilotID: entry.pilotID, entityID: entry.entityID,
+        gate: { sourceGateID: entry.sourceGateID, destinationGateID: entry.destinationGateID,
+          sourceSystemID: entry.fromSystemID, destinationSystemID: entry.toSystemID },
+        sourceScene, ship,
+        controller: typeof getController === "function" ? getController(entry.entityID) : null });
     } catch (error) {
       result = { success: false, errorMsg: String((error && error.message) || error).slice(0, 90) };
     }
@@ -206,5 +269,5 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, transfer,
   return { status: "ADVANCED", advanced };
 }
 
-module.exports = { MAX_ATTEMPTS, DEFAULT_GATE_RANGE_M, root, surfaceGap, inRange,
+module.exports = { MAX_ATTEMPTS, DEFAULT_GATE_RANGE_M, FOLLOW_RANGE_M, root, surfaceGap, inRange,
   judgeCrossing, plan, tick, read };

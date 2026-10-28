@@ -55,4 +55,23 @@ function createJournalBootReconciler({
   };
 }
 
-module.exports = { createJournalBootReconciler };
+// The engine keeps only a call site; the wiring lives here so its line budget is not the
+// price of a new authority.
+function createFromEnvironment({env = process.env} = {}) {
+  const marketClient = require("../services/market/marketDaemonClient").marketDaemonClient;
+  const runtime = require("./runtime");
+  const inventory = require("../services/inventory/itemTypeRegistry");
+  return createJournalBootReconciler({
+    root: env.EVEJS_COOP_NPC_MARKET_ROOT || "/var/lib/evejs/coop-native-market",
+    inspectOrder: (orderID) => marketClient.call("GetOrder", { order_id: String(orderID) }),
+    store: require("./npc/nativeNpcStore"),
+    sceneForSystem: (systemID) => {
+      try { return runtime.ensureScene(systemID, { refreshStargates: false }); }
+      catch (_error) { return null; }
+    },
+    resolveType: (typeID) => inventory.resolveItemByTypeID(typeID),
+    observe: require("./coopRuntimeProbe").observe,
+  });
+}
+
+module.exports = { createJournalBootReconciler, createFromEnvironment };
