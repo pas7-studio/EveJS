@@ -105,12 +105,18 @@ function occupationStates(state) {
   const bySystem = {};
   for (const [key, record] of Object.entries(territories)) {
     const systemID = num(key);
-    const ownerID = num(record && record.militaryControllerFactionID);
+    // ownerID is the SOVEREIGN owner, because that is what the client colours from
+    // (its static mapSolarSystems.factionID). Reporting the military controller here
+    // made an OCCUPIED system indistinguishable from a secure one: 30045343 read
+    // owner=occupier=500004 even though 500001 had held it. The occupier is separate.
+    const ownerID = num(record && (record.originalOwnerFactionID || record.militaryControllerFactionID));
+    const controllerID = num(record && record.militaryControllerFactionID);
     if (!pos(systemID) || !pos(ownerID)) continue;
     bySystem[systemID] = {
       ownerID,
-      occupierID: contestedBy.get(systemID) || ownerID,
-      contested: contestedBy.has(systemID) || (record && record.state === "CONTESTED") === true,
+      occupierID: contestedBy.get(systemID) || controllerID || ownerID,
+      contested: contestedBy.has(systemID) || (record && record.state === "CONTESTED") === true ||
+        (pos(controllerID) && controllerID !== ownerID),
       militaryState: String((record && record.state) || "SECURE"),
     };
   }
