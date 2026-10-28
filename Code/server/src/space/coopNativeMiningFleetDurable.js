@@ -191,7 +191,17 @@ function pruneStaleSlotHulls({store,systemID,slot,keep,destroy,log}){
   const keepSet=new Set((Array.isArray(keep)?keep:[]).map(Number).filter(Boolean));
   const extra=[...found.miners,...found.haulers].filter(id=>!keepSet.has(Number(id)));
   let destroyed=0;
+  const carrying=[];
   for(const id of extra){
+    // A hull is a ship, but what is inside it is the world's goods. Measured 2026-10-28:
+    // pruning a stale generation destroyed a hauler that still carried 3 manufactured
+    // chipsets, and the goods simply vanished (13 produced, 8 sold, 2 held, 3 lost) - the
+    // repair was silently eating the economy it is supposed to keep alive. A hull that
+    // carries anything is never pruned; it is reported instead, so the operator decides.
+    let cargo=[];
+    try{cargo=store.listNativeCargoForEntity(id)||[];}catch(_error){cargo=[];}
+    const units=cargo.reduce((sum,row)=>sum+Math.max(0,Number(row.quantity)||0),0);
+    if(units>0){carrying.push({entityID:id,units});continue;}
     try{
       const result=destroy(id);
       if(result&&result.success===true){destroyed+=1;continue;}
@@ -208,7 +218,10 @@ function pruneStaleSlotHulls({store,systemID,slot,keep,destroy,log}){
   }
   if(destroyed&&typeof log==="function")
     log("slot "+systemID+"-"+slot+" pruned "+destroyed+"/"+extra.length+" stale hulls");
-  return {extra:extra.length,destroyed,skipped:false};
+  if(carrying.length&&typeof log==="function")
+    log("slot "+systemID+"-"+slot+" kept "+carrying.length+" stale hull(s) that still carry goods: "+
+      carrying.map(x=>x.entityID+"("+x.units+")").join(","));
+  return {extra:extra.length,destroyed,skipped:false,carrying};
 }
 
 function repairPartialSlot({scene,store,systemID,slot,key,db,spawn,ensureState,minerIDs,haulerIDs,destroy,log}){
@@ -750,4 +763,5 @@ function noteDroppedFleetActors(fleetRecord,deps={}){
  }
  return dropped;
 }
-module.exports={createService,start,roleMarker,slotKey,fleetIDForSlot,healFleetActors,noteDroppedFleetActors};
+module.exports={createService,start,roleMarker,slotKey,fleetIDForSlot,healFleetActors,noteDroppedFleetActors,
+ pruneStaleSlotHulls};
