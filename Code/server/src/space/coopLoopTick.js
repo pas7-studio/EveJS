@@ -99,6 +99,19 @@ function distributionAuthorities(options = {}) {
         } catch (_error) { return false; }
       }),
       transfer,
+      // The adapter refuses a scrambled hull, so the diagnostic asks the same question.
+      isScrambled: options.isScrambled || ((ship) => {
+        try { return require("./modules/hostileModuleRuntime").isEntityWarpScrambled(ship) === true; }
+        catch (_error) { return false; }
+      }),
+      // A hull that keeps re-locking is stood down with the native order type the behaviour
+      // loop itself honours, never by writing currentTargetID.
+      standDown: options.standDown || ((id) => {
+        try {
+          const answer = require("./npc/npcService").issueManualOrder(id, { type: "stop" });
+          return answer && answer.success === true;
+        } catch (_error) { return false; }
+      }),
       // A durable ship whose scene was rebuilt is re-materialized from its own record.
       materialize: options.materialize ||
         ((scene, id) => require("./npc/nativeNpcService").materializeStoredNativeController(scene, id)),    };

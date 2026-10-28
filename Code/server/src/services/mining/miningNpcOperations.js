@@ -3133,6 +3133,9 @@ function completeHaulCycle(scene, fleetRecord, now) {
 
 function shouldTriggerHauling(scene, fleetRecord, noAsteroidsRemain = false, now = Date.now()) {
   try{require("../../space/coopLoopTick").tick({systemID:+scene?.systemID,stationID:+fleetRecord?.stationID,fleetID:+fleetRecord?.fleetID,gameStore:require("../../gameStore"),marketRoot:process.env.EVEJS_COOP_NPC_MARKET_ROOT||process.env.EVEJS_COOP_NPC_MARKET_DIR||""});}catch(_e){}
+  // The loop also keeps its own beat, because this hook can go quiet for minutes while the
+  // world keeps running. One line, env-gated, no-op unless the driver is asked for.
+  try{require("../../space/coopLoopDriver").ensure();}catch(_e){}
   if (!scene || !fleetRecord || fleetRecord.haulerEntityIDs.length <= 0) {
     return false;
   }

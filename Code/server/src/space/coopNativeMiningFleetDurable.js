@@ -328,8 +328,14 @@ function repairSlotComposition({scene,store,systemID,slot,key,db,spawn,ensureSta
  // One replacement per demoted hull that the slot cannot already absorb with a real
  // hauler, plus one beside a cargo-holding mis-roled hull only when the slot has no
  // real hauler at all. Zero means "reconcile, do not spawn".
- const addCount=Math.max(0,demotable.length-realHaulers)+
-  (kept.length>0&&realHaulers===0?1:0);
+ // A hauler that legitimately left the slot (a journaled gate crossing keeps the same
+ // hull, in another system) is exactly as missing as a demoted one: measured 2026-10-29,
+ // the witness still named a hauler, the marker set had none, and the slot stayed
+ // NEEDS_OPERATOR_REPAIR for ever because addCount came out 0 and nothing was spawned.
+ const expectedHaulers=Array.isArray(haulerIDs)?haulerIDs.length:0;
+ const missingHaulers=Math.max(0,expectedHaulers-before.haulers.length);
+ const addCount=Math.max(missingHaulers,Math.max(0,demotable.length-realHaulers)+
+  (kept.length>0&&realHaulers===0?1:0));
  let fresh=[];
  if(addCount>0){
   // The scene mining state must exist BEFORE allocating, exactly like a first seed.
@@ -763,5 +769,5 @@ function noteDroppedFleetActors(fleetRecord,deps={}){
  }
  return dropped;
 }
-module.exports={createService,start,roleMarker,slotKey,fleetIDForSlot,healFleetActors,noteDroppedFleetActors,
+module.exports={createService,start,repairSlotComposition,roleMarker,slotKey,fleetIDForSlot,healFleetActors,noteDroppedFleetActors,
  pruneStaleSlotHulls};
