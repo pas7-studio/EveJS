@@ -4364,7 +4364,13 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
  });
  // The split runtime owns nativeWarFleetRegistry() but not the module state it
  // reads: hand it the live bridge and identity registry after they exist.
- // The split runtime reads live objects this file creates. They appear in a
+ syncWarRuntime();
+ return {status:"PENDING"};
+}
+// This is deliberately NOT an EveJS client RPC or HTTP admin endpoint.
+// The caller must be trusted in-process server code providing a separately
+// authenticated admin/RBAC decision for every inspection and mutation.
+// The split runtime reads live objects this file creates. They appear in a
 // different order than the module assumes, so hand them over on every cycle
 // instead of guessing one moment when all of them already exist.
 function syncWarRuntime(){
@@ -4374,12 +4380,6 @@ function syncWarRuntime(){
    nativeAmmoWitness,lossBridge,factionDirector,raidDirector,tacticsDirector,pveSiteDefenseDirector,pveWaveReinforcementsDirector,pveObjectiveDoctrineDirector,pveNativeBossDirector,warpPointDirector,nativeGunRange,warGateHandoff,warRecoverySocket,nativeOrderBridge,lootCommerce,nativeAmmoSupply,warTreasuryInstance});
  }catch(_ignored){}
 }
-syncWarRuntime();
- return {status:"PENDING"};
-}
-// This is deliberately NOT an EveJS client RPC or HTTP admin endpoint.
-// The caller must be trusted in-process server code providing a separately
-// authenticated admin/RBAC decision for every inspection and mutation.
 function livingWorldPhases(){return worldPhaseCoordinator?.snapshot()||{active:false,sequence:0,last:null}}
 // World-setup seam used by the admin bridge. A ship spawned outside the
 // materializer is only a real presence for the war layer once the identity
