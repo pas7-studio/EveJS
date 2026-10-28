@@ -187,6 +187,15 @@ function warTreasuryStore(){
   corporationState=require("../services/corporation/corporationState");
  warTreasuryInstance=require("./coopWarTreasuryNative").createNativeWarTreasury({
   gameStore,corporationState,factionState:factions,
+  // FW-053: a refund may only return escrow that no campaign can ever spend again.
+  // Without this authority the runtime refused every refund by default, so an
+  // expired campaign's HELD escrow stayed locked forever with no way out.
+  authorizeRefund({war,campaign,proofID}){
+   const terminal=(war&&war.state==="ENDED")||
+    ["CANCELLED","EXPIRED"].includes(String(campaign&&campaign.state||""));
+   if(!terminal)return false;
+   return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(String(proofID||""));
+  },
   authorizePayout({factionID,pilotID,campaign}){
    // The payer must be a real member of the faction that owns this escrow, and
    // the campaign must be a real campaign of that war. The event proof itself

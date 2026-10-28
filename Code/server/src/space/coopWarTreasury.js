@@ -133,7 +133,13 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
      if(!valid)return {status:"BLOCKED",reason:"WAR_TREASURY_PAYOUT_NOT_AUTHORIZED"};
     }else{
      const campaign=warState.campaigns[r.campaignID];
-     if(!(war.state==="ENDED"||campaign?.state==="CANCELLED"))
+     // FW-053 (review): an EXPIRED campaign is just as terminal as a cancelled one.
+     // Measured today: `war:500011-500020:campaign:30045343` expired after its
+     // PREPARING stall and its 2 500 000-cent reservation stayed HELD with no
+     // campaign that could ever pay it - real ISK locked forever, because only
+     // CANCELLED and ENDED were accepted here and the live runtime never provides
+     // an authorizeRefund at all.
+     if(!(war.state==="ENDED"||campaign?.state==="CANCELLED"||campaign?.state==="EXPIRED"))
       return {status:"BLOCKED",reason:"WAR_TREASURY_STILL_IN_USE"};
      let valid=false;
      try{valid=authorizeRefund({...r,proofID:command.proofID,war,campaign},tx)===true}catch{}
