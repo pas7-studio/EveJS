@@ -132,6 +132,16 @@ function createMercenarySettlement({
         return { ok: true, state };
       });
       if (!prepared.ok) return { status: "DUPLICATE", entry: { ...prepared.state.processed[eventID] } };
+      // JOURNALLED-NOT-DURABLE guard. Measured on the work stack 2026-10-28: the
+      // intent row was written, the transfer paid, and a replay could no longer
+      // read the row - it paid a second time and 25 000 ISK left the payer with no
+      // matching credit. A money mover must never trust a write it cannot read
+      // back, so the debit only happens when the journal really persists.
+      let durable = null;
+      try { durable = read().processed[eventID] || null; } catch (_error) { durable = null; }
+      if (!durable || durable.phase !== "PREPARED")
+        return { status: "BLOCKED", reason: "WAR_MERCENARY_JOURNAL_NOT_DURABLE",
+          eventID, debitAttempted: false };
 
       const debit = applyDelta({ corporationID: payer, division, delta: -needISK, env });
       const payerAfter = readBalance(payer, division);
