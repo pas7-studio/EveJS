@@ -171,7 +171,17 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
      state.nextJournalID>=Number.MAX_SAFE_INTEGER-1||
      (command.type==="RESERVE"&&next<command.minRemainingCents))
      return {status:"BLOCKED",reason:"WAR_TREASURY_FUNDS_UNAVAILABLE"};
-    const journalID=state.nextJournalID;
+    // The counter lives in this row, and in this world a row can be lost while the
+    // wallet it describes survives. A counter that restarts then collides with real
+    // journal entries (measured: WAR_TREASURY_JOURNAL_COLLISION blocked a funded
+    // reservation). The next ID is therefore derived from what the wallet really
+    // holds, and the stored counter only ever moves forward.
+    const highest=(list)=>Array.isArray(list)?list.reduce((max,row)=>{
+     const id=Number(row&&row.transactionID);
+     return Number.isSafeInteger(id)&&id>max?id:max;
+    },0):0;
+    const journalID=Math.max(state.nextJournalID,
+     highest(division.journal)+1,highest(division.transactions)+1);
     if(division.journal.some(v=>v?.transactionID===journalID)||
      division.transactions.some(v=>v?.transactionID===journalID))
      return {status:"BLOCKED",reason:"WAR_TREASURY_JOURNAL_COLLISION"};
