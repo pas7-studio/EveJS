@@ -346,6 +346,47 @@ function diagnoseWarFunding(){
   mercenary:diagnoseMercenary(wars,pilots,ledger,need),
  };
 }
+// FW-038B: the settlement that actually pays a mercenary contract. Both wallets
+// are real native corporation wallets (division 1000) and the transfer is a
+// journaled two-leg operation - see coopWarMercenarySettlement.
+let warMercenarySettlementInstance=null;
+function warMercenarySettlement(){
+ if(warMercenarySettlementInstance)return warMercenarySettlementInstance;
+ const wallet=require("./coopCorpWallet"),gameStore=require("../gameStore");
+ const balanceOf=(corporationID,division)=>{
+  const read=wallet.readWallet({gameStore,corporationID});
+  if(!read||read.status!=="OK"||!read.divisions)return NaN;
+  const divisionRow=read.divisions[String(division)];
+  const value=Number(divisionRow&&divisionRow.balance);
+  return Number.isFinite(value)?value:NaN;
+ };
+ warMercenarySettlementInstance=require("./coopWarMercenarySettlement")
+  .createMercenarySettlement({
+   gameStore,division:"1000",
+   readBalance:(corporationID,division)=>balanceOf(corporationID,division),
+   applyDelta:({corporationID,division,delta,env})=>
+    wallet.applyDelta({gameStore,corporationID,division,delta,env})
+  });
+ return warMercenarySettlementInstance;
+}
+function executeMercenaryContract(request){
+ try{
+  return warMercenarySettlement().execute({
+   eventID:String(request&&request.eventID||""),
+   payerCorporationID:Number(request&&request.payerCorporationID),
+   payeeCorporationID:Number(request&&request.payeeCorporationID),
+   amountCents:Number(request&&request.amountCents),
+   dryRun:request&&request.dryRun===true
+  });
+ }catch(error){
+  return {status:"BLOCKED",reason:"WAR_MERCENARY_UNAVAILABLE",
+   detail:String(error&&error.message||error).slice(0,120)};
+ }
+}
+function diagnoseMercenarySettlement(){
+ try{return warMercenarySettlement().snapshot()}
+ catch(error){return {status:"UNAVAILABLE",reason:String(error&&error.message||error)}}
+}
 // FW-038 read-only: pair a funded faction with a navy-capable faction using the
 // real corporation wallets (division 1000). Proposes only; moves no ISK.
 function diagnoseMercenary(wars,pilots,ledger,needCents){
@@ -4618,4 +4659,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};

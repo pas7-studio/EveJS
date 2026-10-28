@@ -398,6 +398,19 @@ function executeRequest(request) {
       return { ok: false, error: "war state diagnose failed: " + String(error && error.message || error) };
     }
   }
+  // FW-038B: pay (or preview) a mercenary contract between two real corporation
+  // wallets. dryRun previews and writes nothing.
+  if (action === "war_mercenary_settle" || action === "war_mercenary_state") {
+    try {
+      const runtimeWorld = require("./coopVirtualWorldRuntime" + siblingSuffix);
+      if (action === "war_mercenary_state")
+        return { ok: true, settlement: runtimeWorld.diagnoseMercenarySettlement() };
+      const result = runtimeWorld.executeMercenaryContract(request);
+      return Object.assign({ ok: result.status === "PAID" || result.status === "DRY_RUN" || result.status === "DUPLICATE" }, result);
+    } catch (error) {
+      return { ok: false, error: "mercenary settle failed: " + String(error && error.message || error) };
+    }
+  }
   if (action === "war_funding_diagnose") {
     try {
       const runtimeWorld = require("./coopVirtualWorldRuntime" + siblingSuffix);
