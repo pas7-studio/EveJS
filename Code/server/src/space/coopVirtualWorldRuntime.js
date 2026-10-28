@@ -4537,8 +4537,17 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
      }
     }
    }
+   // What the hull REALLY carries is sellable too. A stack lifted on an earlier arrival,
+   // or produced by manufacturing, is not in this trip's manifest - so the batch never
+   // asked the market for it and it rode along for ever. Measured 2026-10-28: 5 Mining
+   // Survey Chipsets sat in a hauler through a full ore haul while 23 seeds bid 53 700.
+   const carried=new Set();
+   try{
+    const rows=require("./npc/nativeNpcStore").listNativeCargoForEntity(Number(haulerID))||[];
+    for(const row of rows)carried.add(Number(row.typeID));
+   }catch(_error){/* an unreadable hold simply adds no type */}
    const wanted=[...new Set(sellTypes.filter(typeID=>
-    liftedTypes.has(Number(typeID))||
+    liftedTypes.has(Number(typeID))||carried.has(Number(typeID))||
     !types.length||types.map(Number).includes(Number(typeID))))];
    // The stock the lift has just put aboard comes first: it is what this station is
    // being asked for, and an allowlist of 43 types must not be walked alphabetically.
