@@ -91,6 +91,17 @@ function advanceNativeWarDemobilization(){
 // failed source proof results in zero military assignments, never free ships.
 // A war phase that returns silently cannot be diagnosed from the outside: the
 // reason is reported once per change instead, with a real event.
+// FW-050: the legacy namespace copy of the war state is a separate storage view
+// inside a ROW GROUP. Writing one member of a group can rebuild every member from
+// the cache on the next flush, which silently reverted the real treasury row
+// (escrow rows lost, journal counter rewound, wallet debits left unbacked). The
+// file mirror plus the atomic row restore the war without ever touching a sibling
+// row, so the dangerous copy is opt-in only.
+function legacyWarStateMirrorEnabled(env={}){
+ // Only the exact "1" opt-in: a typo or a stray "true" must not re-arm a writer
+ // that can revert a sibling atomic row.
+ return String(env.EVEJS_COOP_WAR_STATE_LEGACY_MIRROR??"")==="1";
+}
 function warStateStore(){
  const {TABLE,KEY}=require("./coopFactionWarStore"),core=require("./coopFactionWarCore"),
   gameStore=require("../gameStore");
@@ -121,7 +132,19 @@ function warStateStore(){
    // (wars + campaigns + territories) was erased while real ISK stayed in escrow.
    // Writing the same validated document into the legacy path means whichever view
    // the boot reconciliation prefers, it now contains the real war.
-   if(String(process.env.EVEJS_COOP_WAR_STATE_LEGACY_MIRROR??"1")!=="0"){
+   // FW-050: this second copy is now OFF by default, because it was destroying real
+   // money. `corporationRuntime` stores "coop-faction-war" as a row GROUP, so a write
+   // to one member marks the whole group dirty and the next flush rebuilds EVERY
+   // member from the in-memory cache - including `treasury-v1`, which the atomic
+   // write path updates in SQLite without refreshing that cache. Measured at 22:2xZ:
+   // the treasury row came back with 3 reservations and `nextJournalID` 3 while the
+   // live events had already used escrow journals 8000000000000004..6, and two
+   // ASSAULT campaigns lost their HELD escrow while the wallets kept the debits
+   // (1000120 journal -25 000 ISK, no reservation behind it).
+   // The legacy copy was never read back either: `warStateStore.read` reads the flat
+   // atomic row, and boot recovery prefers the live record and otherwise the
+   // validated FILE mirror (FW-041), which cannot touch a sibling row.
+   if(legacyWarStateMirrorEnabled(process.env)){
     try{gameStore.write(TABLE,"/coop-faction-war/state-v1",committed);}
     catch(_error){/* the atomic row stays authoritative; this is a second copy */}
    }
@@ -3188,20 +3211,12 @@ function ensureMineralLift(){
 // Close the world's own RPC_CALLING journals from market proof (space/coopMarketJournalBoot.js
 // owns the logic; every authority is injected so this file keeps no state for it).
 let journalBootReconciler=null;
-function reconcileMarketJournalsAtBoot(force=false){
- if(!journalBootReconciler){
-  const marketClient=require("../services/market/marketDaemonClient").marketDaemonClient;
-  const runtime=require("./runtime"),inventory=require("../services/inventory/itemTypeRegistry");
-  journalBootReconciler=require("./coopMarketJournalBoot").createJournalBootReconciler({
-   root:process.env.EVEJS_COOP_NPC_MARKET_ROOT||"/var/lib/evejs/coop-native-market",
-   inspectOrder:orderID=>marketClient.call("GetOrder",{order_id:String(orderID)}),
-   store:require("./npc/nativeNpcStore"),
-   sceneForSystem:systemID=>{try{return runtime.ensureScene(systemID,{refreshStargates:false})}catch(_error){return null}},
-   resolveType:typeID=>inventory.resolveItemByTypeID(typeID),
-   observe:require("./coopRuntimeProbe").observe});
- }
- return journalBootReconciler(force);
-}
+const reconcileMarketJournalsAtBoot=(force=false)=>(journalBootReconciler||
+ (journalBootReconciler=require("./coopMarketJournalBoot").createFromEnvironment()))(force);
+// The co-op loop advances an operator-journaled gate crossing with the same verified
+// adapter the war layer uses; nothing else may reach it.
+const nativeGateTransferAdapter=()=>nativeGateTransfer;
+const identityRegistryAdapter=()=>identityRegistry;
 function ensureMarketTrader(){ if(nativeMarketTrader||nativeMarketBlocked)return nativeMarketTrader;
  if(!identityRegistry||!world)return null;
  const runtime=require("./runtime"),store=require("./npc/nativeNpcStore");
@@ -4991,4 +5006,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={nativeGateTransferAdapter,identityRegistryAdapter,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
