@@ -4567,17 +4567,26 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
      return category===4||category===25; // Mineral / Ore
     }catch(_error){return true}
    };
-   const rank=typeID=>carried.has(Number(typeID))&&!isRaw(typeID)?0:
-    liftedTypes.has(Number(typeID))?1:2;
-   wanted.sort((left,right)=>rank(left)-rank(right));
+   // Explicit passes instead of a comparator: the finished good goes first, then the
+   // stock the lift just put aboard, then everything else. A raw ore stack keeps selling
+   // on the next visit, but a manufactured product is the scarcest cargo this
+   // corporation owns, and a batch bounded to 8 settlements and 30 s must not spend
+   // itself on bulk minerals before it ever asks for the product (measured 2026-10-28:
+   // 5 chipsets rode along unsold while the batch sorted them behind the ore).
+   const carriedGood=wanted.filter(typeID=>carried.has(Number(typeID))&&!isRaw(typeID));
+   const liftedRest=wanted.filter(typeID=>!carriedGood.includes(typeID)&&
+    liftedTypes.has(Number(typeID)));
+   const ordered=[...carriedGood,...liftedRest,
+    ...wanted.filter(typeID=>!carriedGood.includes(typeID)&&!liftedRest.includes(typeID))];
    try{
     require("./coopRuntimeProbe").observe("living-npc-sale-batch",null,
      {spaceState:{systemID:Number(systemID)}},
      {stationID:Number(stationID),haulerID:Number(haulerID),typesGiven:types.length,
-      wanted:wanted.slice(0,10),carried:[...carried].slice(0,8),lifted:[...liftedTypes].slice(0,8)});
+      ordered:ordered.slice(0,10),carriedGood:[...carriedGood].slice(0,6),
+      carried:[...carried].slice(0,8),lifted:[...liftedTypes].slice(0,8)});
    }catch(_error){/* telemetry must never stop a sale */}
-   if(!wanted.length)last="NO_ALLOWED_ORE";
-   for(const typeID of wanted){
+   if(!ordered.length)last="NO_ALLOWED_ORE";
+   for(const typeID of ordered){
     // Several stacks of one ore type are still one merchant action. Keep going
     // while the market really buys, so a haul is liquidated instead of decaying
     // in the warehouse, but stay strictly bounded in count and time.
@@ -4597,7 +4606,7 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
        require("./coopRuntimeProbe").observe("living-npc-sale-type",null,
         {spaceState:{systemID:Number(systemID)}},
         {stationID:Number(stationID),haulerID:Number(haulerID),typeID:Number(typeID),
-         status:last,rank:rank(typeID),carried:carried.has(Number(typeID)),
+         status:last,good:carriedGood.includes(typeID),carried:carried.has(Number(typeID)),
          lifted:liftedTypes.has(Number(typeID))});
       }catch(_error){/* telemetry must never stop a sale */}
       // "Nothing of THIS type aboard" is not a failure of the haul: the hold carries

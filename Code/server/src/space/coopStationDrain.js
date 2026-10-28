@@ -228,6 +228,14 @@ function tick(scene, fleetRecord, now) {
       return true;
     }
     if (state.settlement && state.settlement.status === "NOT_SOLD") coolDown(state.stationID, now);
+    // The trip really happened: a full hauler emptied its hold at a station. A fleet
+    // that was stuck in "loaded" waiting for a route it could not prove is now free to
+    // mine again, which is the truth - its cargo left the hull.
+    if (String(fleetRecord.state || "") === "loaded") {
+      fleetRecord.state = "mining";
+      fleetRecord.loadedUntilMs = 0;
+      fleetRecord.haulerReturnAtMs = 0;
+    }
     fleetRecord[PHASE] = null;
     fleetRecord.coopDrainNextAtMs = now + intervalMs();
     let residual = null;
@@ -257,7 +265,11 @@ function skip(reason, fleetRecord, extra = {}) {
 // it, so the caller can skip the held mining work for this tick.
 function start(scene, fleetRecord, now) {
   if (!ENABLED() || !scene || !fleetRecord) return false;
-  if (String(fleetRecord.state || "") !== "mining") return false;
+  // "loaded" is a full hauler waiting for its own station trip. When that trip cannot be
+  // proven the fleet waits for ever, so the drain flies the same hull instead (measured
+  // 2026-10-28: both 30000145 fleets sat "loaded" on ALIFE13 receipt conflicts).
+  const fleetState = String(fleetRecord.state || "");
+  if (fleetState !== "mining" && fleetState !== "loaded") return false;
   if (active(fleetRecord)) return true;
   if (now < num(fleetRecord.coopDrainNextAtMs)) {
     return skip("NOT_DUE", fleetRecord, { dueInMs: Math.round(num(fleetRecord.coopDrainNextAtMs) - now) });

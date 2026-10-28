@@ -3175,8 +3175,14 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
   }
   fleetRecord.nextThinkAtMs = now + thinkIntervalMs;
   require("../../space/coopMiningTrace").noteTick(fleetRecord,scene,now,thinkIntervalMs);
-  // A drain trip owns the fleet while it flies (space/coopStationDrain.js).
-  if (String(fleetRecord.state || "") === "mining") {
+  // A drain trip owns the fleet while it flies (space/coopStationDrain.js). A "loaded"
+  // fleet is included on purpose: that is a full hauler waiting for a station trip of its
+  // own, and when that trip's manifest cannot be proven the fleet sits there for hours
+  // (measured 2026-10-28, ALIFE13 MANIFEST_WAREHOUSE_RECEIPT_CONFLICT). The drain flies
+  // the same hull to a real station and sells through the same proven arrival path, so
+  // the stock still moves instead of waiting for an unprovable receipt.
+  const drainState = String(fleetRecord.state || "");
+  if (drainState === "mining" || drainState === "loaded") {
     try { const drain = require("../../space/coopStationDrain");
       if (drain.active(fleetRecord)) { drain.tick(scene, fleetRecord, now); return; }
       if (drain.start(scene, fleetRecord, now)) return; } catch (_e) {}
