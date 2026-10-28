@@ -298,6 +298,31 @@ function warState() {
   return value;
 }
 
+// The local snapshot the insurgency service answers for the CURRENT system. The pinned
+// handler answers (solarSystemID, None) unconditionally, so a player standing inside a
+// system that really is a front sees no campaign there - and the client's campaign
+// notification path never fires. Only a live campaign that really covers this system is
+// returned; everything else stays null.
+function localCampaignSnapshot(snapshots, solarSystemID) {
+  const wanted = num(solarSystemID);
+  if (!pos(wanted)) return null;
+  for (const snapshot of snapshots || []) {
+    if (num(snapshot && snapshot.originSolarsystemID) === wanted) return snapshot;
+    const covered = (snapshot && snapshot.coveredSolarsystemIDs) || [];
+    if (covered.some((id) => num(id) === wanted)) return snapshot;
+  }
+  return null;
+}
+
+// The service hook stays one statement: this answers (solarSystemID, snapshot) for the
+// system the session stands in, or null so the stock (solarSystemID, None) answer stands.
+function localCampaignResponse({ session = null, buildCampaignSnapshot } = {}) {
+  if (typeof buildCampaignSnapshot !== "function") return null;
+  const here = num(session && (session.solarsystemid2 || session.solarsystemid));
+  const snapshot = localCampaignSnapshot(liveCampaignSnapshots(), here);
+  return snapshot ? [here, buildCampaignSnapshot(snapshot)] : null;
+}
+
 // Never throws into a native service handler: a broken record simply means the
 // client shows no coop campaign instead of a failed map request.
 function liveCampaignSnapshots(options = {}) {
@@ -454,5 +479,6 @@ module.exports = {
   adjacencyStates, attackerIDs,
   occupationPairs, warzonesResponse, localOccupationResponse,
   objectiveStructureID,
+  localCampaignSnapshot, localCampaignResponse,
   warState, liveCampaignSnapshots,
 };

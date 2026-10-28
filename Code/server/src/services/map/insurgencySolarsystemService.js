@@ -115,6 +115,7 @@ class InsurgencySolarsystemService extends BaseService {
 
   Handle_GetLocalCampaignClientSnapshot(args, session) {
     log.debug("[InsurgencySolarsystem] GetLocalCampaignClientSnapshot called");
+    if (process.env.EVEJS_COOP_WAR_CLIENT_VIEW === "1") { try { const local = require("../../space/coopWarClientView").localCampaignResponse({ session, buildCampaignSnapshot }); if (local) return local; } catch (error) { log.warn("[CoopWarClientView] local-campaign", error.message); } }
     const solarSystemID =
       Number(
         session && (session.solarsystemid2 || session.solarsystemid),
