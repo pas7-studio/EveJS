@@ -293,10 +293,54 @@ function liveCampaignSnapshots(options = {}) {
   }
 }
 
+// fwWarzoneSolarsystemService.js used to inline this projection twice, identically,
+// and a third time for the local system: same computation, three return shapes. The
+// service keeps the env gate and the log label; the projection lives here once.
+function occupationPairs(buildKeyVal, warzones) {
+  const warzoneID = Number(process.env.EVEJS_COOP_WAR_CLIENT_WARZONE || DEFAULT_WARZONE_ID);
+  const allowed = new Set(warzones[warzoneID] || []);
+  const allSystems = Number(process.env.EVEJS_COOP_FW_ALL_SYSTEMS || 0) === 1;
+  const states = allSystems
+    ? warzoneOccupationStates(warState(), {
+        factionIDs: Array.from(allowed),
+        systems: staticWarzoneSystems(),
+        militiaOf: (id) => id,
+      })
+    : occupationStates(warState());
+  const entries = Object.entries(states).map(([systemID, entry]) => {
+    const ownerID = Number(entry.ownerID);
+    const occupierID = Number(entry.occupierID);
+    if (!allSystems && !allowed.has(ownerID) && !allowed.has(occupierID)) return null;
+    return [Number(systemID), buildKeyVal([
+      ["ownerID", ownerID], ["occupierID", occupierID], ["contested", entry.contested],
+    ])];
+  }).filter(Boolean);
+  return { warzoneID, entries };
+}
+
+/** GetWarzonesOccupationStates(+Uncached): every warzone key, entries for ours only. */
+function warzonesResponse(buildKeyVal, buildDict, warzones) {
+  const { warzoneID, entries } = occupationPairs(buildKeyVal, warzones);
+  return buildDict(Object.keys(warzones).map((key) => [
+    Number(key), Number(key) === warzoneID ? buildDict(entries) : buildDict([]),
+  ]));
+}
+
+/** GetLocalOccupationState: the caller answers with this when the system is ours. */
+function localOccupationResponse(buildKeyVal, warzones, args, session) {
+  const { entries } = occupationPairs(buildKeyVal, warzones);
+  const wanted = Number(args && args.length > 0
+    ? args[0]
+    : (session && (session.solarsystemid2 || session.solarsystemid))) || 0;
+  const hit = entries.find(([systemID]) => systemID === wanted);
+  return hit ? [wanted, hit[1]] : null;
+}
+
 module.exports = {
   CAMPAIGN_STATE_ACTIVE, DEFAULT_WARZONE_ID, DEFAULT_EXPIRY_MS,
   numericID, filetime, liveCampaigns, campaignSnapshots, occupationStates, frontReport,
   warzoneOccupationStates, staticWarzoneSystems, warzoneSystems,
+  occupationPairs, warzonesResponse, localOccupationResponse,
   objectiveStructureID,
   warState, liveCampaignSnapshots,
 };
