@@ -486,8 +486,23 @@ function advanceNativeWarOpening(){
    minShips:Math.max(1,Number(process.env.EVEJS_COOP_WAR_TERRITORY_MIN_SHIPS)||1)
   });
  }
+ // The war domain already knows its own systems. Measured: the frontier refused to
+ // open while the territory map clearly held 30003837 (500004) next to 30045344
+ // (500011), because the tick only ever saw systems the A-Life walker had visited
+ // this process. A system the war state already owns is a real system for the
+ // planner, so the two sets are unioned instead of trusting one of them.
+ let knownSystems=[...visitedSystems];
+ try{
+  const known=store.read();
+  for(const id of Object.keys((known&&known.territories)||{})){
+   const systemID=Number(id);
+   if(Number.isSafeInteger(systemID)&&systemID>0&&!knownSystems.includes(systemID))
+    knownSystems.push(systemID);
+  }
+ }catch(_error){/* the war state is optional here */}
+ const tickSystems=knownSystems.slice(0,12);
  let result;
- try{result=warOpening.tick({systemIDs:[...visitedSystems].slice(0,12)})}
+ try{result=warOpening.tick({systemIDs:tickSystems})}
  catch(error){
   warSkip("opening","OPENING_THROW:"+String(error&&error.message||error));
   return;
@@ -508,6 +523,8 @@ function advanceNativeWarOpening(){
      presence:result.plan?.summary||{},
      fronts:(result.plan?.fronts||[]).length,
      skipped:skips.slice(0,8),
+     tickSystems,
+     visitedSystems:[...visitedSystems].slice(0,12),
      evidence:"REAL_PRESENCE_DERIVED_NO_FRONT_INVENTED"
     });
    }catch(_error){/* probe is best effort */}
