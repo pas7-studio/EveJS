@@ -89,7 +89,7 @@ function proveFill(tx, order, { toleranceMs = PROOF_TOLERANCE_MS } = {}) {
   };
 }
 
-function reconcileJournals({ root = "/var/lib/evejs/coop-native-market", inspectOrder, store, sceneForSystem,
+async function reconcileJournals({ root = "/var/lib/evejs/coop-native-market", inspectOrder, store, sceneForSystem,
   resolveType, toleranceMs = PROOF_TOLERANCE_MS, now = () => Date.now(), dryRun = false } = {}) {
   if (typeof inspectOrder !== "function") throw Error("RECONCILE_INSPECTOR_REQUIRED");
   const dir = path.join(root, "tx");
@@ -115,7 +115,9 @@ function reconcileJournals({ root = "/var/lib/evejs/coop-native-market", inspect
     if (tx.phase !== "RPC_CALLING") continue;
     let order;
     try {
-      order = inspectOrder(tx.marketOrderID);
+      // The market client's RPC is asynchronous; a rejected or timed-out read is
+      // an unknown outcome, never a proof.
+      order = await inspectOrder(tx.marketOrderID);
     } catch (_error) {
       pending.push({ file, reason: "RPC_OUTCOME_UNKNOWN" });
       continue;
