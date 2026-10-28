@@ -486,11 +486,65 @@ function diagnoseMercenary(wars,pilots,ledger,needCents){
 // reported; a native sov claim is reported only where a real sov structure and
 // a real native claim exist. Nothing is written, so no claim is fabricated.
 let warSovProjection=null;
+// FW-043: a wiped war record left the territory map EMPTY, and every later phase
+// derives its fronts from that very map - so after a container recreate the world
+// could never re-derive ownership, project sovereignty, or open a front again. The
+// deadlock was self-inflicted: projection iterated `state.territories` to find
+// structures, and an empty map simply produced nothing.
+//
+// Territories are therefore re-derived from REAL PRESENCE (the same resolved
+// pilots the front planner uses): a system belongs to the one faction that really
+// holds strictly more resolved ships there than any other. Ties register nothing,
+// no ISK, hull or system is invented, and the record goes through the same
+// validated store the rest of the domain uses.
+function bootstrapTerritoriesFromPresence(state){
+ if(!state||!state.territories)return {status:"NO_STATE",added:0};
+ if(Object.keys(state.territories).length>0)return {status:"ALREADY_PROJECTED",added:0};
+ let pilots=[];
+ try{pilots=warPresencePilots()||[]}catch(_error){pilots=[]}
+ if(!pilots.length)return {status:"NO_PRESENCE",added:0};
+ const counts=new Map();
+ for(const pilot of pilots){
+  const systemID=Number(pilot&&pilot.systemID),factionID=Number(pilot&&pilot.factionID);
+  if(!Number.isSafeInteger(systemID)||systemID<=0||
+   !Number.isSafeInteger(factionID)||factionID<=0)continue;
+  const key=String(systemID);
+  if(!counts.has(key))counts.set(key,new Map());
+  const per=counts.get(key);
+  per.set(factionID,(per.get(factionID)||0)+1);
+ }
+ const at=Date.now(),next={...state,territories:{...(state.territories||{})}};
+ const added=[];
+ for(const [key,per] of counts){
+  const ranked=[...per.entries()].sort((a,b)=>b[1]-a[1]||a[0]-b[0]);
+  if(ranked.length<1)continue;
+  const [factionID,ships]=ranked[0];
+  if(ranked.length>1&&ranked[1][1]>=ships)continue; // a tie owns nothing
+  if(ships<1)continue;
+  next.territories[key]={systemID:Number(key),originalOwnerFactionID:factionID,
+   militaryControllerFactionID:factionID,state:"SECURE",revision:1,changedAt:at};
+  added.push({systemID:Number(key),factionID,ships});
+ }
+ if(!added.length)return {status:"NO_DECISIVE_OWNER",added:0};
+ warStateStore().write(next);
+ return {status:"REGISTERED_FROM_PRESENCE",added:added.length,systems:added};
+}
 function advanceNativeWarSovereigntyProjection(){
  if(process.env.EVEJS_COOP_WAR_SOVEREIGNTY_PROJECTION!=="1")return;
  let state=null;
  try{state=warStateStore().read()}catch(_error){state=null}
  if(!state||!state.territories)return;
+ // FW-043: an empty map is a bootstrap, not an answer.
+ try{
+  const boot=bootstrapTerritoriesFromPresence(state);
+  if(boot.status==="REGISTERED_FROM_PRESENCE"){
+   require("./coopRuntimeProbe").observe("living-native-war-territory-bootstrap",null,null,
+    {status:boot.status,added:boot.added,systems:boot.systems,
+     evidence:"REAL_PRESENCE_STRICT_MAJORITY_NO_INVENTED_OWNER"});
+   state=warStateStore().read();
+   if(!state||!state.territories)return;
+  }
+ }catch(_error){/* a bootstrap failure must never break the phase */}
  let structures=[];
  try{
   const worldData=require("./worldData");
@@ -4847,4 +4901,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,chooseWarRestore,readWarMirror,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
