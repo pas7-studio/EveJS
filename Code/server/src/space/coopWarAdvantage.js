@@ -119,12 +119,43 @@ function createWarAdvantage({
     return Math.min(Math.round(points), MAX_CLIENT_POINTS);
   }
 
+  // The warzone occupation payload is built from the same war record, but in
+  // EVEJS_COOP_FW_ALL_SYSTEMS=1 mode it lists every static warzone system. The client
+  // dereferences `victoryPointsState.contestedFraction` for each listed system
+  // (warzoneStats.py), so a system without an entry is an AttributeError rather than an
+  // empty bar. Cover exactly the systems the other payload lists, with an honest zero.
+  function warzoneFactionIDs(war) {
+    const factions = new Set();
+    for (const row of Object.values((war && war.wars) || {})) {
+      if (!row || row.state !== "ACTIVE") continue;
+      for (const id of [row.attackerFactionID, row.defenderFactionID]) {
+        const factionID = Number(id);
+        if (factionID >= 500001 && factionID <= 500004) factions.add(factionID);
+      }
+    }
+    return factions;
+  }
+
   function victoryPointStates() {
     const view = snapshot();
     const out = {};
     for (const [systemID, entry] of Object.entries(view.systems)) {
       out[systemID] = { score: clientPoints(entry.score), threshold: entry.threshold };
     }
+    if (Number(env.EVEJS_COOP_FW_ALL_SYSTEMS || 0) !== 1) return out;
+    try {
+      const state = readAll();
+      if (!state) return out;
+      const factions = warzoneFactionIDs(state.war);
+      if (!factions.size) return out;
+      const clientView = require("./coopWarClientView" + suffix);
+      for (const system of clientView.staticWarzoneSystems()) {
+        const systemID = Number(system && system.solarSystemID);
+        if (!pos(systemID) || out[systemID]) continue;
+        if (!factions.has(Number(system.factionID))) continue;
+        out[systemID] = { score: 0, threshold };
+      }
+    } catch (_error) { /* the small set is still valid; never break the answer */ }
     return out;
   }
 
