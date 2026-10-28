@@ -1072,8 +1072,11 @@ function stopRunawayFullThrottle(scene, entity, reason) {
     Number(target.y) - Number(position.y),
     Number(target.z) - Number(position.z),
   );
-  const fullThrottle = toFiniteNumber(entity.speedFraction, 0) > 0;
-  if (!(gap > 1e9) && !fullThrottle) return false;
+  // Only a GOTO hull can be flying the sentinel line: a fresh orbit or follow also sets a
+  // positive speed fraction, and stopping on that would kill the order issued just before
+  // (measured: 56 "parked" miners that all stayed in mode STOP).
+  if (String(entity.mode || "").toUpperCase() !== "GOTO") return false;
+  if (!(gap > 1e9)) return false;
   let accepted = false;
   try {
     const npcRuntime = require("../../space/npc/npcRuntime");
@@ -1113,8 +1116,6 @@ function parkFleetMiners(scene, fleetRecord, reason) {
     if (!entity || entity.mode === "WARP" || entity.pendingWarp || entity.warpState) {
       continue;
     }
-    // A runaway straight line must still be killed first, or no orbit order can win.
-    stopRunawayFullThrottle(scene, entity, reason);
     // Measured 2026-10-27: parking the miners where they happened to drift left them
     // 3.1-6.4 km from their own rock while the hauler waited 750 m from it, so the
     // 2 500 m transfer range was never met. The meeting point is the rock: send each
@@ -1125,6 +1126,9 @@ function parkFleetMiners(scene, fleetRecord, reason) {
       String(entity.mode || "").toUpperCase() === "ORBIT" &&
       toInt(entity.targetEntityID, 0) === rockID;
     if (alreadyOrbitingRock) continue;
+    // A runaway straight line must be killed first, or no orbit order can win. This only
+    // touches a GOTO hull, so it cannot stop the orbit issued below.
+    stopRunawayFullThrottle(scene, entity, reason);
     try {
       const npcService = require("../../space/npc/npcService");
       if (typeof npcService.issueManualOrder !== "function") continue;
