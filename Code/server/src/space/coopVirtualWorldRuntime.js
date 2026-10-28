@@ -4404,14 +4404,21 @@ function observeSession(session,ship){
             const anchor=require("./coopNpcTopology").anchorOptions(nativeScene);
             if(!anchor)return {success:false,errorMsg:"NO_NATIVE_SYSTEM_ANCHOR"};
             return npc.spawnBatchInSystem(id,{
-              // No entityType filter: the pool is explicit and its profiles type themselves
-              // ("concord" for concord_police), so demanding "npc" rejected the whole pool and
-              // every patrol answered POOL_EMPTY while the same pool resolves fine without it.
+              // The pool types itself: concord_police answers concord_police_cruiser, whose
+              // profile entityType is "concord". Asking the spawner for "npc" rejected every
+              // entry, so the director answered POOL_EMPTY on every tick and no faction patrol
+              // could deploy (the spawner defaults a missing type back to "npc", so omitting it
+              // did not help). Ask for the type the pool's own profile declares - verified in
+              // the container: the same pool resolves with entityType "concord".
               ...anchor,amount:1,transient:true,broadcast:true,
-              // Faction patrols are law enforcement, not pirates: CONCORD-owned
-              // hulls read as friendly/neutral brackets in the client.
-              ...require("./coopNpcSpawnPools").spawnPoolForRole("patrol",
-               {enabled:process.env.EVEJS_COOP_NPC_ROLE_POOLS==="1"}),
+              ...(() => {
+                // Faction patrols are law enforcement, not pirates: CONCORD-owned hulls read as
+                // friendly/neutral brackets in the client.
+                const pool=require("./coopNpcSpawnPools").spawnPoolForRole("patrol",
+                 {enabled:process.env.EVEJS_COOP_NPC_ROLE_POOLS==="1"});
+                const profile=require("./npc/npcData").getNpcProfile(pool.fallbackProfileID);
+                return {...pool,entityType:String((profile&&profile.entityType)||"npc")};
+              })(),
               behaviorOverrides:{autoAggro:false,autoActivateWeapons:false,targetPreference:"none"}
             });
           },
