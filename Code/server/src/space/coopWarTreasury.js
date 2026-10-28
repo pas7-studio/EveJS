@@ -4,7 +4,17 @@
 // NEVER mints ISK, purchases inventory, or grants campaign supply permission.
 const TABLE="corporationRuntime",KEY="coop-faction-war\u001ftreasury-v1",
  CORP_PREFIX="corporations\u001f",WAR_KEY="coop-faction-war\u001fstate-v1",
- JOURNAL_BASE=8000000000000000,MAX_EVENTS=2000,MAX_RESERVATIONS=500;
+ JOURNAL_BASE=8000000000000000,MAX_EVENTS=2000,MAX_RESERVATIONS=500,
+ // FW-056 (review): the event ledger has a hard cap, and at it EVERY money command
+ // stopped (WAR_TREASURY_EVENT_CAP) - a world that has fought for long enough could
+ // never fund or pay another war. Old entries are compacted into an archive of
+ // eventID -> signature hash: a replay is still detected (DUPLICATE, no receipt, so
+ // nothing can move twice) and a DIFFERENT command under the same eventID is still
+ // refused, while memory stays bounded.
+ MAX_ARCHIVE=20000;
+const crypto=require("node:crypto");
+const signatureHash=(value)=>crypto.createHash("sha256")
+ .update(String(value)).digest("hex").slice(0,32);
 const pos=x=>Number.isSafeInteger(x)&&x>0;
 const nonneg=x=>Number.isSafeInteger(x)&&x>=0;
 const key=x=>typeof x==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(x)&&
@@ -30,7 +40,9 @@ function validate(s){
   typeof s.processed!=="object"||Array.isArray(s.processed)||
   !nonneg(s.nextJournalID)||s.nextJournalID<JOURNAL_BASE||
   Object.keys(s.reservations).length>MAX_RESERVATIONS||
-  Object.keys(s.processed).length>MAX_EVENTS)
+  Object.keys(s.processed).length>MAX_EVENTS||
+  (s.archive!==undefined&&(typeof s.archive!=="object"||Array.isArray(s.archive)||
+   Object.keys(s.archive).length>MAX_ARCHIVE)))
   throw Error("WAR_TREASURY_INVALID");
  for(const [id,r] of Object.entries(s.reservations)){
   if(!key(id)||r?.reservationID!==id||!pos(r.corporationID)||
@@ -74,8 +86,30 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
     if(recorded)return recorded.signature===signature?
      {status:"DUPLICATE",receipt:recorded.receipt}:
      {status:"BLOCKED",reason:"WAR_TREASURY_EVENT_CONFLICT"};
-    if(Object.keys(state.processed).length>=MAX_EVENTS)
-     return {status:"BLOCKED",reason:"WAR_TREASURY_EVENT_CAP"};
+    // FW-056: a command that was compacted into the archive is still decided here -
+    // same signature means it already happened (DUPLICATE, and deliberately no
+    // receipt, so a replay can never be mistaken for a fresh settlement), a
+    // different signature under the same eventID stays a conflict.
+    if(own(state.archive||{},command.eventID)){
+     return state.archive[command.eventID]===signatureHash(signature)?
+      {status:"DUPLICATE",receipt:null,archived:true}:
+      {status:"BLOCKED",reason:"WAR_TREASURY_EVENT_CONFLICT"};
+    }
+    if(Object.keys(state.processed).length>=MAX_EVENTS){
+     // Make room by compacting the oldest receipts. The signature hash keeps every
+     // replay decision exact while dropping the bulky receipts themselves.
+     if(!state.archive||typeof state.archive!=="object")state.archive={};
+     const ordered=Object.entries(state.processed)
+      .sort((a,b)=>(Number(a[1]?.receipt?.at)||0)-(Number(b[1]?.receipt?.at)||0));
+     const room=Math.max(1,Math.ceil(ordered.length/2));
+     for(const [eventID,row] of ordered.slice(0,room)){
+      if(Object.keys(state.archive).length>=MAX_ARCHIVE)break;
+      state.archive[eventID]=signatureHash(row&&row.signature);
+      delete state.processed[eventID];
+     }
+     if(Object.keys(state.processed).length>=MAX_EVENTS)
+      return {status:"BLOCKED",reason:"WAR_TREASURY_EVENT_CAP"};
+    }
     const id=command.reservationID,r=own(state.reservations,String(id))?
      state.reservations[id]:null;
     if(!key(id)||!pos(command.corporationID))
