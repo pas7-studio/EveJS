@@ -1638,6 +1638,7 @@ function start(){
  }
  timer=setInterval(()=>worldPhaseCoordinator.tick(runPhase=>{
   backgroundTicks++;
+  syncWarRuntime();
   // Read-only courier pass (COOP-024). It never mutates a contract: it only
   // reports what the decision core thinks of the outstanding courier contracts,
   // so the live wiring can be verified before anything is accepted.
@@ -4363,7 +4364,17 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
  });
  // The split runtime owns nativeWarFleetRegistry() but not the module state it
  // reads: hand it the live bridge and identity registry after they exist.
- try{require("./coopVirtualWorldRuntime.pure").bindWarRuntime({bridge,identityRegistry,economy,nativeGateTransfer,recognitionAnnouncer,nativeAmmoWitness});}catch(_bindError){/* reported by the phase itself */}
+ // The split runtime reads live objects this file creates. They appear in a
+// different order than the module assumes, so hand them over on every cycle
+// instead of guessing one moment when all of them already exist.
+function syncWarRuntime(){
+ try{
+  require("./coopVirtualWorldRuntime.pure").bindWarRuntime({
+   bridge,identityRegistry,economy,nativeGateTransfer,recognitionAnnouncer,
+   nativeAmmoWitness,lossBridge,factionDirector,raidDirector,tacticsDirector,pveSiteDefenseDirector,pveWaveReinforcementsDirector,pveObjectiveDoctrineDirector,pveNativeBossDirector,warpPointDirector,nativeGunRange,warGateHandoff,warRecoverySocket,nativeOrderBridge,lootCommerce,nativeAmmoSupply,warTreasuryInstance});
+ }catch(_ignored){}
+}
+syncWarRuntime();
  return {status:"PENDING"};
 }
 // This is deliberately NOT an EveJS client RPC or HTTP admin endpoint.

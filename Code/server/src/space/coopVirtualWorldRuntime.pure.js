@@ -19,6 +19,9 @@ const destroyedNativeShips=new Set();
 // inside the garrison phase, so the war silently stopped refilling.
 let warFleetRegistry=null,bridge=null,identityRegistry=null,
  economy=null,nativeGateTransfer=null,recognitionAnnouncer=null,nativeAmmoWitness=null;
+// Declared here because the extraction left them behind: every phase that
+// touched one threw ReferenceError, which froze that part of the world.
+let lossBridge=null,factionDirector=null,raidDirector=null,tacticsDirector=null,pveSiteDefenseDirector=null,pveWaveReinforcementsDirector=null,pveObjectiveDoctrineDirector=null,pveNativeBossDirector=null,warpPointDirector=null,nativeGunRange=null,warGateHandoff=null,warRecoverySocket=null,nativeOrderBridge=null,lootCommerce=null,nativeAmmoSupply=null,warTreasuryInstance=null;
 function bindWarRuntime(state){
  if(!state||typeof state!=="object")return false;
  if(state.bridge!==undefined)bridge=state.bridge||null;
@@ -27,6 +30,22 @@ function bindWarRuntime(state){
  if(state.nativeGateTransfer!==undefined)nativeGateTransfer=state.nativeGateTransfer||null;
  if(state.recognitionAnnouncer!==undefined)recognitionAnnouncer=state.recognitionAnnouncer||null;
  if(state.nativeAmmoWitness!==undefined)nativeAmmoWitness=state.nativeAmmoWitness||null;
+ if(state.lossBridge)lossBridge=state.lossBridge;
+ if(state.factionDirector)factionDirector=state.factionDirector;
+ if(state.raidDirector)raidDirector=state.raidDirector;
+ if(state.tacticsDirector)tacticsDirector=state.tacticsDirector;
+ if(state.pveSiteDefenseDirector)pveSiteDefenseDirector=state.pveSiteDefenseDirector;
+ if(state.pveWaveReinforcementsDirector)pveWaveReinforcementsDirector=state.pveWaveReinforcementsDirector;
+ if(state.pveObjectiveDoctrineDirector)pveObjectiveDoctrineDirector=state.pveObjectiveDoctrineDirector;
+ if(state.pveNativeBossDirector)pveNativeBossDirector=state.pveNativeBossDirector;
+ if(state.warpPointDirector)warpPointDirector=state.warpPointDirector;
+ if(state.nativeGunRange)nativeGunRange=state.nativeGunRange;
+ if(state.warGateHandoff)warGateHandoff=state.warGateHandoff;
+ if(state.warRecoverySocket)warRecoverySocket=state.warRecoverySocket;
+ if(state.nativeOrderBridge)nativeOrderBridge=state.nativeOrderBridge;
+ if(state.lootCommerce)lootCommerce=state.lootCommerce;
+ if(state.nativeAmmoSupply)nativeAmmoSupply=state.nativeAmmoSupply;
+ if(state.warTreasuryInstance)warTreasuryInstance=state.warTreasuryInstance;
  return true;
 }
 
