@@ -78,6 +78,18 @@ function chooseStation(rows, { corpID = 0, isMineral = () => false, isOre = () =
   return pick ? { stationID: pick[0], units: pick[1], kind: "mineral", ranked } : null;
 }
 
+// The governor throttles how much ore the corporation digs. A manufactured good is
+// not ore: it is stock the world has never seen, and the station that bids for it is
+// the only thing that should decide. Pure, so the rule is testable without a world.
+// Measured 2026-10-28: 5 chipsets waited in a hangar that really bids 53 700 while
+// 61 000 units of Tritanium were legitimately within demand, so ALLOW silenced the
+// one path that could have sold them.
+function shouldStart(kind, decision) {
+  if (String(kind || "") === "product") return { start: true, reason: "PRODUCT" };
+  if (!decision || decision.action === "ALLOW") return { start: false, reason: "WITHIN_DEMAND" };
+  return { start: true, reason: "OVERSTOCK" };
+}
+
 function note(reason, fleetRecord, payload = {}) {
   try {
     require("./coopRuntimeProbe").observe("living-station-drain", null,
@@ -250,11 +262,11 @@ function start(scene, fleetRecord, now) {
   if (now < num(fleetRecord.coopDrainNextAtMs)) {
     return skip("NOT_DUE", fleetRecord, { dueInMs: Math.round(num(fleetRecord.coopDrainNextAtMs) - now) });
   }
-  // Drain only what is really overstocked. The governor's own measurement is used
-  // (stock the corporation owns, against the same floor), and an unreadable demand
-  // falls back to the floor - never to "nothing to do": measured 2026-10-28 the
-  // governor reported DEMAND_UNKNOWN with 739 492 units held, so a HOLD-driven
-  // trigger never fired at all.
+  // The governor gate lives with the mineral branch further down: it throttles how
+  // much ore the corporation digs, and a manufactured good is not ore (measured
+  // 2026-10-28: 5 chipsets sat in a hangar that really bids 53 700 while 61 000
+  // units of Tritanium were legitimately within demand, so ALLOW silenced the only
+  // path that could sell them).
   let decision = null;
   try {
     const governor = require("./coopMiningDemandGovernor").serverGovernor();
@@ -265,13 +277,6 @@ function start(scene, fleetRecord, now) {
   } catch (error) {
     return skip("GOVERNOR_UNAVAILABLE", fleetRecord,
       { reason: String((error && error.message) || error).slice(0, 80) });
-  }
-  if (!decision || decision.action === "ALLOW") {
-    // Within demand: nothing to drain. The schedule is NOT pushed here - an ALLOW
-    // every tick used to postpone the drain for ever (measured 2026-10-28: the trip
-    // was due at 12:29 and had drifted to 12:49 without ever running).
-    return skip("WITHIN_DEMAND", fleetRecord, { held: num(decision && decision.held),
-      allowance: num(decision && decision.allowance) });
   }
   const haulerID = pos((fleetRecord.haulerEntityIDs || [])[0]);
   if (!haulerID) return skip("NO_HAULER", fleetRecord, {});
@@ -288,13 +293,40 @@ function start(scene, fleetRecord, now) {
   }
   const chosen = chooseStation(rows, { corpID, isMineral: isMineralType, isOre: isOreType, now });
   if (!chosen) return skip("NO_MINERAL_STOCK", fleetRecord, { rows: rows.length });
+  if (chosen.kind === "mineral") {
+    // Drain only what is really overstocked. The governor's own measurement is used
+    // (stock the corporation owns, against the same floor), and an unreadable demand
+    // falls back to the floor - never to "nothing to do": measured 2026-10-28 the
+    // governor reported DEMAND_UNKNOWN with 739 492 units held, so a HOLD-driven
+    // trigger never fired at all.
+    try {
+      const governor = require("./coopMiningDemandGovernor").serverGovernor();
+      const measured = governor.measure(now) || {};
+      const floorUnits = Math.max(0, num(process.env.EVEJS_COOP_MINING_DEMAND_FLOOR) || 20000);
+      decision = governor.decide({ stock: num(measured.stockUnits), demand: num(measured.demand),
+        floorUnits, now });
+    } catch (error) {
+      return skip("GOVERNOR_UNAVAILABLE", fleetRecord,
+        { reason: String((error && error.message) || error).slice(0, 80) });
+    }
+    // Within demand: nothing to drain. The schedule is NOT pushed here - an ALLOW
+    // every tick used to postpone the drain for ever (measured 2026-10-28: the trip
+    // was due at 12:29 and had drifted to 12:49 without ever running).
+    const gate = shouldStart(chosen.kind, decision);
+    if (!gate.start) {
+      return skip("WITHIN_DEMAND", fleetRecord, { held: num(decision && decision.held),
+        allowance: num(decision && decision.allowance) });
+    }
+  }
   const point = stationPoint(scene, chosen.stationID);
   if (!point) return skip("STATION_NOT_PHYSICAL", fleetRecord, { stationID: chosen.stationID });
   fleetRecord[PHASE] = { step: "travel", haulerID, stationID: chosen.stationID,
     units: chosen.units, startedAtMs: now, warpIssuedAtMs: 0, calls: 0, nextCallAtMs: 0,
-    held: decision.held, allowance: decision.allowance };
+    held: num(decision && decision.held), allowance: num(decision && decision.allowance),
+    kind: chosen.kind };
   note("STARTED", fleetRecord, { haulerID, stationID: chosen.stationID, units: chosen.units,
-    held: decision.held, allowance: decision.allowance });
+    kind: chosen.kind, held: num(decision && decision.held),
+    allowance: num(decision && decision.allowance) });
   // The trip itself now owns the schedule; a failed one is retried after a full
   // interval, never in a hot loop.
   fleetRecord.coopDrainNextAtMs = now + intervalMs();
@@ -306,4 +338,5 @@ function start(scene, fleetRecord, now) {
   return true;
 }
 
-module.exports = { active, start, tick, chooseStation, intervalMs, ENABLED, PHASE, coolDown, onCooldown };
+module.exports = { active, start, tick, chooseStation, intervalMs, ENABLED, PHASE, coolDown, onCooldown,
+  shouldStart };

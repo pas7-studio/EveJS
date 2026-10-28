@@ -244,11 +244,27 @@ function saleReceiptMatches(row,m){return saleReceiptCovers(row,m,0)}
     const key=name.slice(0,-5);
     if(!keyPattern.test(key))return fail("ALIFE12_MANIFEST_FILENAME_INVALID");
     const m=sourceRecord(key);
-    if(m.systemID!==systemID||m.fleetID!==fleetID||
-       !equal(m.haulerIDs,sorted))return fail("ALIFE12_MANIFEST_FLEET_CONFLICT");
+    if(m.systemID!==systemID||m.fleetID!==fleetID)
+      return fail("ALIFE12_MANIFEST_FLEET_CONFLICT");
     // A closed route is closed for good: never re-account a manifest the operator or
     // the deadline already expired, or a stale sale would block the fleet forever.
     if(expiryOf(key)||abandonedOf(key))continue;
+    // Only a route that can still be flown is a conflict. A restored durable fleet has
+    // new hulls, so a manifest naming the previous ones can never be honoured - and
+    // refusing for ever deadlocked the fleet in "loaded" (measured 2026-10-28: one 12:11
+    // route naming hull 980000000032 blocked 30000145-960004641 for hours, because this
+    // check failed before the expiry that would have closed it could ever run).
+    // Past its deadline the route is expired by its own durable record and the scan
+    // continues; before it, the conflict is real and stays refused. Nothing is
+    // delivered, credited or invented either way: the ore still sits in whatever hull
+    // carries it, and the next manifest declares exactly that.
+    if(!equal(m.haulerIDs,sorted)){
+     const overdue=overdueOf(key,m);
+     if(!overdue.overdue)return fail("ALIFE12_MANIFEST_FLEET_CONFLICT",overdue);
+     const shut=expire({manifestKey:key,systemID,fleetID});
+     if(shut.status!=="ROUTE_EXPIRED"&&shut.status!=="ALREADY_EXPIRED")return shut;
+     continue;
+    }
     let active=0,accounted=0,undeclared=null;
     const declared=new Set(m.cargo.map(x=>x.cargoID));
     for(const [id,rows] of ships)

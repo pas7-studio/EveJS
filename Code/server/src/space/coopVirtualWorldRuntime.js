@@ -4551,6 +4551,10 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
    const wanted=[...new Set(sellTypes.filter(typeID=>
     liftedTypes.has(Number(typeID))||
     !types.length||types.map(Number).includes(Number(typeID))))];
+   // The stock the lift has just put aboard comes first: it is what this station is
+   // being asked for, and an allowlist of 43 types must not be walked alphabetically.
+   wanted.sort((left,right)=>(liftedTypes.has(Number(right))?1:0)-
+    (liftedTypes.has(Number(left))?1:0));
    if(!wanted.length)last="NO_ALLOWED_ORE";
    for(const typeID of wanted){
     // Several stacks of one ore type are still one merchant action. Keep going
@@ -4569,7 +4573,12 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
       // several types and one empty allowlisted type used to break the loop before the
       // minerals were ever tried (measured 2026-10-28: a drain visit settled
       // NOT_SOLD NO_REAL_NATIVE_CARGO while 56 lift rows sat in the hold).
-      hardFail=!["NO_REAL_NATIVE_CARGO","NO_ELIGIBLE_STACK","TYPE_NOT_ALLOWLISTED"].includes(last);
+      // "This station does not bid for THIS type" is the same story one step later:
+      // measured 2026-10-28 the 5 manufactured chipsets were lifted into the hauler and
+      // the batch ended NO_SEEDED_COUNTERPARTY on an unrelated ore type, so the one type
+      // this station really bids 53 700 for was never asked for at all.
+      hardFail=!["NO_REAL_NATIVE_CARGO","NO_ELIGIBLE_STACK","TYPE_NOT_ALLOWLISTED",
+        "NO_SEEDED_COUNTERPARTY"].includes(last);
       break;
      }
      settlements++;
