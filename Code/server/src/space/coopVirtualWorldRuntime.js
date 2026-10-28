@@ -864,7 +864,19 @@ function advanceNativeWarOpening(){
  }catch(_error){/* the war state is optional here */}
  const tickSystems=knownSystems.slice(0,12);
  let result;
- try{result=warOpening.tick({systemIDs:tickSystems})}
+ // FW-062: hand the opener the real funding state. A live campaign whose escrow
+ // vanished (measured: the treasury row reverted and two ASSAULT campaigns kept
+ // running with nothing behind them) cannot pay anybody, so it is expired instead of
+ // squatting its target forever. Unreadable money is NOT treated as missing.
+ let isCampaignFunded=null;
+ try{
+  const treasury=warTreasuryStore(),snapshot=treasury.snapshot();
+  const rows=Object.values((snapshot&&snapshot.reservations)||{});
+  const funded=new Set(rows.filter(row=>row&&(row.status==="HELD"||row.status==="PAID"))
+   .map(row=>String(row.campaignID||"")));
+  isCampaignFunded=campaign=>funded.has(String(campaign&&campaign.campaignID||""));
+ }catch(_error){isCampaignFunded=null}
+ try{result=warOpening.tick({systemIDs:tickSystems,isCampaignFunded})}
  catch(error){
   warSkip("opening","OPENING_THROW:"+String(error&&error.message||error));
   return;

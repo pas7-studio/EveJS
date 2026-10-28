@@ -63,6 +63,38 @@ function coolingDown(targetSystemID, nowMs, ttlMs = stallMs(), state = null) {
   return false;
 }
 
+// FW-062 (validation): a live campaign with no escrow on ANY side can never pay
+// anybody. Under REQUIRE_FUNDING=1 a campaign only opens when both sides really
+// reserved, so "no HELD and no PAID row" means the money was lost (measured today:
+// the FW-050 store defect reverted the treasury row and two ASSAULT campaigns kept
+// running with nothing behind them). Leaving them live squats the target forever and
+// hides the loss; expiring them releases the claim so a funded campaign can open.
+// A campaign with a PAID row is never expired: that escrow did exist and was spent.
+function expireUnfundedCampaigns(state, { nowMs = Date.now(), isFunded = null } = {}) {
+  const campaignIDs = [];
+  if (!state || !state.campaigns || typeof isFunded !== "function") return { campaignIDs };
+  const at = num(nowMs) > 0 ? num(nowMs) : Date.now();
+  for (const campaign of Object.values(state.campaigns)) {
+    if (!campaign) continue;
+    if (!["PREPARING", "ASSAULT"].includes(String(campaign.state))) continue;
+    let funded = true;
+    try { funded = isFunded(campaign) === true; } catch (_error) { funded = true; }
+    if (funded) continue;
+    campaign.state = "EXPIRED";
+    campaign.revision = num(campaign.revision) + 1;
+    campaign.expiredAt = at;
+    campaign.expiredReason = "WAR_ESCROW_MISSING";
+    campaignIDs.push(campaign.campaignID);
+    recentlyExpired.set(num(campaign.targetSystemID), at);
+    const target = state.territories && state.territories[String(campaign.targetSystemID)];
+    const stillContested = liveCampaignFor(state, campaign.targetSystemID);
+    if (target && target.state === "CONTESTED" && !stillContested) {
+      state.territories[String(campaign.targetSystemID)] = { ...target,
+        state: "SECURE", revision: num(target.revision) + 1, changedAt: at };
+    }
+  }
+  return { campaignIDs };
+}
 function expireStalledCampaigns(state, { nowMs = Date.now(), ttlMs = stallMs() } = {}) {
   const campaignIDs = [];
   if (!state || !state.campaigns || !(num(ttlMs) > 0)) return { campaignIDs };
@@ -605,7 +637,7 @@ function createWarOpening({
     throw Error("WAR_OPENING_AUTHORITIES_REQUIRED");
   }
   let busy = false;
-  function tick({ systemIDs = [] } = {}) {
+  function tick({ systemIDs = [], isCampaignFunded = null } = {}) {
     if (busy) return { status: "BUSY" };
     if (!Array.isArray(systemIDs) || systemIDs.length > 20) return { status: "INVALID_SYSTEMS" };
     busy = true;
@@ -621,6 +653,15 @@ function createWarOpening({
       // planner asks which targets are already contested.
       let expiredCampaignIDs = [];
       try {
+        // FW-062: a live campaign whose escrow vanished cannot pay anyone, so it is
+        // expired (and its claim released) before the planner runs.
+        const unfunded = expireUnfundedCampaigns(state, { nowMs: num(now()),
+          isFunded: typeof isCampaignFunded === "function" ? isCampaignFunded : null });
+        if (unfunded.campaignIDs.length) {
+          core.validateState(state);
+          writeWarState(state);
+          expiredCampaignIDs = unfunded.campaignIDs.slice();
+        }
         const expiry = expireStalledCampaigns(state, { nowMs: num(now()) });
         if (expiry.campaignIDs.length) {
           core.validateState(state);
@@ -687,6 +728,7 @@ function createWarOpening({
 module.exports = {
   nextCampaignID,
   gateBetween, collectPresence, territoriesForFronts, paperFunding, presenceSummary,
+  expireUnfundedCampaigns,
   fundingRequired, supplyFor,
   activeWarFor, liveCampaignFor, buildProofs, planWars, applyOpenings, applyOpening,
   expireStalledCampaigns, stallMs, coolingDown,
