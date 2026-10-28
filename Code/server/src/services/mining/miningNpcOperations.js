@@ -2996,28 +2996,53 @@ function completeHaulCycle(scene, fleetRecord, now) {
             if (approach.status !== "WARPED_TO_MINER") {
               if (haulerWarping) {
                 approach = {...approach, gap, status: "ALREADY_WARPING"};
-              } else if (String(hauler.mode || "").toUpperCase() === "FOLLOW" &&
-                Number(hauler.targetEntityID) === Number(minerID)) {
-                // Re-issuing the same follow every five seconds restarted the very approach
-                // it was waiting for: measured, the gap oscillated around 3.3-4.9 km while
-                // the transfer range is 2 500 m. Leave a correct order alone.
-                approach = {...approach, gap, status: "ALREADY_FOLLOWING"};
+              } else if (
+                (String(hauler.mode || "").toUpperCase() === "FOLLOW" &&
+                  Number(hauler.targetEntityID) === Number(minerID)) ||
+                (String(hauler.mode || "").toUpperCase() === "ORBIT" &&
+                  Number(hauler.targetEntityID) === toInt(fleetRecord.activeAsteroidID, 0))
+              ) {
+                // Re-issuing the same order every five seconds restarted the very approach it
+                // was waiting for: measured, the gap oscillated around 3.3-4.9 km while the
+                // transfer range is 2 500 m. Leave a correct order alone.
+                approach = {...approach, gap, status: "ALREADY_APPROACHING"};
               } else {
-                // Measured 2026-10-27: npcRuntime.follow() sets the scene movement mode and
-                // the stock NPC behaviour loop re-tasks the hull on its next think. The same
-                // trap is already documented in this codebase ("a one-shot follow loses to
-                // the NPC's own loop"). The measured result was mode FOLLOW, speedFraction 1
-                // and a FROZEN 3 221 m gap over dozens of attempts. A manual order is the
-                // path the behaviour loop itself honours, so the approach must use it.
+                // Measured 2026-10-27: the hauler is spawned with behaviour profile
+                // `movementMode: "stop"` (see the spawn path below), so every follow order is
+                // consumed once and the hull is then re-stopped by its own loop - measured as
+                // mode STOP with target 0 and a frozen 3 221 m gap while the hauler sat 750 m
+                // from the rock and its miner 3-6 km away. Change the PROFILE to orbit the
+                // fleet's own asteroid and give the matching order: both hulls then converge
+                // on the same rock, which is inside the 2 500 m transfer range.
+                const rockID = toInt(fleetRecord.activeAsteroidID, 0);
                 const npcService = require("../../space/npc/npcService");
-                const order = typeof npcService.issueManualOrder === "function"
-                  ? npcService.issueManualOrder(haulerID, {
-                    type: "follow", targetID: minerID, followRangeMeters: 500,
-                    allowWeapons: false,
-                  })
-                  : (typeof npcRuntime.follow === "function"
-                    ? npcRuntime.follow(haulerID, minerID, 500) : null);
-                approach = {...approach, gap, status: order && order.success === true ? "FOLLOWING_MINER" : "FOLLOW_REFUSED", nativeReason: String((order && order.errorMsg) || approach.nativeReason || "").slice(0, 48)};
+                let order = null;
+                if (rockID > 0) {
+                  applyPassiveMiningFleetOverrides(haulerID, {
+                    movementMode: "orbit",
+                    orbitDistanceMeters: 1_000,
+                    followRangeMeters: 1_000,
+                    idleAnchorOrbit: false,
+                    issueStopOrder: false,
+                    clearCombatPreference: false,
+                  });
+                  order = typeof npcService.issueManualOrder === "function"
+                    ? npcService.issueManualOrder(haulerID, {
+                      type: "orbit", targetID: rockID, orbitDistanceMeters: 1_000,
+                      allowWeapons: false,
+                    })
+                    : null;
+                }
+                if (!order || order.success !== true) {
+                  order = typeof npcService.issueManualOrder === "function"
+                    ? npcService.issueManualOrder(haulerID, {
+                      type: "follow", targetID: minerID, followRangeMeters: 500,
+                      allowWeapons: false,
+                    })
+                    : (typeof npcRuntime.follow === "function"
+                      ? npcRuntime.follow(haulerID, minerID, 500) : null);
+                }
+                approach = {...approach, gap, rockID, status: order && order.success === true ? "APPROACH_ISSUED" : "APPROACH_REFUSED", nativeReason: String((order && order.errorMsg) || approach.nativeReason || "").slice(0, 48)};
               }
             }
           }
