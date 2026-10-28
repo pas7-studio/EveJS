@@ -97,9 +97,12 @@ function createEscortFlightGate({root,io=fs,clock=()=>Date.now(),
    m.stationID!==route.stationID||m.corporationID!==route.corporationID||
    !equal(m.haulerIDs,route.haulerIDs))
    return blocked("FLIGHT_MANIFEST_NOT_VERIFIED");
+  // Both shapes travel with the request: the runtime and the native mount
+  // read `haulerIDs` while this gate historically sent only `haulerID`.
   let offer;try{offer=authorizeBooking({manifestKey:key,systemID:m.systemID,
    fleetID:m.fleetID,stationID:m.stationID,corporationID:m.corporationID,
-   haulerID:m.haulerIDs[0],cargoIDs:m.cargo.map(x=>x.cargoID)})}
+   haulerID:m.haulerIDs[0],haulerIDs:[m.haulerIDs[0]],
+   cargoIDs:m.cargo.map(x=>x.cargoID)})}
   catch{return blocked("FLIGHT_BOOKING_AUTHORITY_UNAVAILABLE")}
   const b={contractID:offer?.contractID,manifestKey:key,systemID:m.systemID,
    fleetID:m.fleetID,haulerID:m.haulerIDs[0],stationID:m.stationID,

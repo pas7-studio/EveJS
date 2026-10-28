@@ -39,25 +39,31 @@ function createNativeMount({root,gameStore,corporations,npcStore,items,
  const outcomes=readOutcomes||(()=>createOutcomes({incidents:inc}).snapshot());
  const approved=new Map(); // cache is NOT durable authority; re-read server offer below.
  function approve(route){
+  // The flight gate calls this with `haulerID` (singular); a persisted
+  // manifest route carries `haulerIDs`. Accept either shape, never both
+  // silently: the resolved list must still be exactly one positive ID.
+  const haulerIDs=Array.isArray(route?.haulerIDs)?route.haulerIDs:
+   pos(route?.haulerID)?[route.haulerID]:[];
   if(!route||typeof route.manifestKey!=="string"||
    !/^\d+-\d+-\d+$/.test(route.manifestKey)||
    ![route.systemID,route.fleetID,route.stationID,route.corporationID]
-    .every(pos)||!Array.isArray(route.haulerIDs)||route.haulerIDs.length!==1||
-   !pos(route.haulerIDs[0]))return deny("DENIED_PREWARP_ROUTE_INVALID");
-  let a,source;try{source=manifest.read(route.manifestKey);a=readAuthorizedOffer(route)}
+    .every(pos)||haulerIDs.length!==1||
+   !pos(haulerIDs[0]))return deny("DENIED_PREWARP_ROUTE_INVALID");
+  let a,source;try{source=manifest.read(route.manifestKey);
+   a=readAuthorizedOffer({...route,haulerIDs})}
   catch{return deny("DENIED_NATIVE_OFFER_UNAVAILABLE")}
   if(source?.status!=="READY"||
    source.record.systemID!==route.systemID||
    source.record.fleetID!==route.fleetID||
    source.record.stationID!==route.stationID||
    source.record.corporationID!==route.corporationID||
-   !same(source.record.haulerIDs,route.haulerIDs))
+   !same(source.record.haulerIDs,haulerIDs))
    return deny("DENIED_PREWARP_MANIFEST_UNVERIFIED");
   if(a?.status!=="AUTHORIZED_NATIVE_ESCORT_BOOKING"||
    a.manifestKey!==route.manifestKey||
    a.systemID!==route.systemID||a.fleetID!==route.fleetID||
    a.stationID!==route.stationID||a.corporationID!==route.corporationID||
-   a.haulerID!==route.haulerIDs[0]||
+   a.haulerID!==haulerIDs[0]||
    !Array.isArray(a.characters)||a.characters.length!==2||
    !a.characters.every(pos)||a.characters[0]>=a.characters[1]||
    !pos(a.playerFleetID)||!pos(a.amountISK)||
