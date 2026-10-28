@@ -494,18 +494,24 @@ function advanceNativeWarOpening(){
  }
  if(result.status!=="OPENED"){
   const reason=String(result.reason||result.status||"UNKNOWN");
-  // A refusal is a real answer, not a silent feature: publish what the world
-  // actually contained (owners, ties, front count) once per reason change.
-  if(warSkipReasons["opening"]!==reason){
+  const skips=Array.isArray(result.plan?.skipped)?result.plan.skipped:[];
+  // Deduplicate on the reason AND the per-border detail. Measured: a border that
+  // changed from "no navy" to "no money" kept the same top-level reason
+  // NO_OPENABLE_FRONT, so the new precondition was never published and the world
+  // looked frozen for an hour. Every distinct refusal now gets its own event.
+  const key=reason+"|"+JSON.stringify(skips).slice(0,600);
+  if(warSkipReasons["opening"]!==key){
    try{
     require("./coopRuntimeProbe").observe("living-native-war-opening-blocked",null,null,{
      status:"BLOCKED",reason,
      territories:result.plan?.territories||{},
      presence:result.plan?.summary||{},
      fronts:(result.plan?.fronts||[]).length,
+     skipped:skips.slice(0,8),
      evidence:"REAL_PRESENCE_DERIVED_NO_FRONT_INVENTED"
     });
    }catch(_error){/* probe is best effort */}
+   warSkipReasons["opening"]=key;
   }
   return warSkip("opening",reason);
  }
@@ -4549,10 +4555,27 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
    const wanted=[...new Set(sellTypes.filter(typeID=>
     liftedTypes.has(Number(typeID))||carried.has(Number(typeID))||
     !types.length||types.map(Number).includes(Number(typeID))))];
-   // The stock the lift has just put aboard comes first: it is what this station is
-   // being asked for, and an allowlist of 43 types must not be walked alphabetically.
-   wanted.sort((left,right)=>(liftedTypes.has(Number(right))?1:0)-
-    (liftedTypes.has(Number(left))?1:0));
+   // The finished good the hull carries goes first, then the stock the lift just put
+   // aboard, then everything else. A raw ore stack keeps selling on the next visit, but
+   // a manufactured product is the scarcest cargo this corporation owns, and a batch
+   // bounded to 8 settlements and 30 s must not spend itself on bulk minerals before it
+   // ever asks for the product (measured 2026-10-28: 5 chipsets rode along unsold).
+   const isRaw=typeID=>{
+    try{
+     const type=require("../services/inventory/itemTypeRegistry").resolveItemByTypeID(Number(typeID));
+     const category=Number(type&&type.categoryID);
+     return category===4||category===25; // Mineral / Ore
+    }catch(_error){return true}
+   };
+   const rank=typeID=>carried.has(Number(typeID))&&!isRaw(typeID)?0:
+    liftedTypes.has(Number(typeID))?1:2;
+   wanted.sort((left,right)=>rank(left)-rank(right));
+   try{
+    require("./coopRuntimeProbe").observe("living-npc-sale-batch",null,
+     {spaceState:{systemID:Number(systemID)}},
+     {stationID:Number(stationID),haulerID:Number(haulerID),typesGiven:types.length,
+      wanted:wanted.slice(0,10),carried:[...carried].slice(0,8),lifted:[...liftedTypes].slice(0,8)});
+   }catch(_error){/* telemetry must never stop a sale */}
    if(!wanted.length)last="NO_ALLOWED_ORE";
    for(const typeID of wanted){
     // Several stacks of one ore type are still one merchant action. Keep going
@@ -4567,6 +4590,16 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
       {withinBatch:settlements>0});
      if(result.status!=="TRADE_SETTLED"){
       last=String(result.status||"UNKNOWN");
+      // Every refusal of every type is observable: a whole batch used to end on an
+      // unrelated type and the settlement only carried the LAST status, which hid which
+      // type the market was actually asked for (measured 2026-10-28).
+      try{
+       require("./coopRuntimeProbe").observe("living-npc-sale-type",null,
+        {spaceState:{systemID:Number(systemID)}},
+        {stationID:Number(stationID),haulerID:Number(haulerID),typeID:Number(typeID),
+         status:last,rank:rank(typeID),carried:carried.has(Number(typeID)),
+         lifted:liftedTypes.has(Number(typeID))});
+      }catch(_error){/* telemetry must never stop a sale */}
       // "Nothing of THIS type aboard" is not a failure of the haul: the hold carries
       // several types and one empty allowlisted type used to break the loop before the
       // minerals were ever tried (measured 2026-10-28: a drain visit settled
