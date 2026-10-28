@@ -190,4 +190,30 @@ module.exports = {
   describeWave,
   capPlan,
   onWaveSpawn,
+  onNativeWaveSpawn,
 };
+
+// dungeonUniverseSiteService built this adapter object inline in stock source: 1131
+// characters of runtime plumbing per wave spawn. It now hands over the pieces and the
+// wiring lives here, so the native file keeps one call.
+function onNativeWaveSpawn({
+  scene, instance, plan, spawned, nowMs, totalWaves, dungeonRuntime, sessionRegistry, missionRuntime,
+}) {
+  return onWaveSpawn({ scene, instance, plan, spawned, nowMs, totalWaves }, {
+    mergeSpawnState: dungeonRuntime.mergeSpawnState,
+    hasSpawned: (key) => {
+      const live = dungeonRuntime.getInstance(instance.instanceID) || instance;
+      const state = live && live.spawnState && live.spawnState.encounterStatesByKey
+        && live.spawnState.encounterStatesByKey[key];
+      return Math.max(0, Number(state && state.spawnedAtMs) || 0) > 0;
+    },
+    trimCompletion: (instanceID, keys, at) => dungeonRuntime.mergeObjectiveState(instanceID, {
+      counters: { total_waves: keys.length },
+      metadata: { completionEncounterKeys: keys, totalWaves: keys.length },
+    }, { nowMs: at }),
+    sessionFor: (characterID) => sessionRegistry.getSessions()
+      .find((entry) => Number(entry && entry.characterID) === Number(characterID)),
+    missionUpdates: (characterID) => missionRuntime.getMissionInfoItems(characterID,
+      Number(instance && instance.metadata && instance.metadata.agentID) || 0, {}),
+  });
+}
