@@ -179,6 +179,25 @@ function start(scene, fleetRecord, now) {
   if (String(fleetRecord.state || "") !== "mining") return false;
   if (active(fleetRecord)) return true;
   if (now < num(fleetRecord.coopDrainNextAtMs)) return false;
+  // Drain only what is really overstocked. The governor's own measurement is used
+  // (stock the corporation owns, against the same floor), and an unreadable demand
+  // falls back to the floor - never to "nothing to do": measured 2026-10-28 the
+  // governor reported DEMAND_UNKNOWN with 739 492 units held, so a HOLD-driven
+  // trigger never fired at all.
+  let decision = null;
+  try {
+    const governor = require("./coopMiningDemandGovernor").serverGovernor();
+    const measured = governor.measure(now) || {};
+    const floorUnits = Math.max(0, num(process.env.EVEJS_COOP_MINING_DEMAND_FLOOR) || 20000);
+    decision = governor.decide({ stock: num(measured.stockUnits), demand: num(measured.demand),
+      floorUnits, now });
+  } catch (_error) { return false; }
+  if (!decision || decision.action !== "HOLD") {
+    // Within demand (or a trickle window): nothing to drain, and a trickle must be
+    // allowed to become a haul instead of being spent on a trip to the station.
+    fleetRecord.coopDrainNextAtMs = now + intervalMs();
+    return false;
+  }
   const haulerID = pos((fleetRecord.haulerEntityIDs || [])[0]);
   if (!haulerID) return false;
   const hauler = scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
@@ -189,11 +208,13 @@ function start(scene, fleetRecord, now) {
   try { rows = stockRows(corpID); } catch (_error) { return false; }
   const chosen = chooseStation(rows, { corpID, isMineral: isMineralType });
   if (!chosen) return false;
-  if (!stationPoint(scene, chosen.stationID)) return false;
   const point = stationPoint(scene, chosen.stationID);
+  if (!point) return false;
   fleetRecord[PHASE] = { step: "travel", haulerID, stationID: chosen.stationID,
-    units: chosen.units, startedAtMs: now, warpIssuedAtMs: 0, calls: 0, nextCallAtMs: 0 };
-  note("STARTED", fleetRecord, { haulerID, stationID: chosen.stationID, units: chosen.units });
+    units: chosen.units, startedAtMs: now, warpIssuedAtMs: 0, calls: 0, nextCallAtMs: 0,
+    held: decision.held, allowance: decision.allowance };
+  note("STARTED", fleetRecord, { haulerID, stationID: chosen.stationID, units: chosen.units,
+    held: decision.held, allowance: decision.allowance });
   try {
     require("./npc/npcRuntime").warpToPoint(haulerID, point,
       { forceImmediateStart: true, broadcastWarpStartToVisibleSessions: true });

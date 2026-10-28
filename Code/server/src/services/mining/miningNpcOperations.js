@@ -3177,9 +3177,10 @@ function tickMiningFleet(scene, fleetRecord, now, hooks) {
   // A drain trip owns the fleet while it flies (space/coopStationDrain.js).
   if (String(fleetRecord.state || "") === "mining") {
     try { const drain = require("../../space/coopStationDrain");
-      if (drain.active(fleetRecord)) { drain.tick(scene, fleetRecord, now); return; } } catch (_e) {}
+      if (drain.active(fleetRecord)) { drain.tick(scene, fleetRecord, now); return; }
+      if (drain.start(scene, fleetRecord, now)) return; } catch (_e) {}
   }
-  if (process.env.EVEJS_COOP_MINING_DEMAND_GOVERNOR === "1" && !fleetRecord.coopStationArrival && String(fleetRecord.state || "") === "mining") { try { if (require("../../space/coopMiningDemandGovernor").serverGovernor().hold(scene, fleetRecord)) { try { if (require("../../space/coopStationDrain").start(scene, fleetRecord, now)) return; } catch (_e) {} return; } } catch (_coopDemandError) { console.warn("[CoopMiningDemandGovernor]", _coopDemandError.message); } }
+  if (process.env.EVEJS_COOP_MINING_DEMAND_GOVERNOR === "1" && !fleetRecord.coopStationArrival && String(fleetRecord.state || "") === "mining") { try { if (require("../../space/coopMiningDemandGovernor").serverGovernor().hold(scene, fleetRecord)) { return; } } catch (_coopDemandError) { console.warn("[CoopMiningDemandGovernor]", _coopDemandError.message); } }
 
   const latestAggression = getLatestFleetAggression(scene, fleetRecord, now);
   if (
