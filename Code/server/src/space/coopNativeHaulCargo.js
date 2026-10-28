@@ -186,19 +186,26 @@ function strictTransferCargo(scene,fleet,miner,options,store,probe){
    if(!Array.isArray(existing)||existing.length>1000){
     skipped.push({haulerID,why:"cargo-unreadable"});continue;
    }
-   let used=0,valid=true;
+   let used=0,valid=true,badRow=null;
+   // Measured 2026-10-27: the hold carried the fleet's own lift-tagged minerals, and the
+   // whole hold was declared invalid (why "cargo-invalid", usedM3 0) so the hauler could
+   // never load again. Those rows legitimately belong to the CORPORATION - the same owner
+   // as the hauler itself - not to the miner's owner, so the custody rule is "not another
+   // party's cargo", not "exactly the miner's owner".
+   const allowedOwners=new Set([Number(minerOwner),Number(ship.ownerID)]);
    for(const row of existing){
     const type=resolveType(Number(row?.typeID));
     const unit=Number(type?.volume);
-    // Measured 2026-10-27: a hold carrying the fleet's own lift-tagged minerals made the
-    // whole hold invalid (why "cargo-invalid", usedM3 0) because those rows belong to the
-    // corporation/station rather than to the miner's owner. They still occupy volume, so
-    // they are counted, but they never poison the ore transfer.
-    const coopLiftRow=/^coop-mineral-lift:v1:/.test(String(row?.customInfo||""));
     if(!integer(Number(row?.cargoID))||!integer(Number(row?.quantity))||
       Number(row?.entityID)!==haulerID||
-      (Number(row?.ownerID)!==minerOwner&&!coopLiftRow)||
-      row.transient!==false||!Number.isFinite(unit)||unit<=0){valid=false;break;}
+      !allowedOwners.has(Number(row?.ownerID))||
+      row.transient!==false||!Number.isFinite(unit)||unit<=0){
+     valid=false;
+     badRow={cargoID:Number(row?.cargoID)||0,typeID:Number(row?.typeID)||0,
+      ownerID:Number(row?.ownerID)||0,entityID:Number(row?.entityID)||0,
+      transient:row?.transient===true,unit:Number.isFinite(unit)?unit:null};
+     break;
+    }
     used+=unit*Number(row.quantity);
    }
    if(valid&&Number.isFinite(used)&&used+volume<=capacity+1e-6){selected=ship;break;}
@@ -209,6 +216,7 @@ function strictTransferCargo(scene,fleet,miner,options,store,probe){
      Math.floor((free-1e-6)/unit));
    }
    skipped.push({haulerID,why:valid?"full":"cargo-invalid",
+    badRow,
     usedM3:Number.isFinite(used)?Math.round(used*100)/100:null,
     capacityM3:Math.round(capacity*100)/100,needM3:Math.round(volume*1000)/1000});
   }
