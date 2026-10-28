@@ -222,8 +222,21 @@ function warBountyReserve({war,campaign,campaignID,warID,persist}){
    continue;
   }
   if(funded.status!=="APPLIED"&&funded.status!=="DUPLICATE"){
-   refusals.push({factionID,reason:String(funded.reason||funded.status)});
-   continue;
+   const reason=String(funded.reason||funded.status);
+   // The levy reads PILOT earned balances, but this world already sweeps those
+   // into the corporation wallet on every refinery tick
+   // (`living-corp-treasury-swept`, 250 000 ISK moved by a pilot-earned debit).
+   // So a war party can hold real ISK in its native wallet and still plan a levy
+   // of zero: measured on the work stack, war_funding_diagnose answered
+   // NO_REAL_FACTION_INCOME on every side while that wallet held 125 M ISK that
+   // only real settlements ever put there. With this opt-in the escrow is backed
+   // by that same wallet: `coopWarTreasury` RESERVE verifies the corporation,
+   // debits division 1000 with a real journal entry and refuses when the money is
+   // not there, so no ISK is invented, only spent from where it already is.
+   const walletBacked=process.env.EVEJS_COOP_WAR_BOUNTY_WALLET_FALLBACK==="1"&&
+    ["NO_REAL_FACTION_INCOME","INSUFFICIENT_REAL_INCOME"].includes(reason);
+   if(!walletBacked){refusals.push({factionID,reason});continue}
+   refusals.push({factionID,reason:"BOUNTY_BACKED_BY_NATIVE_CORP_WALLET",chestRefusal:reason});
   }
   const reservationID="bounty:"+campaignID+":"+factionID;
   let reserved;
