@@ -874,11 +874,43 @@ function advanceNativeWarGarrison(){
  if(!warGarrison)warGarrison=garrison.createWarGarrison({
   readWarState:()=>warStateStore().read(),
   registry:nativeWarFleetRegistry(),
+  // A hull destroyed or despawned without a confirmed wreck keeps its custody
+  // row (absence is never destruction), but its identity must not stay bound to
+  // a ghost: that starved the garrison of commanders and froze the war with
+  // NO_FREE_PILOT_IDENTITY. A link whose ship is in no live scene is reclaimed
+  // here, and only then offered as a free pilot.
   listFreePilots:()=>{
-   const linked=new Set(Object.values(identityRegistry.snapshot()?.links||{})
-    .map(l=>String(l?.pilotID)));
-   return (world?.snapshot?.().pilots||[])
+   const native=require("./runtime");
+   const links=Object.values(identityRegistry.snapshot()?.links||{});
+   const linked=new Set(links.map(l=>String(l?.pilotID)));
+   const free=(world?.snapshot?.().pilots||[])
     .map(p=>String(p?.id||"")).filter(id=>id&&!linked.has(id));
+   for(const link of links){
+    const pilotID=String(link?.pilotID||"");
+    if(!pilotID)continue;
+    const systemID=Number(link?.systemID),entityID=Number(link?.entityID);
+    let live=false;
+    try{
+     const scene=native.scenes instanceof Map?native.scenes.get(systemID):null;
+     live=Boolean(scene&&typeof scene.getEntityByID==="function"&&
+      scene.getEntityByID(entityID));
+    }catch{live=false}
+    if(live)continue;
+    try{
+     const released=releaseSpawnedIdentity({pilotID,entityID,
+      reason:"GHOST_HULL_NO_SCENE"});
+     if(released?.status==="RELEASED")free.push(pilotID);
+    }catch{}
+   }
+   return free;
+  },
+  isHullLive:(systemID,entityID)=>{
+   try{
+    const native=require("./runtime");
+    const scene=native.scenes instanceof Map?native.scenes.get(Number(systemID)):null;
+    return Boolean(scene&&typeof scene.getEntityByID==="function"&&
+     scene.getEntityByID(Number(entityID)));
+   }catch{return false}
   },
   spawnFleet:({factionID,systemID,commanderPilotID,merit})=>
    require("./coopAdminBridge").executeRequest({

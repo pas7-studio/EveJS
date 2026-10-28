@@ -21,6 +21,7 @@ function createWarGarrison({
   registry,
   listFreePilots,
   spawnFleet,
+  isHullLive = null,
   clock = () => Date.now(),
   env = process.env,
   garrisonSize = 2,
@@ -31,6 +32,7 @@ function createWarGarrison({
     [readWarState, listFreePilots, spawnFleet].some(x => typeof x !== "function") ||
     !registry || typeof registry.snapshot !== "function" ||
     typeof clock !== "function" ||
+    (isHullLive !== null && typeof isHullLive !== "function") ||
     !Number.isInteger(garrisonSize) || garrisonSize < 1 || garrisonSize > 6 ||
     !Number.isSafeInteger(cooldownMs) || cooldownMs < 10000 ||
     !Number.isInteger(maxSpawnsPerTick) || maxSpawnsPerTick < 1 || maxSpawnsPerTick > 2
@@ -71,8 +73,17 @@ function createWarGarrison({
       for (const factionID of factions) {
         if (spawned >= maxSpawnsPerTick) break;
         const key = systemID + "|" + factionID;
+        // A registry row is custody, not a ship on the field. A hull that was
+        // destroyed or despawned without a confirmed wreck keeps its row (custody
+        // must not be released on absence alone), so counting rows made the
+        // garrison believe a physically empty side was fully manned and it never
+        // refilled. Count only hulls that are really in the scene.
+        const live = (s) => {
+          if (typeof isHullLive !== "function") return true;
+          try { return isHullLive(systemID, Number(s.entityID)) === true; } catch (_error) { return false; }
+        };
         const present = ships.filter(s => Number(s.systemID) === systemID &&
-          Number(s.factionID) === factionID).length;
+          Number(s.factionID) === factionID && live(s)).length;
         const missing = garrisonSize - present;
         if (missing <= 0) continue;
         if ((nextAt.get(key) || 0) > now) {
