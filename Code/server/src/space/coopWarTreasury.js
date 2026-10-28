@@ -71,7 +71,10 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
      state.reservations[id]:null;
     if(!key(id)||!pos(command.corporationID))
      return {status:"BLOCKED",reason:"INVALID_TREASURY_IDENTITY"};
-    if(command.type==="RESERVE"&&(r||
+    // A RESERVE naming a reservation that is already HELD is decided further
+    // down: it is a DUPLICATE when the campaign exists, and a REUSE when the
+    // campaign record is gone (an orphaned escrow must unblock its campaign).
+    if(command.type==="RESERVE"&&((r&&r.status!=="HELD")||
       !key(command.warID)||!key(command.campaignID)||
       !pos(command.factionID)||!pos(command.amountCents)||
       command.amountCents>100000000000||
@@ -102,11 +105,22 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
      return {status:"BLOCKED",reason:"WAR_TREASURY_FACTION_MISMATCH"};
     if(command.type==="RESERVE"){
      if(war.state!=="ACTIVE"||own(warState.campaigns,command.campaignID)||
-      Object.values(state.reservations).some(v=>v.warID===command.warID&&
-       v.campaignID===command.campaignID&&v.factionID===command.factionID&&
-       v.status==="HELD")||
       Object.keys(state.reservations).length>=MAX_RESERVATIONS)
       return {status:"BLOCKED",reason:"WAR_TREASURY_PURPOSE_UNAVAILABLE"};
+     // An ORPHANED escrow must unblock its own campaign. Measured on the work
+     // stack 2026-10-28: the campaign record was lost to a container recreate
+     // while its reservation stayed HELD, so every later opening refused with
+     // WAR_TREASURY_PURPOSE_UNAVAILABLE and 25 000 ISK stayed locked with no war
+     // to spend it on. When the campaign does not exist, a HELD reservation for
+     // the same purpose is REUSED (nothing is debited twice) instead of blocking.
+     const held=Object.values(state.reservations).find(v=>v.warID===command.warID&&
+      v.campaignID===command.campaignID&&v.factionID===command.factionID&&
+      v.status==="HELD");
+     if(held)return {status:"DUPLICATE",reused:true,receipt:{
+      type:"RESERVE",reservationID:held.reservationID,corporationID:held.corporationID,
+      factionID:held.factionID,warID:held.warID,campaignID:held.campaignID,
+      amountCents:held.cents,walletBeforeCents:null,walletAfterCents:null,
+      journalID:held.sourceJournalID||0,at:held.reservedAt||0,reused:true}};
     }else if(command.type==="PAYOUT"){
      // The escrow belongs to one campaign of one war. A payout must name the
      // campaign that really exists for this reservation.
