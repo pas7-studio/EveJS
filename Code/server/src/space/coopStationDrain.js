@@ -21,8 +21,8 @@ const ENABLED = () => String(process.env.EVEJS_COOP_STATION_DRAIN || "") === "1"
 const PHASE = "coopDrain";
 const MINERAL_CATEGORY = 4; // Tritanium, Pyerite, ... (refinery output)
 const ARRIVAL_METERS = 10000; // the market's own station-range for a sale
-const CALL_SPACING_MS = 14000; // the lift is async; a second visit sells what it loaded
-const MAX_CALLS = 3;
+const CALL_SPACING_MS = 14000; // the lift is async; a later call sells what it loaded
+const MAX_CALLS = 4; // the last call reads the settlement the earlier ones started
 
 function intervalMs() {
   const value = Number(process.env.EVEJS_COOP_STATION_DRAIN_INTERVAL_MS || 15 * 60 * 1000);
@@ -141,8 +141,16 @@ function tick(scene, fleetRecord, now) {
         types: [],
         scene,
       });
-      note("SALE_CALLED", fleetRecord, { call: state.calls,
-        status: String((result && (result.status || result.reason)) || "PENDING") });
+      const status = String((result && (result.status || result.reason)) || "PENDING");
+      // A settled answer carries what really happened; a PENDING call only started
+      // the job, so the previous settlement is left untouched.
+      if (status === "SOLD" || status === "NOT_SOLD") {
+        state.settlement = { status, isk: num(result.isk), quantity: num(result.quantity),
+          reason: String(result.reason || result.lastStatus || "").slice(0, 60),
+          sold: Array.isArray(result.sold) ? result.sold.slice(0, 6) : [] };
+      }
+      note("SALE_CALLED", fleetRecord, { call: state.calls, status,
+        isk: num(state.settlement && state.settlement.isk) });
     } catch (error) {
       note("SALE_THREW", fleetRecord, { call: state.calls,
         reason: String((error && error.message) || error).slice(0, 80) });
@@ -165,7 +173,13 @@ function tick(scene, fleetRecord, now) {
     }
     fleetRecord[PHASE] = null;
     fleetRecord.coopDrainNextAtMs = now + intervalMs();
-    note("COMPLETE", fleetRecord, { haulerID: num(state.haulerID), stationID: num(state.stationID) });
+    let residual = null;
+    try {
+      const rows = require("./npc/nativeNpcStore").listNativeCargoForEntity(num(state.haulerID)) || [];
+      residual = rows.filter((row) => /^coop-mineral-lift:v1:/.test(String(row.customInfo || ""))).length;
+    } catch (_error) { /* the report is best effort, the sale is not */ }
+    note("COMPLETE", fleetRecord, { haulerID: num(state.haulerID), stationID: num(state.stationID),
+      calls: num(state.calls), settlement: state.settlement || null, residualLiftRows: residual });
     return false;
   }
   fleetRecord[PHASE] = null;
