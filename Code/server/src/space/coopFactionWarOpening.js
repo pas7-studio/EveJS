@@ -397,7 +397,7 @@ function planWars({
         fronts: [{ frontID: front.frontID, edgeCount: 1, edges: [plannedEdge] }],
         nowMs,
         warID,
-        campaignID: warID + ":campaign:" + plannedTarget,
+        campaignID: nextCampaignID(state, warID, plannedTarget),
       });
       if (plan.status !== "PLANNED") { skipped.push({ edge, reason: plan.reason }); continue; }
       const held = Object.keys(territories)
@@ -422,6 +422,26 @@ function planWars({
 
 // Applies every planned opening through the authoritative core, reusing an
 // already declared war for the same faction pair.
+// A front that expired must be able to reopen, and the campaign id is deterministic
+// (war + target system), so the second attempt reused the same id and the same
+// processed eventID: the core answered DUPLICATE, nothing changed, and the runtime still
+// published "war opened" on every tick. Measured live: six "war opened" lines in ten
+// minutes for war:500001-500004:campaign:30003837 while the durable record stayed EXPIRED.
+// A terminal campaign therefore gives the next attempt its own id (:r2, :r3 ...), which the
+// core accepts as a new campaign; the old record stays as history.
+function nextCampaignID(state, warID, targetSystemID) {
+  const base = warID + ":campaign:" + targetSystemID;
+  const existing = Object.values((state && state.campaigns) || {})
+    .filter((campaign) => campaign && String(campaign.campaignID || "").startsWith(base));
+  if (!existing.some((campaign) => String(campaign.campaignID) === base)) return base;
+  let highest = 1;
+  for (const campaign of existing) {
+    const match = /^:r(\d+)$/.exec(String(campaign.campaignID).slice(base.length));
+    if (match) highest = Math.max(highest, Number(match[1]) || 1);
+  }
+  return base + ":r" + (highest + 1);
+}
+
 function applyOpenings({ state, plan, nowMs, reserveBounty, persistState } = {}) {
   if (!plan || plan.status !== "READY") return refuse("PLAN_NOT_READY");
   const at = num(nowMs) > 0 ? num(nowMs) : Date.now();
@@ -637,6 +657,7 @@ function createWarOpening({
 }
 
 module.exports = {
+  nextCampaignID,
   gateBetween, collectPresence, territoriesForFronts, paperFunding, presenceSummary,
   fundingRequired, supplyFor,
   activeWarFor, liveCampaignFor, buildProofs, planWars, applyOpenings, applyOpening,
