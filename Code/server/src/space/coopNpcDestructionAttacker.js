@@ -37,9 +37,24 @@ function verify({scene,victim,wreck,options={},links=[]}={}){
   Number(physicalWreck.itemID)!==wreckID||
   Number(physicalWreck.launcherID)!==victimID)
   return {status:"PHYSICAL_WRECK_MISSING"};
- const v=links.find(x=>named(x?.pilotID)&&Number(x.systemID)===systemID&&
-  Number(x.entityID)===victimID);
+ // FW-048: a war hull's IDENTITY LINK follows its virtual pilot, and the virtual
+ // world keeps moving that pilot between systems (x5 time acceleration), while the
+ // native hull stays where it was spawned. Measured at 19:59:42Z: a real killed
+ // war ship (entity 980000005122, coop-pilot-014) had a link whose systemID had
+ // already moved to 30045343, so the strict systemID match answered
+ // VICTIM_NOT_NAMED, the stock path then refused NOT_UNIQUE_NAMED_PIRATE, and a
+ // real kill earned nothing. Locality is already proven physically: the wreck is
+ // in this scene and belongs to THIS entity. A link is therefore accepted by
+ // entity identity even when its recorded position is stale; a link whose system
+ // still matches wins, and every non-matching system is reported as evidence.
+ const linkFor=(entityID)=>{
+  const byEntity=links.filter(x=>named(x?.pilotID)&&Number(x.entityID)===Number(entityID));
+  return byEntity.find(x=>Number(x.systemID)===systemID)||
+   (byEntity.length===1?byEntity[0]:null);
+ };
+ const v=linkFor(victimID);
  if(!v)return {status:"VICTIM_NOT_NAMED"};
+ const stalePosition=Number(v.systemID)!==systemID;
  const base={systemID,victimEntityID:victimID,victimPilotID:v.pilotID,wreckID};
  // This callback executes after native wreck creation. Source attribution
  // remains unproven until the upstream caller explicitly passes the
@@ -54,11 +69,11 @@ function verify({scene,victim,wreck,options={},links=[]}={}){
   .map(s=>positive(s?._space?.shipID)).filter(Boolean));
  if(playerShips.has(attackerID)||playerShips.has(victimID))
   return {status:"PLAYER_SHIP_EXCLUDED",...base};
- const a=links.find(x=>named(x?.pilotID)&&Number(x.systemID)===systemID&&
-  Number(x.entityID)===attackerID);
+ const a=linkFor(attackerID);
  if(!a||a.pilotID===v.pilotID)return {status:"ATTACKER_NOT_NAMED",...base};
  return {status:"NATIVE_DESTRUCTION_ATTACKER_PROVIDED",...base,
   attackerEntityID:attackerID,attackerPilotID:a.pilotID,
+  staleLinkPosition:stalePosition||Number(a.systemID)!==systemID,
   attribution:"UPSTREAM_DESTRUCTION_OPTIONS_ATTACKER_ENTITY"};
 }
 function note(scene,victim,options,wreck){

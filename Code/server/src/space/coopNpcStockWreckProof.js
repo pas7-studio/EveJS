@@ -26,12 +26,16 @@ function verifyStockKill({scene,victim,wreck,options={},links=[],fleets=[]}={}){
   Number(s?._space?.shipID)===attackerID||
   Number(s?._space?.shipID)===victimID))
   return {status:"PLAYER_SHIP_EXCLUDED"};
- if(links.some(l=>Number(l.entityID)===victimID&&
-  Number(l.systemID)===systemID))
+ // FW-048: a war hull's link follows its virtual pilot, and the virtual world
+ // keeps moving that pilot between systems while the native hull stays where it
+ // was spawned. Measured at 19:59:42Z: a named war ship's link had already moved
+ // to 30045343, so this stock path wrongly treated a NAMED victim as unnamed and
+ // then refused NOT_UNIQUE_NAMED_PIRATE - a real kill earned nothing. Locality is
+ // proven physically by the scene and the wreck, not by the link's position.
+ if(links.some(l=>Number(l.entityID)===victimID))
   return {status:"NAMED_VICTIM_USE_STANDARD_PROOF"};
  const attackerLinks=links.filter(l=>named(l?.pilotID)&&
-  Number(l.systemID)===systemID&&Number(l.entityID)===attackerID&&
-  l.role==="pirate");
+  Number(l.entityID)===attackerID&&l.role==="pirate");
  if(attackerLinks.length!==1)return {status:"NOT_UNIQUE_NAMED_PIRATE"};
  const stock=[];
  for(const fleet of fleets){
