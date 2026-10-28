@@ -533,25 +533,71 @@ function deriveTerritoryOwners(pilots){
  owners.sort((a,b)=>a.systemID-b.systemID);
  return owners;
 }
+// FW-045: a map derived under the old rule must be repairable without wiping the world.
+//
+// FW-044 corrected WHICH faction may own ground, but it could only act on an empty map,
+// and the live map was already mining-weighted, so the world kept refusing every front.
+// A territory that has never been fought over (revision 1, no campaign has ever used it)
+// whose owner fields NO armed presence there any more is re-derived from presence; a
+// system with no armed faction at all loses its owner, because nobody garrisons it.
+// Anything that was really captured or is being fought over is never touched.
+function planTerritoryBootstrap({territories,pilots}={}){
+ const current=territories||{};
+ const owners=deriveTerritoryOwners(pilots);
+ const desired=new Map(owners.map(o=>[String(o.systemID),o]));
+ const armedBySystem=new Map();
+ for(const pilot of Array.isArray(pilots)?pilots:[]){
+  const systemID=Number(pilot&&pilot.systemID),factionID=Number(pilot&&pilot.factionID);
+  if(!Number.isSafeInteger(systemID)||systemID<=0)continue;
+  if(!ARMED_ROLES.has(String(pilot&&pilot.role||"")))continue;
+  const key=String(systemID);
+  if(!armedBySystem.has(key))armedBySystem.set(key,new Set());
+  armedBySystem.get(key).add(Number(factionID));
+ }
+ const add=[],correct=[],release=[],keep=[];
+ for(const [key,owner] of desired){
+  const existing=current[key];
+  if(!existing){add.push(owner);continue;}
+  if(Number(existing.revision)>1){keep.push({systemID:Number(key),reason:"ALREADY_FOUGHT_OVER"});continue;}
+  const armed=armedBySystem.get(key)||new Set();
+  if(armed.has(Number(existing.militaryControllerFactionID))){
+   keep.push({systemID:Number(key),reason:"OWNER_STILL_ARMED"});
+   continue;
+  }
+  if(Number(existing.militaryControllerFactionID)!==owner.factionID)correct.push(owner);
+  else keep.push({systemID:Number(key),reason:"UNCHANGED"});
+ }
+ for(const [key,existing] of Object.entries(current)){
+  if(desired.has(key))continue;
+  if(Number(existing.revision)>1)keep.push({systemID:Number(key),reason:"ALREADY_FOUGHT_OVER"});
+  else release.push({systemID:Number(key),factionID:Number(existing.militaryControllerFactionID)});
+ }
+ return {add,correct,release,keep};
+}
 function bootstrapTerritoriesFromPresence(state){
  if(!state||!state.territories)return {status:"NO_STATE",added:0};
- if(Object.keys(state.territories).length>0)return {status:"ALREADY_PROJECTED",added:0};
  let pilots=[];
  try{pilots=warPresencePilots()||[]}catch(_error){pilots=[]}
  if(!pilots.length)return {status:"NO_PRESENCE",added:0};
- const owners=deriveTerritoryOwners(pilots);
+ const plan=planTerritoryBootstrap({territories:state.territories,pilots});
+ if(!plan.add.length&&!plan.correct.length&&!plan.release.length)
+  return {status:"NO_CHANGE",added:0,kept:plan.keep.length};
  const at=Date.now(),next={...state,territories:{...(state.territories||{})}};
- const added=[];
- for(const owner of owners){
+ const apply=(owner)=>{
   next.territories[String(owner.systemID)]={systemID:owner.systemID,
    originalOwnerFactionID:owner.factionID,militaryControllerFactionID:owner.factionID,
    state:"SECURE",revision:1,changedAt:at};
-  added.push({systemID:owner.systemID,factionID:owner.factionID,
-   ships:owner.ships,armed:owner.armed});
- }
- if(!added.length)return {status:"NO_DECISIVE_OWNER",added:0};
+ };
+ for(const owner of plan.add)apply(owner);
+ for(const owner of plan.correct)apply(owner);
+ for(const gone of plan.release)delete next.territories[String(gone.systemID)];
  warStateStore().write(next);
- return {status:"REGISTERED_FROM_PRESENCE",added:added.length,systems:added};
+ return {status:plan.add.length?"REGISTERED_FROM_PRESENCE":"CORRECTED_FROM_PRESENCE",
+  added:plan.add.length,corrected:plan.correct.length,released:plan.release.length,
+  kept:plan.keep.length,
+  systems:[...plan.add,...plan.correct].map(o=>({systemID:o.systemID,
+   factionID:o.factionID,ships:o.ships,armed:o.armed})),
+  releasedSystems:plan.release};
 }
 function advanceNativeWarSovereigntyProjection(){
  if(process.env.EVEJS_COOP_WAR_SOVEREIGNTY_PROJECTION!=="1")return;
@@ -561,10 +607,11 @@ function advanceNativeWarSovereigntyProjection(){
  // FW-043: an empty map is a bootstrap, not an answer.
  try{
   const boot=bootstrapTerritoriesFromPresence(state);
-  if(boot.status==="REGISTERED_FROM_PRESENCE"){
+  if(boot.status==="REGISTERED_FROM_PRESENCE"||boot.status==="CORRECTED_FROM_PRESENCE"){
    require("./coopRuntimeProbe").observe("living-native-war-territory-bootstrap",null,null,
-    {status:boot.status,added:boot.added,systems:boot.systems,
-     evidence:"REAL_PRESENCE_STRICT_MAJORITY_NO_INVENTED_OWNER"});
+    {status:boot.status,added:boot.added,corrected:boot.corrected,
+     released:boot.released,kept:boot.kept,systems:boot.systems,
+     evidence:"REAL_PRESENCE_STRICT_MAJORITY_ARMED_OWNER_NO_INVENTED_OWNER"});
    state=warStateStore().read();
    if(!state||!state.territories)return;
   }
@@ -4925,4 +4972,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
