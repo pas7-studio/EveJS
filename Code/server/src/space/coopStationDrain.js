@@ -35,18 +35,47 @@ const dist = (a, b) => (a && b ? Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) : I
 
 // Which station really holds the most refined minerals for this corporation.
 // Pure: takes the ownership rows and the mineral type test so it is testable.
-function chooseStation(rows, { corpID = 0, isMineral = () => false } = {}) {
+// A station that just answered "no seeded counterparty" is skipped for a while, so
+// the drain moves on to another hangar instead of re-visiting a market it emptied.
+const stationCooldown = new Map();
+const COOLDOWN_MS = 30 * 60 * 1000;
+function coolDown(stationID, now = Date.now()) {
+  const id = pos(stationID);
+  if (id) stationCooldown.set(id, now + COOLDOWN_MS);
+}
+function onCooldown(stationID, now = Date.now()) {
+  const until = stationCooldown.get(pos(stationID));
+  return Boolean(until && now < until);
+}
+function chooseStation(rows, { corpID = 0, isMineral = () => false, isOre = () => false,
+  now = Date.now() } = {}) {
   const totals = new Map();
+  const products = new Map();
   for (const row of Array.isArray(rows) ? rows : []) {
     if (Number(row?.ownerID) !== Number(corpID)) continue;
     const station = pos(row?.stationID || row?.locationID);
     const quantity = Math.max(0, num(row?.quantity));
     if (!station || quantity <= 0) continue;
-    if (!isMineral(Number(row?.typeID))) continue;
+    const typeID = Number(row?.typeID);
+    if (!isMineral(typeID) && !isOre(typeID)) {
+      // A manufactured good: nobody else in this world produces it, so it is the
+      // cargo the economy most needs to move. It outranks refinery minerals.
+      products.set(station, (products.get(station) || 0) + quantity);
+      continue;
+    }
+    if (!isMineral(typeID)) continue;
     totals.set(station, (totals.get(station) || 0) + quantity);
   }
+  const pickFrom = (map) => [...map.entries()]
+    .filter(([stationID]) => !onCooldown(stationID, now))
+    .sort((a, b) => b[1] - a[1])[0] || null;
+  const product = pickFrom(products);
+  if (product) return { stationID: product[0], units: product[1], kind: "product",
+    ranked: [...products.entries()] };
   const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
-  return ranked.length ? { stationID: ranked[0][0], units: ranked[0][1], ranked } : null;
+  const usable = ranked.filter(([stationID]) => !onCooldown(stationID, now));
+  const pick = usable[0] || ranked[0];
+  return pick ? { stationID: pick[0], units: pick[1], kind: "mineral", ranked } : null;
 }
 
 function note(reason, fleetRecord, payload = {}) {
@@ -64,6 +93,14 @@ function stockRows(corpID) {
   return rows;
 }
 
+function isOreType(typeID) {
+  try {
+    const type = require("../services/inventory/itemTypeRegistry").resolveItemByTypeID(Number(typeID));
+    return Number(type && type.categoryID) === 25; // Ore
+  } catch (_error) {
+    return false;
+  }
+}
 function isMineralType(typeID) {
   try {
     const type = require("../services/inventory/itemTypeRegistry").resolveItemByTypeID(Number(typeID));
@@ -178,6 +215,7 @@ function tick(scene, fleetRecord, now) {
       }
       return true;
     }
+    if (state.settlement && state.settlement.status === "NOT_SOLD") coolDown(state.stationID, now);
     fleetRecord[PHASE] = null;
     fleetRecord.coopDrainNextAtMs = now + intervalMs();
     let residual = null;
@@ -248,7 +286,7 @@ function start(scene, fleetRecord, now) {
     return skip("STOCK_UNREADABLE", fleetRecord,
       { reason: String((error && error.message) || error).slice(0, 80) });
   }
-  const chosen = chooseStation(rows, { corpID, isMineral: isMineralType });
+  const chosen = chooseStation(rows, { corpID, isMineral: isMineralType, isOre: isOreType, now });
   if (!chosen) return skip("NO_MINERAL_STOCK", fleetRecord, { rows: rows.length });
   const point = stationPoint(scene, chosen.stationID);
   if (!point) return skip("STATION_NOT_PHYSICAL", fleetRecord, { stationID: chosen.stationID });
@@ -268,4 +306,4 @@ function start(scene, fleetRecord, now) {
   return true;
 }
 
-module.exports = { active, start, tick, chooseStation, intervalMs, ENABLED, PHASE };
+module.exports = { active, start, tick, chooseStation, intervalMs, ENABLED, PHASE, coolDown, onCooldown };

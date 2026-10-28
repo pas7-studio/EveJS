@@ -19,6 +19,8 @@ const path = require("node:path");
 
 const HANGAR = 4;
 const REFINE_TAG = /^coop-refine:v1:[0-9]+:[0-9]+:mineral:[0-9]+$/;
+// Static per process like every other co-op flag: read once, never per row.
+const ANY_TYPE = () => String(process.env.EVEJS_COOP_LIFT_ANY_TYPE || "") === "1";
 const LIFT_TAG = "coop-mineral-lift:v1";
 
 const pos = (value) => {
@@ -44,7 +46,11 @@ function mineralStacks(rows, {ownerID, stationID} = {}) {
     .filter((row) => !owner || pos(row.ownerID) === owner)
     .filter((row) => !station || pos(row.locationID) === station)
     .filter((row) => Number(row.flagID === undefined ? HANGAR : row.flagID) === HANGAR)
-    .filter((row) => REFINE_TAG.test(String(row.customInfo || "")))
+    // Refinery output is the original subject, but the economy also produces real
+    // goods (manufactured modules); with EVEJS_COOP_LIFT_ANY_TYPE=1 the same custody
+    // -safe load carries any of the corporation's hangar stacks that the station
+    // really bids for, so a manufactured item reaches the market by the same path.
+    .filter((row) => ANY_TYPE() || REFINE_TAG.test(String(row.customInfo || "")))
     .filter((row) => pos(row.itemID) > 0 && pos(row.typeID) > 0 && stacksize(row) > 0)
     .sort((left, right) => pos(left.itemID) - pos(right.itemID));
 }
