@@ -134,7 +134,9 @@ function note({ proof, victim, emit, ledger: injected } = {}) {
   if (bountyPayer && killer.status !== "BLOCKED") {
     try {
       bounty = bountyPayer({pilotID: attackerPilotID, kind: "warship-kill",
-        wreckID, proofID: "wreck:" + wreckID});
+        wreckID, proofID: "wreck:" + wreckID,
+        // FW-078: the campaign is resolved from the victim's own mobilised hull.
+        victimEntityID: Number(p.victimEntityID) || 0});
     } catch (error) {
       bounty = {status: "UNAVAILABLE",
         reason: String((error && error.message) || error).slice(0, 120)};
@@ -147,7 +149,8 @@ function note({ proof, victim, emit, ledger: injected } = {}) {
   if (bountyPayer && awards[1] && awards[1].status !== "BLOCKED") {
     try {
       deathBenefit = bountyPayer({pilotID: victimPilotID, kind: "force-lost",
-        wreckID, proofID: "wreck:" + wreckID});
+        wreckID, proofID: "wreck:" + wreckID,
+        victimEntityID: Number(p.victimEntityID) || 0});
     } catch (error) {
       deathBenefit = {status: "UNAVAILABLE",
         reason: String((error && error.message) || error).slice(0, 120)};

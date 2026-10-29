@@ -340,6 +340,15 @@ function warBountyStore(){
   getFactionForCorporation:id=>factions.getFactionIDForCorporation(id),
   readCasualties:()=>nativeRows.readRow(gameStore,casualtyStore.TABLE,
    casualtyStore.KEY,casualtyStore.validate),
+  // FW-078: which campaign this exact hull was mobilised for, straight from the war
+  // fleet registry - the casualty ledger is not written yet when the kill is decided.
+  readCampaignForEntity:(entityID)=>{
+   try{
+    const ships=nativeWarFleetRegistry()?.snapshot?.()?.ships||{};
+    const row=ships[String(Number(entityID))]||ships[Number(entityID)];
+    return row&&row.campaignID?{campaignID:String(row.campaignID)}:null;
+   }catch(_error){return null}
+  },
   emit:(event,detail)=>{
    try{require("./coopRuntimeProbe").observe(event,null,null,detail);}
    catch(_error){/* probe is best effort */}

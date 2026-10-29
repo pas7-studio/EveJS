@@ -37,6 +37,7 @@ function factionOfPilot({pilotID, links = [], getNativeEntity, getFactionForCorp
 
 function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
   getNativeEntity, getFactionForCorporation, readCasualties = () => null,
+  readCampaignForEntity = null,
   emit = null, clock = () => Date.now(), env = process.env} = {}) {
   if (typeof treasury?.execute !== "function" ||
       typeof chest?.creditPilot !== "function" ||
@@ -50,7 +51,14 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
 
   // The campaign a real casualty really belongs to. A caller-supplied campaign
   // is only accepted when the durable casualty row agrees.
-  function campaignFor({wreckID, campaignID}) {
+  // FW-078: the casualty ledger is written by the WAR phase, but the bounty is decided
+  // inside the native destruction callback - so at that moment the wreck has no casualty
+  // row yet and the payer answered NO_REAL_CAMPAIGN_FOR_EVENT. Measured 14:47:30Z: a real
+  // attributed kill (merit PROMOTED for coop-pilot-007) could not be paid, and the same
+  // wreck only appeared in the ledger seconds later.
+  // The war FLEET registry is the authority that bound that exact hull to that exact
+  // campaign, so it answers immediately. The casualty row still wins when it exists.
+  function campaignFor({wreckID, campaignID, victimEntityID}) {
     let casualty = null;
     try {
       const row = readCasualties();
@@ -60,7 +68,14 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
       if (casualty && String(casualty.campaignID) !== String(campaignID)) return null;
       return String(campaignID);
     }
-    return casualty && key(casualty.campaignID) ? String(casualty.campaignID) : null;
+    if (casualty && key(casualty.campaignID)) return String(casualty.campaignID);
+    // No ledger row yet: ask which campaign the victim's own hull was mobilised for.
+    try {
+      const bound = typeof readCampaignForEntity === "function"
+        ? readCampaignForEntity(num(victimEntityID)) : null;
+      if (bound && key(bound.campaignID)) return String(bound.campaignID);
+    } catch (_error) { /* a missing registry answer is simply no campaign */ }
+    return null;
   }
 
   function reservationFor({campaignID, factionID}) {
@@ -75,12 +90,12 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
   // kind is the real merit event that pays; the escrow authorizer below decides
   // whether this exact event may release value.
   function pay({pilotID, kind, wreckID = 0, campaignID = "", proofID = "",
-    victimPilotID = ""} = {}) {
+    victimPilotID = "", victimEntityID = 0} = {}) {
     if (!enabled()) return {status: "DISABLED"};
     if (busy) return {status: "BLOCKED", reason: "WAR_BOUNTY_REENTRANT"};
     const pilot = pilotOf(pilotID);
     if (!pilot) return {status: "BLOCKED", reason: "INVALID_BOUNTY_PILOT"};
-    const campaign = campaignFor({wreckID, campaignID});
+    const campaign = campaignFor({wreckID, campaignID, victimEntityID});
     if (!campaign) return {status: "BLOCKED", reason: "NO_REAL_CAMPAIGN_FOR_EVENT"};
     let warState = null;
     try { warState = readWarState(); } catch (_error) { warState = null; }
