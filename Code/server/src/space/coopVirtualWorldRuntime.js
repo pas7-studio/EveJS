@@ -1019,9 +1019,10 @@ function advanceNativeWarOpening(){
    try{
     require("./coopRuntimeProbe").observe("living-native-war-opening-blocked",null,null,{
      status:"BLOCKED",reason,
-     territories:result.plan?.territories||{},
-     presence:result.plan?.summary||{},
-     fronts:(result.plan?.fronts||[]).length,
+     // FW-084: the applier's refusal now carries the planner's own view too.
+     territories:result.territories||result.plan?.territories||{},
+     presence:result.plan?.summary||result.presence||{},
+     fronts:Number(result.fronts)||(result.plan?.fronts||[]).length,
      // FW-081: which command and which border the state machine refused.
      refusedCommand:String(result.refusedCommand||""),
      refusedWarID:String(result.refusedWarID||""),

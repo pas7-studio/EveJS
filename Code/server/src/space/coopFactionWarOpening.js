@@ -676,8 +676,12 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = 
       const only = Array.isArray(plan.openings) && plan.openings.length === 1 &&
         firstSkip.startsWith("BORDER_REFUSED:")
         ? firstSkip.replace(/^BORDER_REFUSED:/, "") : "";
+      // FW-084: a refusal must still publish WHAT the planner saw. Without the derived
+      // territories and fronts, an empty map and a dropped edge look identical from
+      // outside - which hid a genuine owned+adjacent pair for a whole tick storm.
       return refuse(only || "NO_FUNDED_FRONT",
-        { state: current, applied, fundings, skipped });
+        { state: current, applied, fundings, skipped,
+          territories: plan.territories || {}, fronts: (plan.fronts || []).length });
     }
     return { status: "OPENED", state: current, warIDs, campaignIDs, applied, fundings, skipped };
   } catch (error) {
