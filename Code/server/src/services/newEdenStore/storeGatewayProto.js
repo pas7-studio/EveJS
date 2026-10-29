@@ -296,6 +296,254 @@ function buildNewEdenStoreGatewayProtoRoot() {
     )
     .add(new protobuf.Type("PurchaseResponse"));
 
+  // ---- catalog reads (store.category/offer/product) -------------------------
+  // The client asks these before it can draw the store at all. Field numbers and types
+  // come from the client's own eve_public/store/{category,offer,product,store}.proto.
+  root.define("eve_public.store")
+    .add(new protobuf.Enum("Catalog", {
+      CATALOG_UNSPECIFIED: 0,
+      CATALOG_NES: 1,
+      CATALOG_REAL_MONEY: 2,
+      CATALOG_ENTITLEMENT: 3,
+      CATALOG_VANGUARD_REAL_MONEY: 4,
+      CATALOG_VANGUARD_ENTITLEMENT: 5,
+    }))
+    .add(
+      new protobuf.Type("Price")
+        .add(new protobuf.Field("currency", 1, "string"))
+        .add(new protobuf.Field("amount_in_cents", 2, "int64")),
+    );
+
+  root.define("eve_public.inventory.genericitemtype").add(
+    new protobuf.Type("Identifier").add(
+      new protobuf.Field("sequential", 1, "uint32"),
+    ),
+  );
+
+  root.define("eve_public.store.category")
+    .add(
+      new protobuf.Type("Identifier")
+        .add(new protobuf.Field("sequential", 1, "uint32"))
+        .add(new protobuf.Field("catalog", 2, "eve_public.store.Catalog")),
+    )
+    .add(
+      new protobuf.Type("Subcategories").add(
+        new protobuf.Field(
+          "identifier",
+          1,
+          "eve_public.store.category.Identifier",
+          "repeated",
+        ),
+      ),
+    )
+    .add(
+      new protobuf.Type("Attributes")
+        .add(new protobuf.Field("name", 1, "string"))
+        .add(new protobuf.Field("no_parent", 2, "bool"))
+        .add(
+          new protobuf.Field(
+            "parent",
+            3,
+            "eve_public.store.category.Identifier",
+          ),
+        )
+        .add(new protobuf.Field("no_subcategories", 4, "bool"))
+        .add(
+          new protobuf.Field(
+            "subcategories",
+            5,
+            "eve_public.store.category.Subcategories",
+          ),
+        ),
+    );
+
+  root.define("eve_public.store.product")
+    .add(
+      new protobuf.Type("Identifier")
+        .add(new protobuf.Field("sequential", 1, "uint32"))
+        .add(new protobuf.Field("catalog", 2, "eve_public.store.Catalog")),
+    )
+    .add(
+      new protobuf.Type("EveItem")
+        .add(
+          new protobuf.Field(
+            "type",
+            1,
+            "eve_public.inventory.genericitemtype.Identifier",
+          ),
+        )
+        .add(new protobuf.Field("soulbound", 2, "bool")),
+    )
+    .add(
+      new protobuf.Type("Attributes")
+        .add(new protobuf.Field("name", 1, "string"))
+        .add(
+          new protobuf.Field("item", 2, "eve_public.store.product.EveItem"),
+        )
+        .add(new protobuf.Field("character_transfer", 5, "bool")),
+    );
+
+  root.define("eve_public.store.offer")
+    .add(
+      new protobuf.Type("Attributes")
+        .add(new protobuf.Field("name", 1, "string"))
+        .add(new protobuf.Field("tags", 2, "string", "repeated"))
+        .add(new protobuf.Field("single_purchase", 3, "bool"))
+        .add(new protobuf.Field("targeted", 4, "bool"))
+        .add(new protobuf.Field("no_enddate", 5, "bool"))
+        .add(new protobuf.Field("can_purchase", 7, "bool"))
+        .add(new protobuf.Field("purchase_limited_reason", 8, "string"))
+        .add(new protobuf.Field("no_schedule", 9, "bool"))
+        .add(new protobuf.Field("offer_price", 12, "eve_public.store.Price"))
+        .add(new protobuf.Field("base_price", 13, "eve_public.store.Price"))
+        .add(
+          new protobuf.Field(
+            "categories",
+            14,
+            "eve_public.store.category.Identifier",
+            "repeated",
+          ),
+        )
+        .add(
+          new protobuf.Field(
+            "products",
+            15,
+            "eve_public.store.offer.Product",
+            "repeated",
+          ),
+        ),
+    )
+    .add(
+      new protobuf.Type("Product")
+        .add(
+          new protobuf.Field(
+            "product",
+            1,
+            "eve_public.store.product.Identifier",
+          ),
+        )
+        .add(new protobuf.Field("quantity", 2, "uint32")),
+    );
+
+  // Requests and responses. The client may send page/token and language fields we do
+  // not read (an unknown field is skipped, not an error), and we never need to page a
+  // catalog of this size.
+  root.define("eve_public.store.category.api")
+    .add(
+      new protobuf.Type("GetRequest").add(
+        new protobuf.Field(
+          "category",
+          1,
+          "eve_public.store.category.Identifier",
+        ),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetResponse").add(
+        new protobuf.Field(
+          "attributes",
+          1,
+          "eve_public.store.category.Attributes",
+        ),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetAllRequest").add(
+        new protobuf.Field("catalog", 1, "eve_public.store.Catalog"),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetAllResponse").add(
+        new protobuf.Field(
+          "categories",
+          1,
+          "eve_public.store.category.Identifier",
+          "repeated",
+        ),
+      ),
+    );
+
+  root.define("eve_public.store.offer.api")
+    .add(
+      new protobuf.Type("GetRequest").add(
+        new protobuf.Field(
+          "offer",
+          1,
+          "eve_public.store.offer.Identifier",
+        ),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetResponse").add(
+        new protobuf.Field("attributes", 1, "eve_public.store.offer.Attributes"),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetAllRequest").add(
+        new protobuf.Field("catalog", 1, "eve_public.store.Catalog"),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetAllResponse").add(
+        new protobuf.Field(
+          "offers",
+          1,
+          "eve_public.store.offer.Identifier",
+          "repeated",
+        ),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetAllByTagRequest")
+        .add(new protobuf.Field("catalog", 1, "eve_public.store.Catalog"))
+        .add(new protobuf.Field("tag", 2, "string")),
+    )
+    .add(
+      new protobuf.Type("GetAllByTagResponse").add(
+        new protobuf.Field(
+          "offers",
+          1,
+          "eve_public.store.offer.Identifier",
+          "repeated",
+        ),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetAllTargetedRequest").add(
+        new protobuf.Field("catalog", 1, "eve_public.store.Catalog"),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetAllTargetedResponse").add(
+        new protobuf.Field(
+          "offers",
+          1,
+          "eve_public.store.offer.Identifier",
+          "repeated",
+        ),
+      ),
+    );
+
+  root.define("eve_public.store.product.api")
+    .add(
+      new protobuf.Type("GetRequest").add(
+        new protobuf.Field(
+          "product",
+          1,
+          "eve_public.store.product.Identifier",
+        ),
+      ),
+    )
+    .add(
+      new protobuf.Type("GetResponse").add(
+        new protobuf.Field(
+          "attributes",
+          1,
+          "eve_public.store.product.Attributes",
+        ),
+      ),
+    );
+
   return root;
 }
 

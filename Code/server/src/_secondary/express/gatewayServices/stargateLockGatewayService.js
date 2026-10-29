@@ -276,6 +276,10 @@ function createStargateLockGatewayService(context = {}) {
         return error(5, refusal, "eve_public.stargate.lock.api.admin.DeleteResponse");
       }
 
+      // Only GetAll reaches here: anything else must fall through to the next service.
+      if (requestTypeName !== "eve_public.stargate.lock.api.admin.GetAllRequest") {
+        return null;
+      }
       const list = locks.list();
       return {
         statusCode: 200,

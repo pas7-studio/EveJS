@@ -14,6 +14,7 @@ const {
 const {
   findPublicOffer,
   getFastCheckoutOffers,
+  getLegacyCatalog,
   findQuickPayToken,
   getQuickPayTokens,
   getStoreConfig,
@@ -22,6 +23,28 @@ const {
   __dirname,
   "../../../services/newEdenStore/storeState",
 ));
+const {
+  buildCategoryAttributes,
+  buildOfferAttributes,
+  buildProductAttributes,
+  categoryIdentifier,
+  offerIdentifier,
+  productIdentifier,
+  CATALOG_NES,
+} = require(path.join(
+  __dirname,
+  "../../../services/newEdenStore/storeCatalogMapping",
+));
+// The catalog the window reads: the same store state the purchase path fulfils from, so
+// a listed offer is always buyable at the listed price.
+function catalogOf() {
+  try {
+    return getLegacyCatalog(4) || { categories: [], products: [], offers: [] };
+  } catch (_error) {
+    return { categories: [], products: [], offers: [] };
+  }
+}
+
 const sessionRegistry = require(path.join(
   __dirname,
   "../../../services/chat/sessionRegistry",
@@ -34,6 +57,14 @@ const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.payment.purchase.api.CostRequest",
   "eve_public.payment.purchase.api.TokenRequest",
   "eve_public.plex.vault.api.PurchaseRequest",
+  // Catalog reads: the store window asks these before it can draw anything.
+  "eve_public.store.category.api.GetAllRequest",
+  "eve_public.store.category.api.GetRequest",
+  "eve_public.store.offer.api.GetAllRequest",
+  "eve_public.store.offer.api.GetAllByTagRequest",
+  "eve_public.store.offer.api.GetAllTargetedRequest",
+  "eve_public.store.offer.api.GetRequest",
+  "eve_public.store.product.api.GetRequest",
 ]);
 
 function toPositiveInteger(value, fallback = 0) {
@@ -64,6 +95,10 @@ function getCorrelationSuffix(requestEnvelope) {
   return correlationBytes.toString("hex");
 }
 
+// The catalog the client's New Eden Store window reads. The store state already holds
+// it (categories, products, offers with real PLEX prices) and the purchase path that
+// fulfils an offer already exists - only these reads were missing, so the window was
+// blank even though buying worked.
 function resolveStoreOfferID(order) {
   return String(
     order &&
@@ -252,7 +287,151 @@ function createNewEdenStoreGatewayService() {
     plexVaultPurchaseResponse: protoRoot.lookupType(
       "eve_public.plex.vault.api.PurchaseResponse",
     ),
+    categoryGetAllResponse: protoRoot.lookupType(
+      "eve_public.store.category.api.GetAllResponse",
+    ),
+    categoryGetRequest: protoRoot.lookupType(
+      "eve_public.store.category.api.GetRequest",
+    ),
+    categoryGetResponse: protoRoot.lookupType(
+      "eve_public.store.category.api.GetResponse",
+    ),
+    offerGetAllResponse: protoRoot.lookupType(
+      "eve_public.store.offer.api.GetAllResponse",
+    ),
+    offerGetAllByTagResponse: protoRoot.lookupType(
+      "eve_public.store.offer.api.GetAllByTagResponse",
+    ),
+    offerGetAllTargetedResponse: protoRoot.lookupType(
+      "eve_public.store.offer.api.GetAllTargetedResponse",
+    ),
+    offerGetRequest: protoRoot.lookupType("eve_public.store.offer.api.GetRequest"),
+    offerGetResponse: protoRoot.lookupType("eve_public.store.offer.api.GetResponse"),
+    productGetRequest: protoRoot.lookupType("eve_public.store.product.api.GetRequest"),
+    productGetResponse: protoRoot.lookupType("eve_public.store.product.api.GetResponse"),
   };
+
+  const CATALOG_REQUEST_TYPES = new Set([
+    "eve_public.store.category.api.GetAllRequest",
+    "eve_public.store.category.api.GetRequest",
+    "eve_public.store.offer.api.GetAllRequest",
+    "eve_public.store.offer.api.GetAllByTagRequest",
+    "eve_public.store.offer.api.GetAllTargetedRequest",
+    "eve_public.store.offer.api.GetRequest",
+    "eve_public.store.product.api.GetRequest",
+  ]);
+
+  function catalogAnswer(responseTypeName, type, payload) {
+    return {
+      statusCode: 200,
+      statusMessage: "",
+      responseTypeName,
+      responsePayloadBuffer: encodePayload(type, payload),
+    };
+  }
+
+  function catalogMissing(responseTypeName, message) {
+    return {
+      statusCode: 5,
+      statusMessage: message,
+      responseTypeName,
+      responsePayloadBuffer: Buffer.alloc(0),
+    };
+  }
+
+  // Every answer here comes from the store state the purchase path already fulfils
+  // from, so a listed offer is always buyable and a price is always the charged one.
+  function handleCatalogRequest(requestTypeName, requestEnvelope) {
+    const catalog = catalogOf();
+    const offers = Array.isArray(catalog.offers) ? catalog.offers : [];
+    const offerIdentifiers = (list) => list
+      .filter((offer) => offer && String(offer.storeOfferID || "").trim())
+      .map(offerIdentifier);
+
+    if (requestTypeName === "eve_public.store.category.api.GetAllRequest") {
+      return catalogAnswer("eve_public.store.category.api.GetAllResponse",
+        types.categoryGetAllResponse, {
+          categories: (Array.isArray(catalog.categories) ? catalog.categories : [])
+            .map((category) => categoryIdentifier(category && category.id)),
+        });
+    }
+
+    if (requestTypeName === "eve_public.store.category.api.GetRequest") {
+      const decoded = decodePayload(types.categoryGetRequest, requestEnvelope);
+      const categoryID = toPositiveInteger(
+        decoded && decoded.category && decoded.category.sequential,
+        0,
+      );
+      const category = (Array.isArray(catalog.categories) ? catalog.categories : [])
+        .find((candidate) => toPositiveInteger(candidate && candidate.id, 0) === categoryID);
+      if (!category) {
+        return catalogMissing("eve_public.store.category.api.GetResponse",
+          "store category not found");
+      }
+      return catalogAnswer("eve_public.store.category.api.GetResponse",
+        types.categoryGetResponse, {
+          attributes: buildCategoryAttributes(category, catalog),
+        });
+    }
+
+    if (requestTypeName === "eve_public.store.offer.api.GetAllByTagRequest") {
+      const decoded = decodePayload(types.offerGetAllByTagRequest || types.offerGetRequest,
+        requestEnvelope);
+      const tag = String((decoded && decoded.tag) || "").trim().toLowerCase();
+      const filtered = tag
+        ? offers.filter((offer) => (Array.isArray(offer.tags) ? offer.tags : [])
+          .some((value) => String(value).trim().toLowerCase() === tag))
+        : offers;
+      return catalogAnswer("eve_public.store.offer.api.GetAllByTagResponse",
+        types.offerGetAllByTagResponse, { offers: offerIdentifiers(filtered) });
+    }
+
+    if (requestTypeName === "eve_public.store.offer.api.GetAllTargetedRequest") {
+      // Nothing in this store is offered to one character in particular.
+      return catalogAnswer("eve_public.store.offer.api.GetAllTargetedResponse",
+        types.offerGetAllTargetedResponse, { offers: [] });
+    }
+
+    if (requestTypeName === "eve_public.store.offer.api.GetRequest") {
+      const decoded = decodePayload(types.offerGetRequest, requestEnvelope);
+      const storeOfferID = String(
+        (decoded && decoded.offer && decoded.offer.store_offer) || "",
+      ).trim();
+      const offer = offers.find((candidate) =>
+        String((candidate && candidate.storeOfferID) || "").trim() === storeOfferID);
+      if (!offer) {
+        return catalogMissing("eve_public.store.offer.api.GetResponse",
+          "store offer not found");
+      }
+      return catalogAnswer("eve_public.store.offer.api.GetResponse",
+        types.offerGetResponse, { attributes: buildOfferAttributes(offer) });
+    }
+
+    if (requestTypeName === "eve_public.store.product.api.GetRequest") {
+      const decoded = decodePayload(types.productGetRequest, requestEnvelope);
+      const productID = toPositiveInteger(
+        decoded && decoded.product && decoded.product.sequential,
+        0,
+      );
+      const product = (Array.isArray(catalog.products) ? catalog.products : [])
+        .find((candidate) => toPositiveInteger(candidate && candidate.id, 0) === productID);
+      if (!product) {
+        return catalogMissing("eve_public.store.product.api.GetResponse",
+          "store product not found");
+      }
+      return catalogAnswer("eve_public.store.product.api.GetResponse",
+        types.productGetResponse, {
+          attributes: buildProductAttributes(product, catalog),
+        });
+    }
+
+    if (requestTypeName === "eve_public.store.offer.api.GetAllRequest") {
+      return catalogAnswer("eve_public.store.offer.api.GetAllResponse",
+        types.offerGetAllResponse, { offers: offerIdentifiers(offers) });
+    }
+
+    return null;
+  }
 
   return {
     name: "new-eden-store",
@@ -260,6 +439,10 @@ function createNewEdenStoreGatewayService() {
     handleRequest(requestTypeName, requestEnvelope) {
       if (!HANDLED_REQUEST_TYPES.includes(requestTypeName)) {
         return null;
+      }
+
+      if (CATALOG_REQUEST_TYPES.has(requestTypeName)) {
+        return handleCatalogRequest(requestTypeName, requestEnvelope);
       }
 
       if (requestTypeName === "eve_public.payment.token.api.GetQuickPayRequest") {
