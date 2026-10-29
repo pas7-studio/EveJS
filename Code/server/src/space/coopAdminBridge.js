@@ -201,6 +201,51 @@ function executeRequest(request) {
       return { ok: false, error: "scene slim diagnose failed: " + String(error && error.message || error) };
     }
   }
+  if (action === "grant_evermarks") {
+    // EverMarks ARE loyalty points of the Heraldry issuer corporation (services/corporation/
+    // lpWalletState: EVERMARK_ISSUER_CORP_ID 1000419), so granting them means crediting that real
+    // ledger through the same function /addlp uses - not writing a number somewhere.
+    // characterID 0 means "every character the store knows".
+    const amount = Math.trunc(Number(request.amount) || 0);
+    if (!(amount > 0) || amount > 10_000_000) {
+      return { ok: false, error: "amount must be 1..10000000" };
+    }
+    try {
+      const wallet = require("../services/corporation/lpWalletState");
+      const issuerCorpID = Number(wallet.EVERMARK_ISSUER_CORP_ID) || 1000419;
+      const requested = Number(request.characterID) || 0;
+      let characterIDs = [];
+      if (requested > 0) {
+        characterIDs = [requested];
+      } else {
+        const read = require("../gameStore").read("characters", "/");
+        const rows = read && read.success === true && read.data && typeof read.data === "object"
+          ? Object.values(read.data)
+          : [];
+        characterIDs = rows
+          .map((row) => Number(row && (row.characterID || row.charID)) || 0)
+          .filter((id) => id > 0);
+      }
+      const results = [];
+      for (const characterID of [...new Set(characterIDs)]) {
+        const before = Number(wallet.getCharacterWalletLPBalance(characterID, issuerCorpID)) || 0;
+        const written = wallet.adjustCharacterWalletLPBalance(characterID, issuerCorpID, amount, {
+          reason: "admin grant_evermarks",
+        });
+        const after = Number(wallet.getCharacterWalletLPBalance(characterID, issuerCorpID)) || 0;
+        results.push({
+          characterID,
+          before,
+          after,
+          credited: after - before,
+          ok: Boolean(written && written.success !== false),
+        });
+      }
+      return { ok: true, issuerCorpID, amount, characters: results.length, results };
+    } catch (error) {
+      return { ok: false, error: "grant evermarks failed: " + String(error && error.message || error) };
+    }
+  }
   if (action === "inspect_npc") {
     // Read-only: what a native hull really carries right now.
     const entityID = Number(request.entityID) || 0;
