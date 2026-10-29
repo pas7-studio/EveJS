@@ -166,7 +166,21 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
       validators.pruned=pruned;
       validators.liveHeld=live;
      }
-     if(war.state!=="ACTIVE"||own(warState.campaigns,command.campaignID)||
+     // FW-109: a BOUNTY reserve is not an opening reserve. An opening puts the supply
+     // money aside BEFORE the campaign exists; a bounty is earned by a kill that can only
+     // happen INSIDE a live campaign, so it has to be allowed to reserve against the
+     // campaign that is already there. MEASURED on the play stack 2026-10-30: every real
+     // front kill answered WAR_TREASURY_PURPOSE_UNAVAILABLE (surfaced only as the opaque
+     // BLOCKED), so the wallet-backed bounty never paid once even with money in the
+     // faction's own wallet - the reserve path was structurally unreachable for a bounty.
+     const bountyReserve=command.type==="RESERVE"&&command.purpose==="BOUNTY";
+     const reserveCampaign=own(warState.campaigns,command.campaignID)?
+      warState.campaigns[command.campaignID]:null;
+     const purposeOK=bountyReserve?
+      Boolean(reserveCampaign&&reserveCampaign.warID===command.warID&&
+       ["PREPARING","ASSAULT"].includes(String(reserveCampaign.state))):
+      !reserveCampaign;
+     if(war.state!=="ACTIVE"||!purposeOK||
       Object.keys(state.reservations).length>=MAX_RESERVATIONS)
       return {status:"BLOCKED",reason:"WAR_TREASURY_PURPOSE_UNAVAILABLE",
        prunedReservations:pruned,liveEscrows:live};
@@ -179,7 +193,10 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
      const held=Object.values(state.reservations).find(v=>v.warID===command.warID&&
       v.campaignID===command.campaignID&&v.factionID===command.factionID&&
       v.status==="HELD");
-     if(held)return {status:"DUPLICATE",reused:true,receipt:{
+     // FW-109: an orphaned OPENING escrow is reused, but a bountied KILL owns its own
+     // escrow: two kills must never collapse into one reservation, or the second one
+     // pays nothing and the first is released twice.
+     if(held&&!bountyReserve)return {status:"DUPLICATE",reused:true,receipt:{
       type:"RESERVE",reservationID:held.reservationID,corporationID:held.corporationID,
       factionID:held.factionID,warID:held.warID,campaignID:held.campaignID,
       amountCents:held.cents,walletBeforeCents:null,walletAfterCents:null,
