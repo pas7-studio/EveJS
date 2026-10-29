@@ -77,6 +77,12 @@ class FlatbufferBuilder {
     this.buffer.writeUInt32LE(value >>> 0, this.head);
   }
 
+  _writeUint64(value) {
+    if (this.head < 8) this._grow(this.buffer.length * 2);
+    this.head -= 8;
+    this.buffer.writeBigUInt64LE(BigInt.asUintN(64, BigInt(value || 0)), this.head);
+  }
+
   // A uoffset points forward: its value is the distance from where it is written to its target.
   _writeUoffset(targetOffset) {
     this._prep(4, 0);
@@ -123,6 +129,14 @@ class FlatbufferBuilder {
   // client's generated `Prepend<Type>Slot` for that field, or the reader decodes the wrong bytes.
   scalarSlot(index, value, width = "uint32") {
     const numeric = Number(value) || 0;
+    if (width === "uint64" || width === "int64") {
+      // 64-bit fields are what the achievement catalogue stores targets and reward quantities in;
+      // written with a BigInt so a value above 2^53 cannot be silently rounded.
+      this._prep(8, 0);
+      this._writeUint64(numeric);
+      this.vtable[index] = this.offset();
+      return;
+    }
     if (width === "uint8" || width === "bool") {
       this._prep(1, 0);
       this._writeByte(width === "bool" ? (numeric ? 1 : 0) : numeric);

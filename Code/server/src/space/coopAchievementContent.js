@@ -171,7 +171,7 @@ function buildAchievementData(details = DETAILS) {
     const rewardName = string(`${milestone.internalName}_sp`);
     const payload = (() => {
       builder.startTable(1);
-      builder.scalarSlot(0, milestone.skillPoints);
+      builder.scalarSlot(0, milestone.skillPoints, "uint64");
       return builder.endTable();
     })();
     builder.startTable(REWARD_FIELD_COUNT);
@@ -183,7 +183,9 @@ function buildAchievementData(details = DETAILS) {
 
     builder.startTable(MILESTONE_FIELD_COUNT);
     builder.slot(0, id);
-    builder.scalarSlot(1, milestone.target);
+    // Target is uint64 in the client's generated reader (SpReward.Quantity is uint64 too); writing
+    // it as uint32 makes the client decode the neighbouring bytes into the number.
+    builder.scalarSlot(1, milestone.target, "uint64");
     builder.scalarSlot(2, milestone.categoryPoints);
     builder.slot(3, vector([reward]));
     builder.slot(4, internalName);
