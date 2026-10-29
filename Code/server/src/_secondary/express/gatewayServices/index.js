@@ -18,6 +18,9 @@ const {
 } = require("./newEdenStoreGatewayService");
 const { createPlexVaultGatewayService } = require("./plexVaultGatewayService");
 const {
+  createPresenceGatewayService,
+} = require("./presenceGatewayService");
+const {
   createSovereigntyGatewayService,
 } = require("./sovereigntyGatewayService");
 const {
@@ -49,6 +52,7 @@ function createGatewayServiceRegistry(context) {
     createInsurgencyGatewayService(context),
     createNewEdenStoreGatewayService(context),
     createPlexVaultGatewayService(context),
+    createPresenceGatewayService(context),
     createStructurePaintworkGatewayService(context),
     createShipLogoGatewayService(context),
     createSovereigntyGatewayService(context),

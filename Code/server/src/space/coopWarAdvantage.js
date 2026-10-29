@@ -27,6 +27,15 @@ const casualtyLedger = require("./coopWarCasualtyLedger" + suffix);
 const { readRow } = require("./coopNativeRowPath" + suffix);
 const pos = x => Number.isSafeInteger(x) && x > 0;
 const DEFAULT_THRESHOLD = 75000;
+// FW-034 admin knobs: eve_public.faction.activity.admin.* writes a per
+// system+faction adjustment. It is applied HERE, on the derived scores, so the
+// advantages panel and the victory-point bar (which both read this snapshot)
+// can never disagree about a score an admin has changed.
+function adjustScores(systemID, scores) {
+  try {
+    return require("./coopFactionActivityAdmin" + suffix).shared().applyScores(systemID, scores);
+  } catch (_error) { return scores; }
+}
 // factionwarfare/advantageState.py turns points into fractions of MAX_ACTIVITY_POINTS
 // and REFUSES anything outside it: contribution > 1.0, floor > 1.0 or their sum > 1.0
 // raises ValueError, and the advantages tab silently falls back to no data. The
@@ -93,11 +102,11 @@ function createWarAdvantage({
     for (const systemID of systemIDsOf(state.war)) {
       const wrecksHere = state.wrecks.filter(w => Number(w.systemID) === systemID);
       const hullsHere = state.ships.filter(s => Number(s.systemID) === systemID);
-      const scores = factions.map(factionID => {
+      const scores = adjustScores(systemID, factions.map(factionID => {
         const taken = wrecksHere.filter(w => Number(w.victimFactionID) !== factionID).length;
         const present = hullsHere.filter(s => Number(s.factionID) === factionID).length;
         return { factionID, contribution: taken * LOSS_WEIGHT + present * HULL_WEIGHT, lossesTaken: wrecksHere.filter(w => Number(w.victimFactionID) === factionID).length, hulls: present };
-      });
+      }));
       const territory = (state.war.territories || {})[String(systemID)] || null;
       const best = scores.reduce((a, b) => (b.contribution > a.contribution ? b : a), scores[0]);
       systems[systemID] = {
