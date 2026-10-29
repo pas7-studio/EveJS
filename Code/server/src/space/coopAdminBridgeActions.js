@@ -619,8 +619,17 @@ function giveFit(request) {
     .map((row) => Number(row.flagID) || 0);
 
   // 3. Classify each requested module: slot family, drone bay or cargo hold.
+  //    Anything already on the hull counts towards the request, so calling this
+  //    twice with the same fitting is idempotent instead of stacking duplicates.
+  const onHull = new Map();
+  for (const row of itemRows) {
+    if (Number(row.locationID) !== hullItemID) continue;
+    const key = String(Number(row.typeID) || 0);
+    onHull.set(key, (onHull.get(key) || 0) + Math.max(1, Number(row.quantity) || 1));
+  }
   const requested = Array.isArray(request.modules) ? request.modules : [];
   const classified = [];
+  const already = [];
   const skipped = [];
   for (const module of requested) {
     const name = String(module && module.name || "").trim();
@@ -642,13 +651,20 @@ function giveFit(request) {
     } else if (!family) {
       kind = Number(itemType.categoryID) === DRONE_CATEGORY_ID ? "drone" : "cargo";
     }
+    const displayName = String(itemType.name || itemType.typeName || name);
+    const present = Number(onHull.get(String(resolvedTypeID))) || 0;
+    const missing = Math.max(0, count - present);
+    if (missing === 0) {
+      already.push({ typeID: resolvedTypeID, name: displayName, count: present, family: kind === "drone" ? "drone bay" : (family || "cargo hold") });
+      continue;
+    }
     classified.push({
       typeID: resolvedTypeID,
-      count,
+      count: missing,
       family,
       kind,
       flag: Number(module && module.flag) || 0,
-      name: String(itemType.name || itemType.typeName || name),
+      name: displayName,
     });
   }
 
@@ -690,6 +706,7 @@ function giveFit(request) {
     fitted,
     attempted: slots.length,
     rows,
+    already,
     skipped,
     boarded,
   };
