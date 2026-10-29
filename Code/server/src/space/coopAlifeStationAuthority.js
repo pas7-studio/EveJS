@@ -173,9 +173,21 @@ function createStationAuthority({getCorporation,getCorporationRuntime,getStation
     const mineralStock=(quote||[]).reduce((sum,m)=>sum+(before.stock.get(m.typeID)||0),0);
     if(![pending,materialShortage,mineralStock,unlisted].every(count))
      throw Error("NATIVE_AUTHORITY_QUANTITY_OVERFLOW");
+    // The buyer side needs to know WHICH material to buy, not just how much is missing:
+    // space/coopAlifeNativeBuyerDispatch refuses an economy object without materialNeeds, and
+    // before this field existed the whole native BUY_SUPPLIES stage answered
+    // ALIFE_BUY_INTENT_OR_OWNER_UNATTESTED forever. Both numbers are real: required comes from the
+    // SDE material quote of the station's own original blueprint, available from this station's
+    // stock in the same read. Only materials that are actually short are listed, because buying
+    // what is already here would be a purchase the station does not need.
+    const materialNeeds=(quote||[]).map(m=>({typeID:m.typeID,required:m.quantity,
+      available:before.stock.get(m.typeID)||0,
+      shortage:Math.max(0,m.quantity-(before.stock.get(m.typeID)||0))}))
+      .filter(m=>m.shortage>0)
+      .sort((a,b)=>b.shortage-a.shortage||a.typeID-b.typeID);
     rows.push({typeID:p.typeID,targetStock:p.targetStock,listed,inHangar,pending,
      productShortage:Math.max(0,p.targetStock-inHangar-listed-pending),
-     materialShortage,mineralStock,nativeOutputQty:unlisted,
+     materialShortage,mineralStock,nativeOutputQty:unlisted,materialNeeds,
      nativeReadyJobs:active.filter(j=>j.status===3).length,
      nativeActiveJobs:active.length,manufacturingEligible:!!quote,requirements:quote});
    }
@@ -203,6 +215,8 @@ function createStationAuthority({getCorporation,getCorporationRuntime,getStation
     nativeOreToRefine:oreAtStation,nativeOutputQty:selected.nativeOutputQty,
     nativeReadyJobs:selected.nativeReadyJobs,nativeActiveJobs:selected.nativeActiveJobs,
     factoryOnline:before.online&&selected.manufacturingEligible,marketOnline:true,
+    // The concrete need of the selected product: this is what the A-Life buyer consumes.
+    materialNeeds:selected.materialNeeds||[],
     products:rows.map(({requirements,...x})=>x)};
   }catch(e){return reason(String(e?.message||"NATIVE_AUTHORITY_UNKNOWN_FAILURE").slice(0,110));}
   finally{inFlight.delete(key);}
