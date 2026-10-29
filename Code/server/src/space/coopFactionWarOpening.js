@@ -51,6 +51,11 @@ const recentlyExpired = new Map();
 // The cooldown therefore grows with the number of campaigns that target already expired:
 // one failure = base window, two = double, four caps at 8x. A target that finally
 // produces an assault proof resets it, because `campaigns` counts only EXPIRED records.
+// A war only opens when both sides can really pay their own bounty, if the stack is
+// configured that way. Off by default: the shape of the old behaviour is preserved.
+function bothSidesRequired(env = process.env) {
+  return String(env.EVEJS_COOP_WAR_BOUNTY_BOTH_SIDES ?? "") === "1";
+}
 function targetCooldownMs({ state, targetSystemID, baseMs = stallMs() } = {}) {
   const target = num(targetSystemID);
   const base = Math.max(1, num(baseMs) || 1);
@@ -520,7 +525,7 @@ function nextCampaignID(state, warID, targetSystemID) {
   return base + ":r" + (highest + 1);
 }
 
-function applyOpenings({ state, plan, nowMs, reserveBounty, persistState } = {}) {
+function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = process.env } = {}) {
   if (!plan || plan.status !== "READY") return refuse("PLAN_NOT_READY");
   const at = num(nowMs) > 0 ? num(nowMs) : Date.now();
   let current = state;
@@ -586,6 +591,25 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState } = {})
             campaignID: campaign.campaignID,
             warID: war.warID,
             reason: "SUPPLY_UNFUNDED:" + String(reserved.reason || "UNKNOWN").slice(0, 160),
+          });
+          continue;
+        }
+        // FW-068 (validation): a war in which only ONE side can pay is a trap. The
+        // other side may fight and win and still collect nothing - measured overnight
+        // with 500020/1000135, whose militia corporation holds 0 ISK and no income, so
+        // four campaigns opened and expired on 30045343 with half the war unpayable.
+        // With EVEJS_COOP_WAR_BOUNTY_BOTH_SIDES=1 a border is now refused unless BOTH
+        // sides really reserved, and the refusal names the side that could not.
+        if (bothSidesRequired(env) && Array.isArray(reserved.sides) && reserved.sides.length < 2) {
+          const fundedSides = new Set((reserved.sides || []).map((side) => Number(side.factionID)));
+          // The factions live on the war, not on the campaign record.
+          const missing = [war.attackerFactionID, war.defenderFactionID]
+            .filter((factionID) => !fundedSides.has(Number(factionID)));
+          skipped.push({
+            edge: { sourceSystemID: campaign.sourceSystemID, targetSystemID: campaign.targetSystemID },
+            campaignID: campaign.campaignID,
+            warID: war.warID,
+            reason: "SUPPLY_UNFUNDED_SIDE:" + missing.join("+"),
           });
           continue;
         }
@@ -747,7 +771,7 @@ function createWarOpening({
 module.exports = {
   nextCampaignID,
   gateBetween, collectPresence, territoriesForFronts, paperFunding, presenceSummary,
-  expireUnfundedCampaigns, targetCooldownMs,
+  expireUnfundedCampaigns, targetCooldownMs, bothSidesRequired,
   fundingRequired, supplyFor,
   activeWarFor, liveCampaignFor, buildProofs, planWars, applyOpenings, applyOpening,
   expireStalledCampaigns, stallMs, coolingDown,

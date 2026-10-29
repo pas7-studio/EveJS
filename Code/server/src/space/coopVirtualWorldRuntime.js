@@ -347,6 +347,93 @@ function warBountyStore(){
  });
  return warBountyInstance;
 }
+// FW-067 (validation): why is there no payout, answered once from the live record.
+//
+// A payout needs five things at the same time: a campaign that is still fightable, a
+// HELD escrow for the side that will make the kill, a real hull of that side inside the
+// campaign's own systems, a real native kill with an attributed attacker, and a credit
+// leg that can reach the pilot. Any one of them missing looks identical from outside -
+// nothing arrives - so this reports each of them with its own status and the blockers
+// as plain sentences.
+function diagnoseWarPayout(){
+ const out={status:"UNKNOWN",campaigns:[],blockers:[],checkedAt:Date.now()};
+ let state=null,treasury=null;
+ try{state=warStateStore().read();}catch(error){
+  out.status="WAR_STATE_UNAVAILABLE";
+  out.blockers.push("the war record could not be read: "+String(error&&error.message||error).slice(0,120));
+  return out;
+ }
+ try{treasury=warTreasuryStore().snapshot();}catch(error){
+  out.status="TREASURY_UNAVAILABLE";
+  out.blockers.push("the treasury could not be read: "+String(error&&error.message||error).slice(0,120));
+  return out;
+ }
+ const wars=new Map(Object.entries((state&&state.wars)||{}));
+ const campaigns=Object.values((state&&state.campaigns)||{});
+ const reservations=Object.values((treasury&&treasury.reservations)||{});
+ let presencePilots=[];
+ try{presencePilots=warPresencePilots()||[];}catch(_error){presencePilots=[];}
+ const lastAttribution=lastWarAttributionStatus();
+ for(const campaign of campaigns){
+  const war=wars.get(campaign.warID)||null;
+  const theatre=[Number(campaign.sourceSystemID),Number(campaign.targetSystemID)].filter(id=>id>0);
+  const rows=reservations.filter(row=>row&&row.campaignID===campaign.campaignID);
+  const sides=[];
+  for(const factionID of [Number(war&&war.attackerFactionID),Number(war&&war.defenderFactionID)]){
+   if(!(factionID>0))continue;
+   const escrow=rows.find(row=>Number(row.factionID)===factionID)||null;
+   const hulls=presencePilots.filter(pilot=>Number(pilot.factionID)===factionID&&
+    theatre.includes(Number(pilot.systemID))).length;
+   sides.push({factionID,escrowStatus:String(escrow&&escrow.status||"NONE"),
+    reservationID:String(escrow&&escrow.reservationID||""),
+    hullsInTheatre:hulls,
+    canCollectNow:Boolean(escrow&&escrow.status==="HELD"&&hulls>0)});
+  }
+  const live=["PREPARING","ASSAULT"].includes(String(campaign.state));
+  const payable=sides.filter(side=>side.canCollectNow===true);
+  const entry={campaignID:campaign.campaignID,state:String(campaign.state),
+   targetSystemID:Number(campaign.targetSystemID)||0,
+   sourceSystemID:Number(campaign.sourceSystemID)||0,sides,
+   payoutReady:live&&payable.length>0,
+   blockers:[]};
+  if(!live)entry.blockers.push("campaign is "+String(campaign.state)+", no further kill can be paid");
+  for(const side of sides){
+   if(side.escrowStatus!=="HELD"&&side.escrowStatus!=="PAID")
+    entry.blockers.push("faction "+side.factionID+" has no escrow ("+side.escrowStatus+")");
+   else if(side.hullsInTheatre<1)
+    entry.blockers.push("faction "+side.factionID+" has escrow but no hull in systems "+
+     theatre.join("/"));
+  }
+  if(entry.payoutReady&&lastAttribution&&lastAttribution.status!=="NATIVE_DESTRUCTION_ATTACKER_PROVIDED")
+   entry.blockers.push("last destruction attribution answered "+lastAttribution.status);
+  out.campaigns.push(entry);
+  for(const line of entry.blockers)out.blockers.push(campaign.campaignID+": "+line);
+ }
+ const ready=out.campaigns.filter(entry=>entry.payoutReady);
+ out.payoutPossible=ready.length>0;
+ out.status=ready.length?"PAYOUT_POSSIBLE":(out.campaigns.length?"NOTHING_PAYABLE":"NO_CAMPAIGN");
+ out.lastAttribution=lastAttribution;
+ if(!out.payoutPossible&&!out.blockers.length)out.blockers.push("no campaign needs money right now");
+ return out;
+}
+// The most recent destruction attribution the world recorded, from its own event log.
+// Read-only, bounded, and never a reason to fail the diagnostic.
+function lastWarAttributionStatus(){
+ const file=process.env.EVEJS_COOP_EVENTS_FILE||"/var/lib/evejs/coop-events.jsonl";
+ try{
+  const fs=require("node:fs");
+  const LF=String.fromCharCode(10);
+  const raw=fs.readFileSync(file,"utf8").trim().split(LF).slice(-400);
+  for(let index=raw.length-1;index>=0;index-=1){
+   let row=null;
+   try{row=JSON.parse(raw[index]);}catch(_error){continue;}
+   if(!row||row.event!=="living-native-destruction-attacker")continue;
+   return {at:row.at||"",status:String(row.status||""),
+    victimPilotID:String(row.victimPilotID||""),attackerPilotID:String(row.attackerPilotID||"")};
+  }
+ }catch(_error){/* an unreadable log is simply unknown */}
+ return null;
+}
 // FW-053: escrow of an expired campaign must go back to the corporation that paid it.
 //
 // A campaign that never produced an assault proof is expired by the opener (that is
@@ -5150,4 +5237,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={nativeGateTransferAdapter,identityRegistryAdapter,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,reconcileBountyCredits,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={nativeGateTransferAdapter,identityRegistryAdapter,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,reconcileBountyCredits,diagnoseWarPayout,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};

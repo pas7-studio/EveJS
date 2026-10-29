@@ -419,6 +419,17 @@ function executeRequest(request) {
       return { ok: false, error: "funding diagnose failed: " + String(error && error.message || error) };
     }
   }
+  // FW-067: one read-only answer to "why is there no payout". Assembling it used to
+  // take five sources (war state, treasury row, presence, attribution log, chest
+  // journal) and hours of the operator's evening.
+  if (action === "war_payout_diagnose") {
+    try {
+      const runtimeWorld = require("./coopVirtualWorldRuntime" + siblingSuffix);
+      return { ok: true, payout: runtimeWorld.diagnoseWarPayout() };
+    } catch (error) {
+      return { ok: false, error: "payout diagnose failed: " + String(error && error.message || error) };
+    }
+  }
   if (action === "militia_state") return militiaState(request);
   if (action === "militia_enlist") return militiaEnlist(request);
   const characterID = Number(request.characterID) || 0;
