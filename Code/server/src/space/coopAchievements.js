@@ -204,6 +204,20 @@ function createAchievements({
     return written.status === "OK" ? { status: "RESET" } : written;
   }
 
+  // ResetAll is the admin surface that clears every achievement of one character. It removes the
+  // progress rows and the unclaimed list together, because a reward left claimable after its
+  // progress was wiped would be a reward for something the character no longer did.
+  function clear(characterID) {
+    if (!enabled()) return { status: "DISABLED" };
+    const id = int(characterID);
+    if (id <= 0) return { status: "NO_CHARACTER" };
+    const state = stateOf(id);
+    const written = persist(id, { version: VERSION, rows: {}, categories: {}, unclaimed: [] });
+    return written.status === "OK"
+      ? { status: "CLEARED", achievements: Object.keys(state.rows || {}).length }
+      : written;
+  }
+
   function category(characterID, uuid) {
     const id = int(characterID);
     const key = uuidKey(uuid);
@@ -256,6 +270,7 @@ function createAchievements({
     addProgress,
     complete,
     reset,
+    clear,
     category,
     unclaimed,
     claim,

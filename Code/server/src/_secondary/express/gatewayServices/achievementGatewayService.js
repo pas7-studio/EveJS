@@ -283,6 +283,7 @@ const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.achievement.api.admin.AddProgressRequest",
   "eve_public.achievement.api.admin.CompleteRequest",
   "eve_public.achievement.api.admin.ResetRequest",
+  "eve_public.achievement.api.admin.ResetAllRequest",
   "eve_public.achievement.category.api.GetRequest",
   "eve_public.achievement.reward.api.GetUnclaimedRequest",
   "eve_public.achievement.reward.api.ClaimRequest",
@@ -421,6 +422,13 @@ function createAchievementGatewayService(context = {}) {
         );
         if (result.status === "RESET") return ok(`${ACH}.api.admin.ResetResponse`);
         return refusalFor(result.status, `${ACH}.api.admin.ResetResponse`);
+      }
+
+      if (requestTypeName === `${ACH}.api.admin.ResetAllRequest`) {
+        // The request carries nothing: it clears the achievements of the character in the context.
+        const result = achievements.clear(activeCharacterID);
+        if (result.status === "CLEARED") return ok(`${ACH}.api.admin.ResetAllResponse`);
+        return refusalFor(result.status, `${ACH}.api.admin.ResetAllResponse`);
       }
 
       if (requestTypeName === `${ACH}.category.api.GetRequest`) {
