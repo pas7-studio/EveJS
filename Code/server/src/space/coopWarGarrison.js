@@ -71,10 +71,15 @@ function createWarGarrison({
     }
     const now = clock();
     if (!pos(now)) return { status: "CLOCK_UNSAFE", applied: [], skips: [] };
+    // A PREPARING campaign is the muster stage: without hulls on both sides it
+    // can never reach ASSAULT, and a garrison that only fed ASSAULT campaigns
+    // deadlocked the war (measured 2026-10-29: one PREPARING campaign, zero
+    // ships, no refill, no battle, for hours on both stacks).
+    const Muster = new Set(["PREPARING", "ASSAULT"]);
     const campaigns = Object.values(state.campaigns).filter(c =>
-      c && c.state === "ASSAULT" && state.wars[c.warID]?.state === "ACTIVE" &&
+      c && Muster.has(c.state) && state.wars[c.warID]?.state === "ACTIVE" &&
       pos(Number(c.targetSystemID))).slice(0, 4);
-    if (!campaigns.length) return { status: "NO_ASSAULT", applied: [], skips: [] };
+    if (!campaigns.length) return { status: "NO_MUSTER", applied: [], skips: [] };
     let free = [];
     try { free = (listFreePilots() || []).filter(pilot); } catch (_error) { free = []; }
     const applied = [], skips = [];
