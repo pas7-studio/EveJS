@@ -711,6 +711,25 @@ function spawnNativeNpc(request) {
     }
     return { entityID, corporationID, factionID };
   });
+  // FW-077: a war patrol that was spawned unarmed is not a war patrol, and it is
+  // not harmless - it occupies a pilot, a system slot and a registry row while the
+  // mobiliser refuses it with WAR_NO_NATIVE_LOADED_WEAPON. Measured 14:3xZ: a hull from
+  // this very action reported ZERO native modules and zero cargo, so the loadout was
+  // never fitted and the campaign could not muster. The answer now says so at spawn time,
+  // with the entity named, instead of failing a war an hour later.
+  if (warPatrol && ships.length) {
+    const bare = ships.filter((ship) => {
+      try {
+        const modules = npcStore.listNativeModulesForEntity(ship.entityID) || [];
+        return modules.length === 0;
+      } catch (_error) { return false; }
+    });
+    if (bare.length)
+      return { ok: false, error: "WAR_PATROL_UNARMED",
+        entityIDs: bare.map((ship) => ship.entityID),
+        loadoutID: String(loadoutID || ""),
+        evidence: "SPAWNED_HULL_HAS_NO_NATIVE_MODULES_SO_THE_WAR_CANNOT_FIRE" };
+  }
   // Optional: make the ship a real world presence by linking it to an unlinked
   // roster pilot. Without a link the war presence legitimately ignores the hull.
   let link = null;
