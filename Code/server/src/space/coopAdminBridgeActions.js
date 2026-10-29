@@ -609,6 +609,35 @@ function spawnNativeNpc(request) {
   } catch (error) {
     return { ok: false, error: "native spawn dependencies unavailable: " + String(error && error.message || error) };
   }
+  // FW-073: never spawn a hull for a pilot that is already flying one.
+  //
+  // Measured 10:3x-10:4xZ: repeated seeding asked for pilots whose link already existed,
+  // the spawn created a SECOND physical hull and the link (correctly) refused, leaving an
+  // armed orphan no war can mobilize whose pilot the mobiliser then reports as
+  // PILOT_IN_USE forever. The caller gets the existing binding back so it can reuse the
+  // hull that is really there instead of inventing another one.
+  const requestedPilotID = String(request.pilotID || "").trim();
+  if (requestedPilotID) {
+    try {
+      const runtimeWorld = require("./coopVirtualWorldRuntime" + siblingSuffix);
+      const links = typeof runtimeWorld.identityLinks === "function" ? runtimeWorld.identityLinks() : [];
+      const bound = (Array.isArray(links) ? links : []).find((row) =>
+        row && String(row.pilotID || "") === requestedPilotID);
+      if (bound) {
+        let liveEntityID = 0;
+        let liveSystemID = 0;
+        try {
+          const native = npcStore.getNativeEntity(Number(bound.entityID));
+          liveEntityID = Number(native && native.entityID) || 0;
+          liveSystemID = Number(native && native.systemID) || 0;
+        } catch (_error) { liveEntityID = 0; }
+        if (liveEntityID > 0)
+          return { ok: false, error: "PILOT_ALREADY_LINKED", pilotID: requestedPilotID,
+            entityID: liveEntityID, systemID: liveSystemID,
+            evidence: "PILOT_HAS_A_LIVE_HULL_NO_SECOND_SHIP_SPAWNED" };
+      }
+    } catch (_error) { /* an unreadable registry never blocks an explicit operator spawn */ }
+  }
   let scene = null;
   try {
     scene = runtime.ensureScene(systemID, { refreshStargates: false });
