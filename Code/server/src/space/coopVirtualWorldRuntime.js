@@ -443,6 +443,14 @@ function lastWarAttributionStatus(){
  }catch(_error){/* an unreadable log is simply unknown */}
  return null;
 }
+// FW-088: the durable casualty ledger as a read-only snapshot, so attribution can name a
+// victim whose hull every other cache has already pruned.
+function warCasualtySnapshot(){
+ try{
+  if(!warCasualtyLedger)return null;
+  return warCasualtyLedger.snapshot();
+ }catch(_error){return null}
+}
 // FW-053: escrow of an expired campaign must go back to the corporation that paid it.
 //
 // A campaign that never produced an assault proof is expired by the opener (that is
@@ -955,7 +963,7 @@ function advanceNativeWarOpening(){
    readWarState,
    writeWarState:state=>store.write(state),
    reserveBounty:warBountyReserve,
-   releaseBounty:warBountyRelease,
+   releaseBounty:warBountyRelease,warCasualtySnapshot,
    navyCapability:({attackerFactionID,defenderFactionID})=>{
     try{
      const capability=warNavyCapability();
@@ -4847,9 +4855,32 @@ function confirmedNativeNpcWreck(systemID,npcID,wreckID,destroyedShip=null){
        });
       }
      });
+    // FW-087: a hull is a WAR casualty only if the war actually mobilised it.
+    // Measured 17:33:25Z: a dead ship in a contested system counted as a campaign
+    // casualty (and could feed a capture) while it was in NO registry and had NO
+    // identity anywhere - disk 0, live 0, fleet 0 - so its death could never be
+    // attributed and the bounty could never be paid. The registry row is the proof of
+    // participation, and it also carries the campaign the hull really belongs to.
+    let fleetRow=null;
+    try{
+     const ships=nativeWarFleetRegistry()?.snapshot?.()?.ships||{};
+     fleetRow=ships[String(Number(npcID))]||ships[Number(npcID)]||null;
+    }catch(_error){fleetRow=null}
+    if(!fleetRow||!fleetRow.campaignID){
+     try{
+      require("./coopRuntimeProbe").observe("living-native-war-casualty-skipped",null,
+       {spaceState:{systemID:Number(systemID)}},
+       {status:"SKIPPED",reason:"NOT_A_MOBILISED_WAR_HULL",entityID:Number(npcID),
+        pilotID:String(link&&link.pilotID||""),wreckID:Number(wreckID),
+        evidence:"NO_WAR_FLEET_ROW_SO_THIS_DEATH_IS_NOT_A_CAMPAIGN_CASUALTY"});
+     }catch(_error){/* probe is best effort */}
+     return;
+    }
     const casualty=warCasualtyLedger.record({
      systemID:Number(systemID),entityID:Number(npcID),
-     wreckID:Number(wreckID),pilotID:link.pilotID
+     wreckID:Number(wreckID),pilotID:link.pilotID,
+     campaignID:String(fleetRow.campaignID),warID:String(fleetRow.warID||""),
+     factionID:Number(fleetRow.factionID)||0
     });
     if(casualty.status==="RECORDED"||
        casualty.status==="DUPLICATE")

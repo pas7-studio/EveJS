@@ -48,6 +48,25 @@ function mergeLinks(...lists){
  return [...byPilotFinal.values()];
 }
 // The live registry is authoritative; a missing runtime is simply an empty list.
+// FW-088: the war casualty ledger is written BEFORE the attribution runs in the same
+// death path, and it names the victim (pilot, entity, system) even after every cache has
+// pruned the dead hull. Measured 17:33:25Z: the witness said disk 0, live 0, fleet 0 for
+// the victim while its casualty row existed at that very millisecond - so the record was
+// there all along, just not among the sources attribution consulted.
+function casualtyLinks(wreckID){
+ const id=Number(wreckID)||0;
+ if(!(id>0))return [];
+ try{
+  const runtime=require("./coopVirtualWorldRuntime");
+  if(typeof runtime.warCasualtySnapshot!=="function")return [];
+  const snapshot=runtime.warCasualtySnapshot();
+  const row=snapshot&&snapshot.byWreck?snapshot.byWreck[String(id)]:null;
+  if(!row||!row.pilotID)return [];
+  return [{pilotID:String(row.pilotID),entityID:Number(row.entityID)||0,
+   systemID:Number(row.systemID)||0,role:"patrol",campaignID:String(row.campaignID||""),
+   source:"WAR_CASUALTY_LEDGER"}];
+ }catch(_error){return []}
+}
 // The war fleet registry rows, as identity evidence: {pilotID, entityID, systemID}.
 function fleetLinks(){
  try{
@@ -136,7 +155,8 @@ function note(scene,victim,options,wreck){
   // identity registry held a link for it, so attribution answered NOT_UNIQUE_NAMED_PIRATE
   // and a real kill in a funded campaign could never pay. The registry rows are merged as
   // one more identity source; scene membership still proves the hull is the real one.
-  const links=mergeLinks(Object.values(saved?.links||[]),liveLinks(),fleetLinks());
+  const links=mergeLinks(Object.values(saved?.links||[]),liveLinks(),fleetLinks(),
+   casualtyLinks(Number(wreck&&wreck.wreckID)||0));
   // FW-079: when a kill cannot be attributed, say WHICH identity source was missing
   // the hull instead of one opaque status. Three different caches can each be the one
   // that lost it, and guessing between them has cost this world a whole evening.
