@@ -446,6 +446,16 @@ function fitSlots(request) {
     return rows.sort((left, right) => Number(left.itemID) - Number(right.itemID));
   };
 
+  // A slot holds one module, so count there means "fill N slots". A cargo hold or
+  // a drone bay holds one stack, so count there is a quantity: moving it unit by
+  // unit turned a 1000-unit ore stack into 1000 separate grants inside a single
+  // bridge action, which is both slow and a partial-write risk.
+  const isSlotFlag = (flag) =>
+    (flag >= 11 && flag <= 34)
+    || (flag >= 92 && flag <= 99)
+    || (flag >= 125 && flag <= 132)
+    || (flag >= 164 && flag <= 171);
+
   const results = [];
   for (const slot of slots) {
     const typeID = Number(slot && slot.typeID) || 0;
@@ -455,13 +465,15 @@ function fitSlots(request) {
       results.push({ typeID, flag: flagID, ok: false, error: "typeID and flag are required" });
       continue;
     }
-    for (let index = 0; index < count; index += 1) {
+    const iterations = isSlotFlag(flagID) ? count : 1;
+    const perItem = isSlotFlag(flagID) ? 1 : count;
+    for (let index = 0; index < iterations; index += 1) {
       let candidates = hangarItemsOfType(typeID);
       if (!candidates.length) {
         const lookup = registry.resolveItemByTypeID(typeID);
         const itemType = lookup && lookup.match ? lookup.match : lookup;
         if (!itemType) { results.push({ typeID, flag: flagID, ok: false, error: "unknown typeID" }); break; }
-        const granted = store.grantItemToCharacterStationHangar(characterID, stationID, itemType, 1);
+        const granted = store.grantItemToCharacterStationHangar(characterID, stationID, itemType, perItem);
         if (!granted || granted.success === false) {
           results.push({ typeID, flag: flagID, ok: false, error: String(granted && granted.errorMsg || "grant refused") });
           break;
@@ -695,8 +707,10 @@ function giveFit(request) {
 
   const fitted = Number(fit.fitted) || 0;
   const failedRows = rows.filter((row) => !row.ok);
+  // "Satisfied" means the requested fitting is on the hull now, whether this
+  // call fitted it or found it already there.
   return {
-    ok: fitted > 0 || (rows.length > 0 && failedRows.length === 0),
+    ok: failedRows.length === 0 && skipped.length === 0,
     characterID,
     stationID,
     itemID: hullItemID,
