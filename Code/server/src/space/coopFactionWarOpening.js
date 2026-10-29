@@ -56,13 +56,27 @@ const recentlyExpired = new Map();
 function bothSidesRequired(env = process.env) {
   return String(env.EVEJS_COOP_WAR_BOUNTY_BOTH_SIDES ?? "") === "1";
 }
+// FW-099: a cooldown may not outlive the reason it was created for.
+//
+// WAR_ESCROW_MISSING is not a fact about the border - it is the name of a treasury
+// defect. MEASURED on the play stack 2026-10-30: ten campaigns of 30003837 and five
+// of 30045344 expired with exactly that reason while FW-050 was live, and the growing
+// cooldown they left behind (8 x 45 min) kept the ONLY armed border of a fully funded
+// war (decision BOTH_SIDES_CAN_FIELD_NAVY) shut for hours after the treasury itself
+// was fixed - the world reported "no front" all day. A release that says nothing about
+// this border must not count towards the backoff; only an expiry that does (an opened
+// campaign that never produced an assault proof) keeps growing it.
+const STALE_EXPIRY_REASONS = new Set(["WAR_ESCROW_MISSING"]);
+function countsAsFailure(campaign) {
+  return !STALE_EXPIRY_REASONS.has(String((campaign && campaign.expiredReason) || ""));
+}
 function targetCooldownMs({ state, targetSystemID, baseMs = stallMs() } = {}) {
   const target = num(targetSystemID);
   const base = Math.max(1, num(baseMs) || 1);
   if (!pos(target) || !state || !state.campaigns) return base;
   const expired = Object.values(state.campaigns)
     .filter((campaign) => campaign && num(campaign.targetSystemID) === target &&
-      String(campaign.state) === "EXPIRED").length;
+      String(campaign.state) === "EXPIRED" && countsAsFailure(campaign)).length;
   if (!expired) return base;
   return base * Math.min(8, Math.pow(2, Math.min(3, expired - 1)));
 }
@@ -81,6 +95,7 @@ function coolingDown(targetSystemID, nowMs, ttlMs = stallMs(), state = null) {
   for (const campaign of Object.values((state && state.campaigns) || {})) {
     if (!campaign || num(campaign.targetSystemID) !== target) continue;
     if (campaign.state !== "EXPIRED") continue;
+    if (!countsAsFailure(campaign)) continue;
     const expiredAt = num(campaign.expiredAt);
     if (expiredAt && num(nowMs) - expiredAt < window) return true;
   }
@@ -895,7 +910,7 @@ function createWarOpening({
 module.exports = {
   nextCampaignID,
   gateBetween, collectPresence, territoriesForFronts, paperFunding, presenceSummary,
-  expireUnfundedCampaigns, targetCooldownMs, bothSidesRequired,
+  expireUnfundedCampaigns, targetCooldownMs, bothSidesRequired, STALE_EXPIRY_REASONS,
   fundingRequired, supplyFor,
   activeWarFor, liveCampaignFor, buildProofs, planWars, applyOpenings, applyOpening,
   expireStalledCampaigns, stallMs, coolingDown,
