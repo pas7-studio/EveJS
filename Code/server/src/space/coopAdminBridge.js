@@ -186,9 +186,24 @@ function executeRequest(request) {
         const entries = dict && Array.isArray(dict.entries) ? dict.entries : [];
         return !entries.some((row) => row && row[0] === "groupID");
       }).length;
+      // What the client was actually told: the runtime keeps a per-session journal of every
+      // add/remove/visibility broadcast it sent, so "did the panel receive it" is answerable without
+      // guessing from a screenshot.
+      const journal = session && session._space && Array.isArray(session._space.visibilityJournal)
+        ? session._space.visibilityJournal.slice(-25).map((entry) => ({
+          seq: Number(entry && entry.seq) || 0,
+          event: String(entry && entry.event || ""),
+          atMs: Number(entry && entry.atMs) || 0,
+          added: Array.isArray(entry && entry.addedEntityIDs) ? entry.addedEntityIDs.slice(0, 12) : [],
+          removed: Array.isArray(entry && entry.removedEntityIDs) ? entry.removedEntityIDs.slice(0, 12) : [],
+          stamp: Number(entry && entry.destinyStamp) || 0,
+          source: String(entry && entry.source || ""),
+        }))
+        : [];
       return {
         ok: true,
         characterID,
+        journal,
         sessionSystemID: Number(session && (session.solarsystemid2 || session.solarsystemid)) || 0,
         systemID: Number(scene.systemID) || 0,
         dynamicCount: dynamic.length,
