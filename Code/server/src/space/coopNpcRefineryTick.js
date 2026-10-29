@@ -57,7 +57,6 @@ function candidates({items, ownerID, stationID, limit = 8}) {
   if (!Array.isArray(rows)) return null;
   const out = [];
   for (const row of rows) {
-    if (out.length >= limit) break;
     if (!pos(row && row.itemID) || !pos(row && row.typeID)) continue;
     if (!pos(row && row.quantity)) continue;
     if (Number(row.ownerID) !== ownerID) continue;
@@ -65,7 +64,12 @@ function candidates({items, ownerID, stationID, limit = 8}) {
     if (!WAREHOUSE_TAG.test(String(row.customInfo || ""))) continue;
     out.push(row);
   }
-  return out;
+  // The BIGGEST stacks first. Measured 2026-10-30: 2 798 972 units of ore sat untouched at
+  // 60000682 while 1 951 skip events said "leftover too small" - this list used to be the first
+  // eight rows in insertion order, and those eight were always the tiny leftovers, so the large
+  // stacks never got a turn. That was starvation, not a missing recipe.
+  out.sort((left, right) => Number(right.quantity) - Number(left.quantity));
+  return out.slice(0, limit);
 }
 
 // Read the station a fleet really docked at from its newest warehouse trip manifest.
