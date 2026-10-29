@@ -81,6 +81,8 @@ services:
       EVEJS_COOP_THIRD_PARTY_SKINS: "1"
       EVEJS_COOP_CHARACTER_TITLES: "1"
       EVEJS_COOP_ACHIEVEMENTS: "1"
+      EVEJS_COOP_CONTENT_BIND: "0.0.0.0:28443"
+      EVEJS_COOP_CONTENT_ORIGIN: "https://127.0.0.2"
     volumes:
       - evejs-data:/var/lib/evejs
       # Character/corporation portraits are rendered by the client at creation
@@ -91,6 +93,9 @@ services:
       - ./server/src/_secondary/express/certs:/app/server/src/_secondary/express/certs
     ports:
       - "127.0.0.1:443:26003"
+      # content host for the client's plain HTTP/1.1 flatbuffer downloads (title catalogue);
+      # a second loopback address because 127.0.0.1:443 is the HTTP/2 gateway
+      - "127.0.0.2:443:28443"
       - "127.0.0.1:5222:5222"
       - "127.0.0.1:26000:26000"
       - "127.0.0.1:26001:26001"

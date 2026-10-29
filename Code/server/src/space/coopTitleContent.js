@@ -14,7 +14,14 @@
 const zlib = require("zlib");
 
 const CDN_PATH = "/elysian-eve/titles/1.0.0.titles";
-const CDN_URL = `https://127.0.0.1${CDN_PATH}`;
+// The client always connects to port 443, so the origin must be an address whose 443 answers a
+// plain HTTP/1.1 GET (EVEJS_COOP_CONTENT_BIND starts that listener). Without an origin we still
+// advertise the loopback address, which is what a single-machine client uses.
+function contentOrigin(env = process.env) {
+  const configured = String(env.EVEJS_COOP_CONTENT_ORIGIN || "").trim().replace(/\/+$/, "");
+  return configured || "https://127.0.0.1";
+}
+const CDN_URL = `${contentOrigin()}${CDN_PATH}`;
 const VERSION = Object.freeze({ major: 1, minor: 0, patch: 0 });
 const FILE_IDENTIFIER = "CHTI";
 

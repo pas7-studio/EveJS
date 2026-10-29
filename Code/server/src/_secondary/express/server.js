@@ -1083,6 +1083,20 @@ function startServer() {
       LOOPBACK_CDN_LISTEN_PORT,
       bindHost,
     );
+    // The client's flatbuffer provider speaks plain HTTP/1.1 to port 443, which the gateway
+    // cannot serve (see the note above the HTTP/2 stream handler). When a bind address is
+    // configured, publish the content routes from a separate TLS server instead.
+    const contentBind = String(process.env.EVEJS_COOP_CONTENT_BIND || "").trim();
+    if (contentBind) {
+      const { createContentCdnServer } = require("./contentCdnServer");
+      const { tlsOptions } = loadLocalTlsOptions();
+      createContentCdnServer({
+        tlsOptions,
+        resolveAsset: getGatewayBinaryAsset,
+        bind: contentBind,
+        log: { log: (line) => log.debug(line), error: (line) => log.http2Err(line) },
+      });
+    }
   }
 
   const proxyServer = http.createServer(app);
