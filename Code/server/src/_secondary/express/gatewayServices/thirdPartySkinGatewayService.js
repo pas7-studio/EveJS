@@ -40,6 +40,11 @@ const SKIN_LICENSE_PROTO_ROOT = protobuf.Root.fromJSON({
             Identifier: { fields: { sequential: { type: "uint32", id: 1 } } },
           },
         },
+        ship: {
+          nested: {
+            Identifier: { fields: { sequential: { type: "uint64", id: 1 } } },
+          },
+        },
         cosmetic: {
           nested: {
             ship: {
@@ -111,6 +116,26 @@ const SKIN_LICENSE_PROTO_ROOT = protobuf.Root.fromJSON({
                                   },
                                 },
                                 ActivateResponse: { fields: {} },
+                                ApplyRequest: {
+                                  fields: {
+                                    license: {
+                                      type: "eve_public.cosmetic.ship.skin.thirdparty.license.Identifier",
+                                      id: 1,
+                                    },
+                                    ship: { type: "eve_public.ship.Identifier", id: 2 },
+                                  },
+                                },
+                                ApplyResponse: { fields: {} },
+                                UnapplyRequest: {
+                                  fields: {
+                                    license: {
+                                      type: "eve_public.cosmetic.ship.skin.thirdparty.license.Identifier",
+                                      id: 1,
+                                    },
+                                    ship: { type: "eve_public.ship.Identifier", id: 2 },
+                                  },
+                                },
+                                UnapplyResponse: { fields: {} },
                                 admin: {
                                   nested: {
                                     GrantRequest: {
@@ -168,6 +193,8 @@ const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.cosmetic.ship.skin.thirdparty.license.api.ActivateRequest",
   "eve_public.cosmetic.ship.skin.thirdparty.license.api.admin.GrantRequest",
   "eve_public.cosmetic.ship.skin.thirdparty.license.api.admin.RevokeRequest",
+  "eve_public.cosmetic.ship.skin.thirdparty.license.api.ApplyRequest",
+  "eve_public.cosmetic.ship.skin.thirdparty.license.api.UnapplyRequest",
 ]);
 
 function timestampOf(ms) {
@@ -204,6 +231,8 @@ function createThirdPartySkinGatewayService(context = {}) {
     grantRequest: SKIN_LICENSE_PROTO_ROOT.lookupType(`${API}.admin.GrantRequest`),
     grantResponse: SKIN_LICENSE_PROTO_ROOT.lookupType(`${API}.admin.GrantResponse`),
     revokeRequest: SKIN_LICENSE_PROTO_ROOT.lookupType(`${API}.admin.RevokeRequest`),
+    applyRequest: SKIN_LICENSE_PROTO_ROOT.lookupType(`${API}.ApplyRequest`),
+    unapplyRequest: SKIN_LICENSE_PROTO_ROOT.lookupType(`${API}.UnapplyRequest`),
   };
 
   function decode(type, requestEnvelope) {
@@ -309,6 +338,49 @@ function createThirdPartySkinGatewayService(context = {}) {
           return error(3, "unactivated count is required", responseTypeName);
         }
         return error(13, `grant failed: ${result.status}`, responseTypeName);
+      }
+
+      if (requestTypeName === `${API}.ApplyRequest`) {
+        const decoded = decode(types.applyRequest, requestEnvelope);
+        const result = skins.apply(activeCharacterID, {
+          skin: decoded && decoded.license && decoded.license.skin && decoded.license.skin.hex,
+          shipID: Number(decoded && decoded.ship && decoded.ship.sequential) || 0,
+        });
+        if (result.status === "APPLIED") {
+          return ok(`${API}.ApplyResponse`);
+        }
+        const responseTypeName = `${API}.ApplyResponse`;
+        const refusals = {
+          SKIN_REQUIRED: [3, "skin is required"],
+          SHIP_REQUIRED: [3, "ship is required"],
+          LICENCE_NOT_FOUND: [5, "no such skin licence"],
+          LICENCE_NOT_ACTIVATED: [9, "that licence is not activated"],
+          SHIP_NOT_FOUND: [5, "no such ship"],
+          SHIP_NOT_OWNED: [7, "that ship belongs to somebody else"],
+          NOT_A_SHIP: [3, "that item is not a ship"],
+          SHIP_LOOKUP_FAILED: [13, "the ship could not be read"],
+        };
+        const refusal = refusals[result.status] || [13, `apply failed: ${result.status}`];
+        return error(refusal[0], refusal[1], responseTypeName);
+      }
+
+      if (requestTypeName === `${API}.UnapplyRequest`) {
+        const decoded = decode(types.unapplyRequest, requestEnvelope);
+        const result = skins.unapply(activeCharacterID, {
+          skin: decoded && decoded.license && decoded.license.skin && decoded.license.skin.hex,
+          shipID: Number(decoded && decoded.ship && decoded.ship.sequential) || 0,
+        });
+        if (result.status === "UNAPPLIED") {
+          return ok(`${API}.UnapplyResponse`);
+        }
+        const responseTypeName = `${API}.UnapplyResponse`;
+        const refusals = {
+          SHIP_REQUIRED: [3, "ship is required"],
+          NOT_APPLIED: [5, "that ship has no third-party skin applied"],
+          SKIN_MISMATCH: [9, "a different skin is applied to that ship"],
+        };
+        const refusal = refusals[result.status] || [13, `unapply failed: ${result.status}`];
+        return error(refusal[0], refusal[1], responseTypeName);
       }
 
       const decoded = decode(types.revokeRequest, requestEnvelope);

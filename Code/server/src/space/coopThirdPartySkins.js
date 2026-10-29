@@ -7,10 +7,13 @@
 //
 //   { skin: hex, activated, unactivated, escrowed, firstAcquiredMs, name, shipTypeID }
 //
-// and nothing else. A licence exists because a row exists: GetOwned lists rows, Get answers
-// one row, Activate turns an unactivated copy into a usable licence, and the admin Grant /
-// Revoke calls are the only way a row appears or disappears. Applying a licence to a real
-// ship is the next step and is deliberately not here yet.
+// and the applied map. A licence exists because a row exists: GetOwned lists rows, Get
+// answers one row, Activate turns an unactivated copy into a usable licence, and the admin
+// Grant / Revoke calls are the only way a row appears or disappears.
+//
+// Applying a licence to a ship only ever records a real ship the character owns: the item is
+// looked up in the inventory and must be a ship, and the licence must already be activated.
+// Unapply removes exactly that record. Nothing else in the world claims a ship's appearance.
 //
 // The rows live inside the character record through its single owner (characterState), like
 // the career and daily-goal state, so nothing reads a second copy.
@@ -36,7 +39,7 @@ function normalizeHex(value) {
 }
 
 function emptyState() {
-  return { version: VERSION, licences: {} };
+  return { version: VERSION, licences: {}, applied: {} };
 }
 
 function normalizeState(raw) {
@@ -58,11 +61,18 @@ function normalizeState(raw) {
       shipTypeID: Math.max(0, int(row.shipTypeID)),
     };
   }
-  return { version: VERSION, licences };
+  const applied = {};
+  for (const [key, hex] of Object.entries(raw.applied || {})) {
+    const shipID = int(key);
+    const skin = normalizeHex(hex);
+    if (shipID > 0 && skin && licences[skin]) applied[String(shipID)] = skin;
+  }
+  return { version: VERSION, licences, applied };
 }
 
 function createThirdPartySkins({
   characterState = null,
+  shipLookup = null,
   clock = () => Date.now(),
   env = process.env,
 } = {}) {
@@ -178,7 +188,86 @@ function createThirdPartySkins({
     return { status: "ACTIVATED", licence: row };
   }
 
-  return Object.freeze({ enabled, list, get, grant, revoke, activate });
+  // The ship must be a real item this character owns and it must be a ship. The lookup is
+  // injectable so a test can prove the ownership rules without a database.
+  function shipBelongsTo(characterID, shipID) {
+    if (typeof shipLookup === "function") {
+      return shipLookup(characterID, shipID) || { status: "SHIP_LOOKUP_FAILED" };
+    }
+    try {
+      const item = require(path.join(__dirname, "../services/inventory/itemStore"))
+        .findItemById(shipID);
+      if (!item) return { status: "SHIP_NOT_FOUND" };
+      if (int(item.ownerID) !== int(characterID)) return { status: "SHIP_NOT_OWNED" };
+      const type = require(path.join(__dirname, "../services/inventory/itemTypeRegistry"))
+        .resolveItemByTypeID(int(item.typeID));
+      if (!type || int(type.categoryID) !== 6) return { status: "NOT_A_SHIP" };
+      return { status: "OK" };
+    } catch (_error) {
+      return { status: "SHIP_LOOKUP_FAILED" };
+    }
+  }
+
+  function appliedFor(characterID) {
+    const id = int(characterID);
+    if (!enabled() || id <= 0) return {};
+    return { ...stateOf(id).applied };
+  }
+
+  function apply(characterID, { skin, shipID } = {}) {
+    if (!enabled()) return { status: "DISABLED" };
+    const id = int(characterID);
+    if (id <= 0) return { status: "NO_CHARACTER" };
+    const hex = normalizeHex(skin);
+    if (!hex) return { status: "SKIN_REQUIRED" };
+    const ship = int(shipID);
+    if (!ship) return { status: "SHIP_REQUIRED" };
+    const state = stateOf(id);
+    const row = state.licences[hex];
+    if (!row) return { status: "LICENCE_NOT_FOUND" };
+    if (!row.activated) return { status: "LICENCE_NOT_ACTIVATED" };
+    const ownership = shipBelongsTo(id, ship);
+    if (ownership.status !== "OK") return ownership;
+    state.applied[String(ship)] = hex;
+    try {
+      save(id, state);
+    } catch (_error) {
+      return { status: "WRITE_FAILED" };
+    }
+    return { status: "APPLIED", skin: hex, shipID: ship };
+  }
+
+  function unapply(characterID, { skin, shipID } = {}) {
+    if (!enabled()) return { status: "DISABLED" };
+    const id = int(characterID);
+    if (id <= 0) return { status: "NO_CHARACTER" };
+    const ship = int(shipID);
+    if (!ship) return { status: "SHIP_REQUIRED" };
+    const hex = normalizeHex(skin);
+    const state = stateOf(id);
+    const current = state.applied[String(ship)];
+    if (!current) return { status: "NOT_APPLIED" };
+    if (hex && hex !== current) return { status: "SKIN_MISMATCH" };
+    delete state.applied[String(ship)];
+    try {
+      save(id, state);
+    } catch (_error) {
+      return { status: "WRITE_FAILED" };
+    }
+    return { status: "UNAPPLIED", skin: current, shipID: ship };
+  }
+
+  return Object.freeze({
+    enabled,
+    list,
+    get,
+    grant,
+    revoke,
+    activate,
+    appliedFor,
+    apply,
+    unapply,
+  });
 }
 
 let singleton = null;
