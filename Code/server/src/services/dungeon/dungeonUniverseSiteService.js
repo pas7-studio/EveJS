@@ -6,6 +6,7 @@ const BaseService = require(path.join(__dirname, "../baseService"));
 const dungeonAuthority = require(path.join(__dirname, "./dungeonAuthority"));
 const dungeonRuntime = require(path.join(__dirname, "./dungeonRuntime"));
 const dungeonTrackingRuntime = require(path.join(__dirname, "./dungeonTrackingRuntime"));
+const missionMiningObjective = require(path.join(__dirname, "./dungeonMissionMiningObjective"));
 const explorationAuthority = require(path.join(__dirname, "../exploration/explorationAuthority"));
 const {
   resolveItemByName,
@@ -1824,13 +1825,26 @@ function buildMissionDerivedEncounterPlans(template) {
   return encounterPlans;
 }
 
-function buildDerivedMissionPopulationHints(template) {
-  if (normalizeLowerText(template && template.siteFamily, "") !== "mission") {
+// ORE-style mission sites (client-dungeon:13338 "ORE Phased Field Operation Site") declare only what
+// they contain (resourceComposition.oreTypeIDs) plus a client objective chain the server cannot execute.
+// Without mineable rocks and an objective quantity the site materializes empty and the mission can never
+// be completed, so the declared ore is turned into the same miningRocks/objectiveQuantity shape that the
+// already-working mining missions (client-dungeon:2449 "Starting Simple") carry in their static data.
+function buildMissionDerivedMiningRocks(template) {
+  return missionMiningObjective.deriveMiningObjectiveFromResources(template);
+}
+
+function buildDerivedMissionPopulationHints(template, options = {}) {
+  const isMissionContext =
+    options.missionContext === true ||
+    normalizeLowerText(template && template.siteFamily, "") === "mission";
+  if (!isMissionContext) {
     return null;
   }
   const encounters = buildMissionDerivedEncounterPlans(template);
   const environmentProps = buildMissionDerivedEnvironmentProps(template);
   const objectiveMarkers = buildMissionDerivedObjectiveMarkers(template);
+  const mining = buildMissionDerivedMiningRocks(template);
   return {
     source: "mission_runtime_derived",
     roomCount: normalizeArray(template && template.rooms).length,
@@ -1841,6 +1855,8 @@ function buildDerivedMissionPopulationHints(template) {
     encounters,
     environmentProps,
     objectiveMarkers,
+    miningRocks: mining.miningRocks,
+    objectiveQuantity: mining.objectiveQuantity,
   };
 }
 
@@ -1874,6 +1890,14 @@ function mergeDerivedMissionPopulationHints(baseHints, derivedHints) {
       ...normalizeArray(baseHints && baseHints.objectiveMarkers),
       ...normalizeArray(derivedHints && derivedHints.objectiveMarkers),
     ],
+    miningRocks: [
+      ...normalizeArray(baseHints && baseHints.miningRocks),
+      ...normalizeArray(derivedHints && derivedHints.miningRocks),
+    ],
+    objectiveQuantity: Math.max(
+      toInt(baseHints && baseHints.objectiveQuantity, 0),
+      toInt(derivedHints && derivedHints.objectiveQuantity, 0),
+    ),
   };
   return merged;
 }
@@ -1897,10 +1921,20 @@ function resolvePopulationHints(instance, template) {
       ? template.populationHints
       : null;
   const baseHints = templateHints ? cloneValue(templateHints) : null;
-  if (normalizeLowerText(template && template.siteFamily, "") !== "mission") {
+  // A mission instance can point at a combat-family template (the ORE field-operation sites are
+  // siteFamily "combat", siteKind "signature"), so the mission context has to be read from the
+  // instance too - otherwise those sites never receive derived encounters/rocks and materialize empty.
+  const isMissionContext =
+    normalizeLowerText(template && template.siteFamily, "") === "mission" ||
+    normalizeLowerText(instance && instance.siteKind, "") === "mission" ||
+    normalizeLowerText(instance && instance.siteOrigin, "") === "mission";
+  if (!isMissionContext) {
     return baseHints;
   }
-  return mergeDerivedMissionPopulationHints(baseHints, buildDerivedMissionPopulationHints(template));
+  return mergeDerivedMissionPopulationHints(
+    baseHints,
+    buildDerivedMissionPopulationHints(template, { missionContext: true }),
+  );
 }
 
 function resolveEncounterPlans(populationHints) {
@@ -6806,6 +6840,8 @@ DungeonUniverseSiteService._testing = {
   resolveLocalizedTemplateName,
   resolveFallbackStrengthAttribute,
   resolvePopulationHints,
+  buildDerivedMissionPopulationHints,
+  buildMissionDerivedMiningRocks,
   buildStableUniverseSiteEntitySignature,
   maybeCompleteMaterializedDataRelicSite,
   maybeCompleteMaterializedDataRelicSiteForContainerID,
