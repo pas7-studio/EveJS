@@ -24,6 +24,53 @@ function enabled(env = process.env) {
   return String(env.EVEJS_COOP_UNIVERSE_SITES || "1") !== "0";
 }
 
+// A rotating, deterministic sample of the systems the world does not naturally visit, so a player who
+// flies into null-sec or wormhole space meets sites there too (the engine materialises an instance the
+// moment a scene is built, so seeding ahead of time is exactly right).
+const SAMPLE_PER_BAND = 12;
+let sampleCache = { day: 0, nullsec: [], wormhole: [] };
+
+function hashToUnit(value) {
+  let hash = 2166136261;
+  const text = String(value);
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash / 4294967296;
+}
+
+function sampleBands(nowMs) {
+  const day = Math.floor(nowMs / 86400000);
+  if (sampleCache.day === day) return sampleCache;
+  let rows = [];
+  try {
+    rows = require("./worldData").getSolarSystems() || [];
+  } catch (_error) {
+    rows = [];
+  }
+  const nullsec = [];
+  const wormhole = [];
+  for (const row of rows) {
+    const systemID = Number(row && (row.solarSystemID || row.itemID)) || 0;
+    if (systemID <= 0) continue;
+    const wormholeClassID = Number(row && (row.wormholeClassID || row.wormholeClassId)) || 0;
+    if (wormholeClassID > 0) {
+      wormhole.push({ systemID, rank: hashToUnit(`wh:${systemID}:${day}`) });
+      continue;
+    }
+    const security = Number(row && (row.securityStatus ?? row.security));
+    if (Number.isFinite(security) && security < 0) {
+      nullsec.push({ systemID, rank: hashToUnit(`ns:${systemID}:${day}`) });
+    }
+  }
+  const take = (list) => list.sort((left, right) => left.rank - right.rank)
+    .slice(0, SAMPLE_PER_BAND)
+    .map((entry) => entry.systemID);
+  sampleCache = { day, nullsec: take(nullsec), wormhole: take(wormhole) };
+  return sampleCache;
+}
+
 function systemIDsOf(visitedSystems) {
   const ids = [];
   for (const value of visitedSystems || []) {
@@ -35,7 +82,11 @@ function systemIDsOf(visitedSystems) {
 
 function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = process.env } = {}) {
   if (!enabled(env)) return { status: "DISABLED" };
-  const systemIDs = systemIDsOf(visitedSystems);
+  const visited = systemIDsOf(visitedSystems);
+  const sample = sampleBands(nowMs);
+  const systemIDs = [...new Set([...visited, ...sample.nullsec, ...sample.wormhole])]
+    .sort((left, right) => left - right)
+    .slice(0, MAX_SYSTEMS + SAMPLE_PER_BAND * 2);
   if (systemIDs.length === 0) return { status: "NO_SYSTEMS" };
   const pending = systemIDs.filter((id) => !reconciledSystemIDs.has(id));
   const dueByTime = nowMs - lastReconcileAtMs >= RECONCILE_INTERVAL_MS;
@@ -120,6 +171,8 @@ function reset() {
 
 module.exports = {
   MAX_SYSTEMS,
+  SAMPLE_PER_BAND,
+  sampleBands,
   RECONCILE_INTERVAL_MS,
   enabled,
   materializeAwakeScenes,
