@@ -2794,6 +2794,14 @@ function handleSceneCreated(scene) {
 
   // COOP_ALIFE08_DURABLE_NATIVE_MINING_STARTUP
   if (process.env.EVEJS_COOP_NATIVE_MINING_FLEET_DURABLE === "1") {
+    // A belt-less system cannot mine: do not spend a durable fleet there.
+    if (require("../../space/coopNativeMiningFleetDurable").systemHasBelts(scene) === false) {
+      try {
+        require("../../space/coopRuntimeProbe").observe("living-mining-skipped", null, null,
+          {systemID: scene.systemID, reason: "NO_BELTS_IN_SYSTEM"});
+      } catch (_coopProbeError) { /* telemetry only */ }
+      return;
+    }
     return require("../../space/coopNativeMiningFleetDurable").start({
       scene, fleetCount:resolveStartupFleetCount(),
       destroy:(id)=>npcService.destroyNpcControllerByEntityID(id,{removeContents:true}),

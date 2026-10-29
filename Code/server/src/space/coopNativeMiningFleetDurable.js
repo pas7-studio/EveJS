@@ -83,6 +83,16 @@ function markedHaulersElsewhere(store,systemID,slot,present){
    .map(e=>Number(e.entityID)).filter(Boolean);
  }catch(_error){return []}
 }
+// A system with no asteroid belts cannot host a mining fleet. Measured 2026-10-30: Jita
+// (30000142) has 18 stations and ZERO belts, and it carried a durable fleet of four miners
+// with an empty hold, while the systems that do have belts ran at half strength.
+function systemHasBelts(scene){
+ try{
+  const rows=scene&&Array.isArray(scene.staticEntities)?scene.staticEntities:null;
+  if(!rows)return null;
+  return rows.filter(row=>String(row&&row.kind)==="asteroidBelt").length>0;
+ }catch(_error){return null}
+}
 function markers(store,systemID,slot){
  const all=store.listNativeEntitiesForSystem(systemID);
  if(!Array.isArray(all))throw Error("ALIFE08_NATIVE_ENTITY_LIST_UNAVAILABLE");
@@ -794,5 +804,5 @@ function noteDroppedFleetActors(fleetRecord,deps={}){
  }
  return dropped;
 }
-module.exports={createService,start,repairSlotComposition,roleMarker,slotKey,fleetIDForSlot,healFleetActors,noteDroppedFleetActors,
+module.exports={createService,start,systemHasBelts,repairSlotComposition,roleMarker,slotKey,fleetIDForSlot,healFleetActors,noteDroppedFleetActors,
  pruneStaleSlotHulls};
