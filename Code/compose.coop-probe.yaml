@@ -99,6 +99,12 @@
       EVEJS_COOP_WAR_BOUNTY_ISK: '25000'
       # FW-011A: read-only war-control projection into the sovereignty view.
       EVEJS_COOP_WAR_SOVEREIGNTY_PROJECTION: '1'
+      # Measured 2026-10-30: with this off, "the world feels laggy" could only be
+      # answered by attaching a CPU profiler to the live server. On, every world
+      # cycle writes one `coop-perf-sample` event with per-phase count/avg/p95/max,
+      # which is how `npc-reconcile:<system>` was found at 126-253 ms per system.
+      # It measures; it does not change any rule.
+      EVEJS_COOP_PERF_METRICS: '1'
       # Real native structure types a campaign may bind as its objective
       # (35832 Astrahus: the two faction 500014 keeps in Perimeter / New Caldari).
       EVEJS_COOP_WAR_OBJECTIVE_STRUCTURE_TYPE_IDS: '35832'
@@ -157,10 +163,12 @@
       EVEJS_COOP_ECONOMY_DESTINATION: '1'
       EVEJS_COOP_NATIVE_NPC_MARKET: '1'
       EVEJS_COOP_NPC_MARKET_SELL_ON_ARRIVAL: '1'
+      # ORDER IS PRIORITY: the engine only keeps the first 20 types of this list, so the
+      # manufactured product and the refinery minerals lead and the exotic ores follow.
       # 444 = Mining Survey Chipset I, the product of blueprint 1076: a manufactured
       # good only sells when its type is on this operator policy list, because the
       # market allowlist is what stops a trader from liquidating arbitrary cargo.
-      EVEJS_COOP_NPC_MARKET_SELL_TYPES: '1228,1230,17463,17464,17470,17471,211,180,185,216,219,241,243,244,182,2516,20767,4959,20617,11351,14272,25611,25606,34,35,36,37,38,39,40,444'
+      EVEJS_COOP_NPC_MARKET_SELL_TYPES: '444,34,35,36,37,38,39,40,1228,1230,17463,17464,17470,17471,211,180,185,216,219,241,243,244,182,2516,20767,4959,20617,11351,14272,25611,25606'
 
       EVEJS_COOP_NPC_MINERAL_LIFT: '1'
 
