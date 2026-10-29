@@ -63,15 +63,53 @@ function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = pr
     lastReconcileAtMs = nowMs;
     for (const id of systemIDs) reconciledSystemIDs.add(id);
     lastSummary = summary && typeof summary === "object" ? summary : null;
+    // A scene that already exists does not see an instance created afterwards: the site service only
+    // materialises on scene creation. Re-run it for the awake scenes of these systems (addStaticEntity
+    // is idempotent, so nothing is spawned twice), then count what the scanner would list.
+    const materialized = materializeAwakeScenes(systemIDs);
     return {
       status: "RECONCILED",
       systemIDs,
       created: Number(summary && summary.createdInstances) || 0,
       desired: Number(summary && summary.desiredSiteCount) || 0,
+      materialized: materialized.spawned,
+      anomalies: materialized.anomalies,
     };
   } catch (error) {
     return { status: "FAILED", reason: String(error && error.message || error).slice(0, 160) };
   }
+}
+
+function materializeAwakeScenes(systemIDs) {
+  let spawned = 0;
+  const anomalies = {};
+  try {
+    const runtime = require("./runtime");
+    const siteService = require("../services/dungeon/dungeonUniverseSiteService");
+    const signatures = require("../services/exploration/signatures/signatureRuntime");
+    const scenes = runtime && runtime.scenes instanceof Map ? runtime.scenes : null;
+    if (!scenes) return { spawned, anomalies };
+    for (const systemID of systemIDs) {
+      const scene = scenes.get(Number(systemID));
+      if (!scene) continue;
+      try {
+        const result = siteService.handleSceneCreated(scene, { force: true });
+        spawned += (result && result.data && Array.isArray(result.data.spawned))
+          ? result.data.spawned.length
+          : 0;
+      } catch (_error) {
+        /* one bad scene must not stop the others */
+      }
+      try {
+        anomalies[systemID] = signatures.buildSignalTrackerAnomalyEntries(systemID).length;
+      } catch (_error) {
+        anomalies[systemID] = -1;
+      }
+    }
+  } catch (_error) {
+    return { spawned, anomalies };
+  }
+  return { spawned, anomalies };
 }
 
 function reset() {
@@ -80,4 +118,12 @@ function reset() {
   lastSummary = null;
 }
 
-module.exports = { MAX_SYSTEMS, RECONCILE_INTERVAL_MS, enabled, reconcile, reset, systemIDsOf };
+module.exports = {
+  MAX_SYSTEMS,
+  RECONCILE_INTERVAL_MS,
+  enabled,
+  materializeAwakeScenes,
+  reconcile,
+  reset,
+  systemIDsOf,
+};
