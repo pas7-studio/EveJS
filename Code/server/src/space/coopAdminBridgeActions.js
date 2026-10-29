@@ -37,7 +37,7 @@ const EVENTS = process.env.EVEJS_COOP_EVENTS_FILE || "/var/lib/evejs/coop-events
 // Stations are static: read them once per process instead of parsing the whole
 // station table for a single name.
 
-const ALLOWED_ACTIONS = new Set(["chat_command", "give_item", "remove_item", "board_ship", "fit_ship", "move_item", "fit_slots", "deploy_structure", "spawn_native_npc", "war_diagnose", "war_combat_diagnose", "war_funding_diagnose", "war_payout_diagnose", "war_mercenary_settle", "war_mercenary_state", "inspect_npc", "scene_slim_diagnose", "grant_evermarks", "npc_pair_diagnose", "raid_diagnose", "war_state", "mining_fleet_diagnose", "arrival_diagnose", "trip_diagnose", "militia_state", "militia_enlist", "spawn_war_fleet", "release_identity", "assign_identity", "war_fleet_state", "fleet_reconstitute"]);
+const ALLOWED_ACTIONS = new Set(["chat_command", "give_item", "remove_item", "board_ship", "fit_ship", "move_item", "fit_slots", "give_fit", "restore_last_loss", "batch", "deploy_structure", "spawn_native_npc", "war_diagnose", "war_combat_diagnose", "war_funding_diagnose", "war_payout_diagnose", "war_mercenary_settle", "war_mercenary_state", "inspect_npc", "scene_slim_diagnose", "grant_evermarks", "npc_pair_diagnose", "raid_diagnose", "war_state", "mining_fleet_diagnose", "arrival_diagnose", "trip_diagnose", "militia_state", "militia_enlist", "spawn_war_fleet", "release_identity", "assign_identity", "war_fleet_state", "fleet_reconstitute"]);
 
 const MAX_REQUESTS_PER_DRAIN = 8;
 
@@ -480,6 +480,328 @@ function fitSlots(request) {
   }
   const fitted = results.filter((row) => row.ok).length;
   return { ok: fitted > 0, fitted, attempted: results.length, results, characterID, itemID: shipItemID };
+}
+
+// One flat walk over the item table. A whole-fit restore needs the hangar, the
+// hull's occupied slots and the existing hulls at once; reading the table once
+// per request is what keeps a batched admin call inside a single world step.
+function readItemRows() {
+  const rows = [];
+  try {
+    let table = require("../gameStore").read("items");
+    if (table && table.success !== false && table.data !== undefined) table = table.data;
+    if (typeof table === "string") table = JSON.parse(table);
+    const walk = (value, depth) => {
+      if (!value || depth > 4 || rows.length > 200000) return;
+      if (Array.isArray(value)) {
+        for (const child of value) walk(child, depth + 1);
+        return;
+      }
+      if (typeof value !== "object") return;
+      if (value.itemID !== undefined && value.typeID !== undefined) {
+        rows.push(value);
+        return;
+      }
+      for (const child of Object.values(value)) walk(child, depth + 1);
+    };
+    walk(table, 0);
+  } catch (_error) {
+    /* an unreadable store means every caller below reports its own refusal */
+  }
+  return rows;
+}
+
+function resolveAdminItemType(registry, typeID, name) {
+  try {
+    const lookup = typeID > 0
+      ? registry.resolveItemByTypeID(typeID)
+      : registry.resolveItemByName(String(name || ""));
+    return lookup && lookup.match ? lookup.match : (lookup || null);
+  } catch (_error) {
+    return null;
+  }
+}
+
+const FIT_FAMILIES = ["high", "med", "low", "rig", "subsystem", "service"];
+const DRONE_CATEGORY_ID = 18;
+const SHIP_CATEGORY = 6;
+
+// Places requested modules into real slots and fits them, granting anything that
+// is missing. This is the "one call gives a whole fitting" path: hull by typeID
+// or an existing hull itemID, then every module into its own slot family, drones
+// into the drone bay, everything else into the hold.
+//
+// It never uses the native fitting planner (that one needs a live client
+// session); placement comes from space/coopAdminFitPlan, which only needs slot
+// counts and per-type slot families, so this works for an offline character.
+function giveFit(request) {
+  const characterID = Number(request.characterID) || 0;
+  const character = readRow("characters", characterID);
+  if (!character) return { ok: false, error: "character " + characterID + " not found" };
+  const stationID = Number(request.stationID) || Number(character.stationID) || 0;
+  if (!(stationID > 0)) {
+    return { ok: false, error: "character " + characterID + " is not docked; pass stationID explicitly" };
+  }
+  let registry = null;
+  let fitting = null;
+  try {
+    registry = require("../services/inventory/itemTypeRegistry");
+    fitting = require("../services/fitting/liveFittingState");
+  } catch (error) {
+    return { ok: false, error: "fitting modules unavailable: " + String(error && error.message || error) };
+  }
+  const itemStore = require("../services/inventory/itemStore");
+  const plan = require("./coopAdminFitPlan" + siblingSuffix);
+  const itemRows = readItemRows();
+
+  // 1. The hull: an explicit itemID wins, otherwise reuse the oldest docked hull
+  //    of that type (a restore must not mint a second Venture every time), and
+  //    only then grant a new one.
+  let hull = null;
+  let hullGranted = false;
+  const explicitHullID = Number(request.itemID) || 0;
+  if (explicitHullID > 0) {
+    hull = itemRows.find((row) => Number(row.itemID) === explicitHullID) || readRow("items", explicitHullID);
+    if (!hull) return { ok: false, error: "ship " + explicitHullID + " not found" };
+    if (Number(hull.ownerID) !== characterID) {
+      return { ok: false, error: "ship " + explicitHullID + " is not owned by " + characterID };
+    }
+    if (Number(hull.locationID) !== stationID) {
+      return { ok: false, error: "ship " + explicitHullID + " is not at station " + stationID };
+    }
+  } else {
+    let hullTypeID = Number(request.hullTypeID) || 0;
+    if (!(hullTypeID > 0) && String(request.hullName || "").trim()) {
+      const byName = resolveAdminItemType(registry, 0, String(request.hullName).trim());
+      hullTypeID = Number(byName && byName.typeID) || 0;
+    }
+    if (!(hullTypeID > 0)) {
+      return { ok: false, error: "itemID (existing hull), hullTypeID or hullName (hull to grant) is required" };
+    }
+    hull = itemRows
+      .filter((row) => Number(row.ownerID) === characterID
+        && Number(row.typeID) === hullTypeID
+        && Number(row.locationID) === stationID
+        && Number(row.flagID) === 4
+        && Number(row.categoryID) === SHIP_CATEGORY)
+      .sort((left, right) => Number(left.itemID) - Number(right.itemID))[0] || null;
+    if (!hull) {
+      const hullType = resolveAdminItemType(registry, hullTypeID, "");
+      if (!hullType) return { ok: false, error: "unknown hull typeID " + hullTypeID };
+      const granted = itemStore.grantItemToCharacterStationHangar(characterID, stationID, hullType, 1);
+      if (!granted || granted.success === false) {
+        return { ok: false, error: String(granted && granted.errorMsg || "hull grant refused") };
+      }
+      hullGranted = true;
+      const grantedItems = (granted.data && granted.data.items) || [];
+      const first = grantedItems.length ? (grantedItems[0].item || grantedItems[0]) : null;
+      hull = first
+        ? (readRow("items", Number(first.itemID) || 0) || first)
+        : readItemRows().filter((row) => Number(row.ownerID) === characterID
+          && Number(row.typeID) === hullTypeID
+          && Number(row.locationID) === stationID
+          && Number(row.flagID) === 4).sort((left, right) => Number(right.itemID) - Number(left.itemID))[0] || null;
+      if (!hull) return { ok: false, error: "hull " + hullTypeID + " was granted but cannot be read back" };
+    }
+  }
+  const hullItemID = Number(hull.itemID) || 0;
+  const hullTypeID = Number(hull.typeID) || 0;
+
+  // 2. Real slot capacity of this hull and the flags already in use on it.
+  const slotFlags = {};
+  for (const family of FIT_FAMILIES) {
+    if (typeof fitting.getSlotFlagsForFamily === "function") {
+      slotFlags[family] = fitting.getSlotFlagsForFamily(family, hullTypeID);
+    }
+  }
+  const occupiedFlags = itemRows
+    .filter((row) => Number(row.locationID) === hullItemID)
+    .map((row) => Number(row.flagID) || 0);
+
+  // 3. Classify each requested module: slot family, drone bay or cargo hold.
+  const requested = Array.isArray(request.modules) ? request.modules : [];
+  const classified = [];
+  const skipped = [];
+  for (const module of requested) {
+    const name = String(module && module.name || "").trim();
+    const typeID = Number(module && module.typeID) || 0;
+    const count = Math.max(1, Number(module && module.count) || 1);
+    const itemType = resolveAdminItemType(registry, typeID, name);
+    if (!itemType) {
+      skipped.push({ name: name || String(typeID), count, error: "item type not found" });
+      continue;
+    }
+    const resolvedTypeID = Number(itemType.typeID) || typeID;
+    const explicitKind = String(module && module.kind || "").trim().toLowerCase();
+    let family = typeof fitting.getRequiredSlotFamily === "function"
+      ? fitting.getRequiredSlotFamily(resolvedTypeID) : null;
+    let kind = "module";
+    if (explicitKind === "drone" || explicitKind === "cargo") {
+      kind = explicitKind;
+      family = null;
+    } else if (!family) {
+      kind = Number(itemType.categoryID) === DRONE_CATEGORY_ID ? "drone" : "cargo";
+    }
+    classified.push({
+      typeID: resolvedTypeID,
+      count,
+      family,
+      kind,
+      flag: Number(module && module.flag) || 0,
+      name: String(itemType.name || itemType.typeName || name),
+    });
+  }
+
+  const placement = plan.planFit({ modules: classified, slotFlags, occupiedFlags });
+  const slots = plan.toFitSlots(placement.rows);
+  let fit = { ok: false, fitted: 0, attempted: 0, results: [] };
+  if (slots.length) {
+    fit = fitSlots({ characterID, itemID: hullItemID, modules: slots });
+  }
+  const nameOf = new Map(classified.map((row) => [String(row.typeID), row.name]));
+  const rows = placement.rows.map((row) => ({
+    typeID: row.typeID,
+    name: nameOf.get(String(row.typeID)) || String(row.typeID),
+    count: Number(row.count) || 1,
+    flag: row.flag,
+    family: row.family || (row.kind === "drone" ? "drone bay" : "cargo hold"),
+    ok: row.ok === true,
+    error: row.error || "",
+  }));
+
+  // 4. Optional board. Only when the character is offline: a live session cannot
+  //    have its hull switched under it, and the refusal is reported verbatim.
+  let boarded = null;
+  if (request.board === true) {
+    const board = boardShip({ characterID, itemID: hullItemID });
+    boarded = { ok: board.ok === true, error: String(board.error || "") };
+  }
+
+  const fitted = Number(fit.fitted) || 0;
+  const failedRows = rows.filter((row) => !row.ok);
+  return {
+    ok: fitted > 0 || (rows.length > 0 && failedRows.length === 0),
+    characterID,
+    stationID,
+    itemID: hullItemID,
+    hullTypeID,
+    hullName: String(hull.itemName || hull.shipName || ""),
+    hullGranted,
+    fitted,
+    attempted: slots.length,
+    rows,
+    skipped,
+    boarded,
+  };
+}
+
+// "He died — recreate exactly the same ship": reads the character's newest
+// killmail from the native killmail state, then re-grants and re-fits the lost
+// hull with the lost modules, drones and cargo.
+//
+// A killmail records flag 4 for everything, so flag cannot separate fitted
+// modules from cargo. `singleton` can: fitted modules are singletons, stacks in
+// the hold are not. Drones are recognised by their category.
+function restoreLastLoss(request) {
+  const characterID = Number(request.characterID) || 0;
+  if (!(characterID > 0)) return { ok: false, error: "characterID is required" };
+  let killmailState = null;
+  try {
+    killmailState = require("../services/killmail/killmailState");
+  } catch (error) {
+    return { ok: false, error: "killmail state unavailable: " + String(error && error.message || error) };
+  }
+  const wantedKillID = Number(request.killID) || 0;
+  let records = [];
+  try {
+    records = typeof killmailState.listKillmailsForCharacter === "function"
+      ? killmailState.listKillmailsForCharacter(characterID) : [];
+  } catch (_error) {
+    records = [];
+  }
+  records = (Array.isArray(records) ? records : [])
+    .filter((row) => row && Number(row.victimCharacterID) === characterID);
+  let record = null;
+  if (wantedKillID > 0) {
+    record = records.find((row) => Number(row.killID) === wantedKillID) || null;
+    if (!record) record = killmailState.getKillmailRecord(wantedKillID) || null;
+  } else {
+    record = records.sort((left, right) => Number(right.killID) - Number(left.killID))[0] || null;
+  }
+  if (!record) {
+    return {
+      ok: false,
+      error: wantedKillID > 0
+        ? "killmail " + wantedKillID + " was not found for character " + characterID
+        : "character " + characterID + " has no killmail to restore",
+    };
+  }
+  const hullTypeID = Number(record.victimShipTypeID) || 0;
+  if (!(hullTypeID > 0)) return { ok: false, error: "killmail " + record.killID + " has no victim ship" };
+
+  // Aggregate by type: a stack split across the drone bay and the hold must come
+  // back as one stack, and dropped + destroyed are both real losses.
+  const totals = new Map();
+  for (const item of Array.isArray(record.items) ? record.items : []) {
+    const typeID = Number(item && item.typeID) || 0;
+    if (!(typeID > 0)) continue;
+    const qty = (Number(item.qtyDropped) || 0) + (Number(item.qtyDestroyed) || 0);
+    if (!(qty > 0)) continue;
+    const entry = totals.get(typeID) || { typeID, count: 0, singleton: false };
+    entry.count += qty;
+    if (Number(item.singleton) === 1) entry.singleton = true;
+    totals.set(typeID, entry);
+  }
+
+  let registry = null;
+  let fitting = null;
+  try {
+    registry = require("../services/inventory/itemTypeRegistry");
+    fitting = require("../services/fitting/liveFittingState");
+  } catch (_error) {
+    registry = null;
+    fitting = null;
+  }
+  const includeCargo = request.includeCargo !== false;
+  const modules = [];
+  const skipped = [];
+  for (const entry of totals.values()) {
+    const itemType = registry ? resolveAdminItemType(registry, entry.typeID, "") : null;
+    if (!itemType) {
+      skipped.push({ typeID: entry.typeID, count: entry.count, error: "item type not found" });
+      continue;
+    }
+    const isDrone = Number(itemType.categoryID) === DRONE_CATEGORY_ID;
+    const family = fitting && typeof fitting.getRequiredSlotFamily === "function"
+      ? fitting.getRequiredSlotFamily(entry.typeID) : null;
+    const kind = isDrone ? "drone" : (entry.singleton && family ? "module" : "cargo");
+    if (kind === "cargo" && !includeCargo) {
+      skipped.push({ typeID: entry.typeID, count: entry.count, name: String(itemType.name || ""), error: "cargo skipped by includeCargo:false" });
+      continue;
+    }
+    modules.push({ typeID: entry.typeID, count: entry.count, kind, family, name: String(itemType.name || "") });
+  }
+
+  const fit = giveFit({
+    characterID,
+    stationID: Number(request.stationID) || 0,
+    hullTypeID,
+    modules,
+    board: request.board,
+  });
+  const hullType = registry ? resolveAdminItemType(registry, hullTypeID, "") : null;
+  return {
+    ok: fit.ok === true,
+    characterID,
+    killID: Number(record.killID) || 0,
+    killTime: String(record.killTime || ""),
+    solarSystemID: Number(record.solarSystemID) || 0,
+    hullTypeID,
+    hullName: String(hullType && (hullType.name || hullType.typeName) || ""),
+    restored: modules,
+    skipped,
+    fit,
+  };
 }
 
 // Deploys one real structure for a faction through coopStructureFactory, which
@@ -1187,4 +1509,4 @@ function assignIdentity(request) {
 }
 
 
-module.exports = {fs, siblingSuffix, REQUESTS, RESULTS, EVENTS, ALLOWED_ACTIONS, MAX_REQUESTS_PER_DRAIN, readJsonLines, writeJsonLines, appendJsonLine, emitEvent, readRow, liveSessionFor, executeChatCommand, giveItem, removeItem, boardShip, moveItem, fitShip, fitSlots, deployStructure, resolveWarPatrolLoadout, spawnNativeNpc, militiaEnlist, warFleetAuthorities, freeHullLinks, listFreeHullsFor, spawnWarFleet, warFleetState, fleetReconstitute, releaseIdentity, assignIdentity};
+module.exports = {fs, siblingSuffix, REQUESTS, RESULTS, EVENTS, ALLOWED_ACTIONS, MAX_REQUESTS_PER_DRAIN, readJsonLines, writeJsonLines, appendJsonLine, emitEvent, readRow, readItemRows, liveSessionFor, executeChatCommand, giveItem, removeItem, boardShip, moveItem, fitShip, fitSlots, giveFit, restoreLastLoss, deployStructure, resolveWarPatrolLoadout, spawnNativeNpc, militiaEnlist, warFleetAuthorities, freeHullLinks, listFreeHullsFor, spawnWarFleet, warFleetState, fleetReconstitute, releaseIdentity, assignIdentity};

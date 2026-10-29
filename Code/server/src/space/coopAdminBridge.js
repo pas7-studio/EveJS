@@ -18,7 +18,7 @@
 // runtime decision is never only in a chat log.
 
 // Pure helpers live in space/coopAdminBridgeActions.js (split by scripts/coop-split-module.cjs).
-const { fs, siblingSuffix, REQUESTS, RESULTS, EVENTS, ALLOWED_ACTIONS, MAX_REQUESTS_PER_DRAIN, readJsonLines, writeJsonLines, appendJsonLine, emitEvent, readRow, liveSessionFor, executeChatCommand, giveItem, removeItem, boardShip, moveItem, fitShip, fitSlots, deployStructure, resolveWarPatrolLoadout, spawnNativeNpc, militiaEnlist, warFleetAuthorities, freeHullLinks, listFreeHullsFor, spawnWarFleet, warFleetState, fleetReconstitute, releaseIdentity, assignIdentity } = require("./coopAdminBridgeActions");
+const { fs, siblingSuffix, REQUESTS, RESULTS, EVENTS, ALLOWED_ACTIONS, MAX_REQUESTS_PER_DRAIN, readJsonLines, writeJsonLines, appendJsonLine, emitEvent, readRow, liveSessionFor, executeChatCommand, giveItem, removeItem, boardShip, moveItem, fitShip, fitSlots, giveFit, restoreLastLoss, deployStructure, resolveWarPatrolLoadout, spawnNativeNpc, militiaEnlist, warFleetAuthorities, freeHullLinks, listFreeHullsFor, spawnWarFleet, warFleetState, fleetReconstitute, releaseIdentity, assignIdentity } = require("./coopAdminBridgeActions");
 let stationIndex = null;
 function stationRecord(stationID) {
   const id = Number(stationID) || 0;
@@ -576,7 +576,53 @@ function executeRequest(request) {
   if (action === "fit_ship") return fitShip(request);
   if (action === "move_item") return moveItem(request);
   if (action === "fit_slots") return fitSlots(request);
+  if (action === "give_fit") return giveFit(request);
+  if (action === "restore_last_loss") return restoreLastLoss(request);
+  if (action === "batch") return runBatch(request);
   return boardShip(request);
+}
+
+// Runs a list of admin actions from ONE request, so a whole fitting or a full
+// "recreate exactly what I lost" costs one bridge round-trip instead of one per
+// item. Sub-actions pass the same whitelist and the same executeRequest, so a
+// batch can never do something a single action could not.
+const MAX_BATCH_ACTIONS = 64;
+function runBatch(request) {
+  const parentCharacterID = Number(request.characterID) || 0;
+  const list = Array.isArray(request.actions) ? request.actions : [];
+  if (!list.length) return { ok: false, error: "actions[] is required" };
+  if (list.length > MAX_BATCH_ACTIONS) {
+    return { ok: false, error: "too many actions: " + list.length + " (max " + MAX_BATCH_ACTIONS + ")" };
+  }
+  const stopOnError = request.stopOnError === true;
+  const results = [];
+  let applied = 0;
+  for (const sub of list) {
+    if (!sub || typeof sub !== "object" || Array.isArray(sub)) {
+      results.push({ action: "", ok: false, error: "action entry is not an object" });
+      if (stopOnError) break;
+      continue;
+    }
+    const action = String(sub.action || "");
+    if (action === "batch") {
+      results.push({ action, ok: false, error: "nested batch is not allowed" });
+      if (stopOnError) break;
+      continue;
+    }
+    const merged = Object.assign({}, sub, {
+      characterID: Number(sub.characterID) || parentCharacterID,
+    });
+    let result = null;
+    try {
+      result = executeRequest(merged);
+    } catch (error) {
+      result = { ok: false, error: "action threw: " + String(error && error.message || error) };
+    }
+    results.push(Object.assign({ action }, result));
+    if (result && result.ok) applied += 1;
+    else if (stopOnError) break;
+  }
+  return { ok: applied > 0, applied, attempted: results.length, results };
 }
 
 // Executes pending requests once. Called from the world tick; cheap when empty.
@@ -614,4 +660,27 @@ function drain(options) {
   return executed;
 }
 
-module.exports = { drain, executeRequest, REQUESTS, RESULTS, ALLOWED_ACTIONS };
+// The bridge used to run only on the world tick. That tick is 30 s nominal and in
+// practice 60-90 s when the world phases are busy, so every admin call waited for
+// it and often timed out. The bridge now also drains on its own short timer: one
+// admin request answers in about a second regardless of what the phases are doing.
+let fastDrainTimer = null;
+function startFastDrain(options) {
+  if (fastDrainTimer) return false;
+  const opts = options || {};
+  const configured = Number(opts.everyMs) || Number(process.env.EVEJS_COOP_ADMIN_BRIDGE_MS) || 1000;
+  const everyMs = Math.max(250, Math.min(5000, configured));
+  fastDrainTimer = setInterval(() => {
+    try {
+      drain(opts);
+    } catch (error) {
+      if (typeof opts.log === "function") {
+        opts.log("[CoopAdminBridge] fast drain failed: " + String(error && error.message || error));
+      }
+    }
+  }, everyMs);
+  if (typeof fastDrainTimer.unref === "function") fastDrainTimer.unref();
+  return true;
+}
+
+module.exports = { drain, executeRequest, startFastDrain, REQUESTS, RESULTS, ALLOWED_ACTIONS };

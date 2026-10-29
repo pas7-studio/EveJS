@@ -2509,7 +2509,11 @@ function start(){
    else if(result.status==="FAILED")console.warn(`[CoopUniverseSites] ${result.reason}`);
   });
   if(process.env.EVEJS_COOP_ADMIN_BRIDGE==="1")runPhase("admin-bridge",()=>{
-    require("./coopAdminBridge").drain({log:console.log});
+    const adminBridge=require("./coopAdminBridge");
+    // The world tick can be a minute apart, so admin calls must not wait for it:
+    // startFastDrain is idempotent and answers one request per ~1 s.
+    adminBridge.startFastDrain({log:console.log});
+    adminBridge.drain({log:console.log});
   });
   if(process.env.EVEJS_COOP_COURIER_DISPATCH==="1")runPhase("courier-dispatch",()=>{
    if(!courierDispatch)courierDispatch=require("./coopCourierRuntime").createCourierDispatch({
