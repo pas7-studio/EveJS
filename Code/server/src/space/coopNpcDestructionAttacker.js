@@ -48,6 +48,19 @@ function mergeLinks(...lists){
  return [...byPilotFinal.values()];
 }
 // The live registry is authoritative; a missing runtime is simply an empty list.
+// The war fleet registry rows, as identity evidence: {pilotID, entityID, systemID}.
+function fleetLinks(){
+ try{
+  const runtime=require("./coopVirtualWorldRuntime");
+  if(typeof runtime.nativeWarFleetRegistry!=="function")return [];
+  const snapshot=runtime.nativeWarFleetRegistry()?.snapshot?.();
+  return Object.values((snapshot&&snapshot.ships)||{})
+   .filter(row=>row&&Number(row.entityID)>0&&/^coop-(pilot|player)-[0-9]{3,}$/.test(String(row.pilotID||"")))
+   .map(row=>({pilotID:String(row.pilotID),entityID:Number(row.entityID),
+    systemID:Number(row.systemID)||0,role:String(row.role||"patrol"),
+    source:"WAR_FLEET_REGISTRY"}));
+ }catch(_error){return []}
+}
 function liveLinks(){
  try{
   const runtime=require("./coopVirtualWorldRuntime");
@@ -116,7 +129,14 @@ function note(scene,victim,options,wreck){
   // NOT_UNIQUE_NAMED_PIRATE because the victim link was not on disk yet, so no
   // attribution, no merit and the HELD bounty could never pay. The live registry is
   // the authority the war system itself uses, so both are merged.
-  const links=mergeLinks(Object.values(saved?.links||[]),liveLinks());
+  // FW-076: the war fleet registry IS the authoritative pilot<->hull record the war
+  // itself mobilises from, and a hull can be in it while its identity link is missing.
+  // Measured 13:11:43Z: the casualty knew pilot coop-pilot-012 and entity 980000014126
+  // (that row came from the fleet registry), but neither the disk link file nor the live
+  // identity registry held a link for it, so attribution answered NOT_UNIQUE_NAMED_PIRATE
+  // and a real kill in a funded campaign could never pay. The registry rows are merged as
+  // one more identity source; scene membership still proves the hull is the real one.
+  const links=mergeLinks(Object.values(saved?.links||[]),liveLinks(),fleetLinks());
   const ext=__filename.endsWith(".cjs")?".cjs":"";
   // FW-024: a PLAYER hull as the upstream attacker is a real war participant
   // only through an ACTIVE militia enlistment against a registered war ship.
