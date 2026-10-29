@@ -81,12 +81,21 @@ function targetCooldownMs({ state, targetSystemID, baseMs = stallMs() } = {}) {
   return base * Math.min(8, Math.pow(2, Math.min(3, expired - 1)));
 }
 
+// FW-100: the in-memory pacing map has to obey the same rule as the durable record.
+// MEASURED on the play stack 2026-10-30 21:08Z: campaign r17 of 30003837 opened and was
+// released one minute later with WAR_ESCROW_MISSING, and because the map kept only a
+// timestamp the target was paced for the full 90-minute window even though that reason is
+// explicitly not a failure any more (FW-099). The map now carries the reason with the
+// time, so a lost-escrow release paces the border for the base window and no longer.
 function coolingDown(targetSystemID, nowMs, ttlMs = stallMs(), state = null) {
   const target = num(targetSystemID);
   const window = targetCooldownMs({ state, targetSystemID: target, baseMs: ttlMs });
-  const at = num(recentlyExpired.get(target));
+  const entry = recentlyExpired.get(target);
+  const at = num(entry && entry.at !== undefined ? entry.at : entry);
   if (at) {
-    if (num(nowMs) - at < window) return true;
+    const reason = String((entry && entry.reason) || "");
+    const paced = STALE_EXPIRY_REASONS.has(reason) ? Math.max(1, num(ttlMs) || 1) : window;
+    if (num(nowMs) - at < paced) return true;
     recentlyExpired.delete(target);
   }
   // The map above dies with the process, so the durable record is consulted too: a
@@ -109,9 +118,19 @@ function coolingDown(targetSystemID, nowMs, ttlMs = stallMs(), state = null) {
 // running with nothing behind them). Leaving them live squats the target forever and
 // hides the loss; expiring them releases the claim so a funded campaign can open.
 // A campaign with a PAID row is never expired: that escrow did exist and was spent.
-function expireUnfundedCampaigns(state, { nowMs = Date.now(), isFunded = null } = {}) {
+// FW-101: this guard only means anything where a campaign is NOT allowed to open
+// without escrow, and its own comment says so. MEASURED on the play stack 2026-10-30:
+// that stack runs EVEJS_COOP_WAR_REQUIRE_FUNDING=0 (its factions' funding plan is
+// REFUSED:NO_REAL_FACTION_INCOME, so demanding escrow would mean no war at all), yet the
+// expirer still killed every campaign about a minute after it opened (r17 and the sixteen
+// before it), each time with WAR_ESCROW_MISSING - the whole frontier was an open/expire
+// loop that looked exactly like "the war never starts". Where funding is not required a
+// campaign without escrow is the configured shape, not a loss, so nothing is expired.
+function expireUnfundedCampaigns(state, { nowMs = Date.now(), isFunded = null,
+  requireFunding = fundingRequired() } = {}) {
   const campaignIDs = [];
   if (!state || !state.campaigns || typeof isFunded !== "function") return { campaignIDs };
+  if (requireFunding !== true) return { campaignIDs, skipped: "FUNDING_NOT_REQUIRED" };
   const at = num(nowMs) > 0 ? num(nowMs) : Date.now();
   for (const campaign of Object.values(state.campaigns)) {
     if (!campaign) continue;
@@ -124,7 +143,8 @@ function expireUnfundedCampaigns(state, { nowMs = Date.now(), isFunded = null } 
     campaign.expiredAt = at;
     campaign.expiredReason = "WAR_ESCROW_MISSING";
     campaignIDs.push(campaign.campaignID);
-    recentlyExpired.set(num(campaign.targetSystemID), at);
+    recentlyExpired.set(num(campaign.targetSystemID),
+      { at, reason: String(campaign.expiredReason || "") });
     const target = state.territories && state.territories[String(campaign.targetSystemID)];
     const stillContested = liveCampaignFor(state, campaign.targetSystemID);
     if (target && target.state === "CONTESTED" && !stillContested) {
@@ -149,7 +169,8 @@ function expireStalledCampaigns(state, { nowMs = Date.now(), ttlMs = stallMs() }
     campaign.expiredAt = at;
     campaign.expiredReason = "NO_ASSAULT_DEPLOYMENT_PROOF";
     campaignIDs.push(campaign.campaignID);
-    recentlyExpired.set(num(campaign.targetSystemID), at);
+    recentlyExpired.set(num(campaign.targetSystemID),
+      { at, reason: String(campaign.expiredReason || "") });
     const target = state.territories && state.territories[String(campaign.targetSystemID)];
     // Only release the claim when this was the last live campaign on it.
     const stillContested = liveCampaignFor(state, campaign.targetSystemID);
