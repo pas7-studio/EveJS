@@ -5,17 +5,47 @@ const fs=require("node:fs");
 const positive=x=>Number.isSafeInteger(Number(x))&&Number(x)>0?Number(x):null;
 const named=x=>typeof x==="string"&&/^coop-pilot-[0-9]{3,}$/.test(x);
 // Pure: union two link lists without duplicating a pilot/entity pair.
+// FW-074: one hull has one identity, and one pilot flies one hull.
+//
+// Measured 11:24:26Z on a real war kill: the casualty was recorded, capture-by-force
+// followed, and attribution still answered NOT_UNIQUE_NAMED_PIRATE - because the disk
+// copy of the link and the live registry both contained the SAME entity under DIFFERENT
+// recorded systems (the virtual pilot had walked on), so the stock path counted two
+// attacker links and refused "not unique". The merge now collapses per ENTITY (the hull
+// is what dies) and per PILOT (a pilot cannot be in two places), keeping the newest
+// record, so a stale duplicate can never make a real attacker ambiguous again.
 function mergeLinks(...lists){
- const seen=new Set(),out=[];
+ const byEntity=new Map(),byPilot=new Map();
+ const newer=(candidate,current)=>{
+  const a=Number(candidate&&candidate.linkedAt)||0,b=Number(current&&current.linkedAt)||0;
+  if(a!==b)return a>b?candidate:current;
+  // Same age: prefer the record that still carries a usable position.
+  return (Number(candidate&&candidate.systemID)||0)>=(Number(current&&current.systemID)||0)?
+   candidate:current;
+ };
  for(const list of lists){
   for(const link of Array.isArray(list)?list:[]){
    if(!link||typeof link!=="object")continue;
-   const key=String(link.pilotID||"")+"|"+Number(link.entityID||0)+"|"+Number(link.systemID||0);
-   if(seen.has(key))continue;
-   seen.add(key);out.push(link);
+   const entityID=Number(link.entityID||0),pilotID=String(link.pilotID||"");
+   if(entityID>0){
+    const current=byEntity.get(entityID);
+    byEntity.set(entityID,current?newer(link,current):link);
+    continue;
+   }
+   if(!pilotID)continue;
+   const current=byPilot.get(pilotID);
+   byPilot.set(pilotID,current?newer(link,current):link);
   }
  }
- return out;
+ // A pilot that somehow holds two hulls is still one pilot: keep the newest binding.
+ const byPilotFinal=new Map();
+ for(const link of [...byEntity.values(),...byPilot.values()]){
+  const pilotID=String(link&&link.pilotID||"");
+  if(!pilotID)continue;
+  const current=byPilotFinal.get(pilotID);
+  byPilotFinal.set(pilotID,current?newer(link,current):link);
+ }
+ return [...byPilotFinal.values()];
 }
 // The live registry is authoritative; a missing runtime is simply an empty list.
 function liveLinks(){
