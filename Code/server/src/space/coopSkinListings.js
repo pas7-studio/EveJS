@@ -14,8 +14,11 @@ const path = require("path");
 // Rows live in the seller's own character record, next to the licences they escrow; the market
 // view is the union over characters. A listing therefore cannot exist without its owner.
 const KEY = "skinListings";
+const TRANSACTIONS_KEY = "skinMarketTransactions";
+const TRANSACTION_STATUS_SUCCESSFUL = 3;
 const VERSION = 1;
 const MAX_LISTINGS = 2000;
+const UUID_LIKE = /^[0-9a-f]{2,128}$/;
 
 function int(value) {
   const numeric = Number(value);
@@ -29,7 +32,7 @@ function uuidKey(value) {
 }
 
 function emptyState() {
-  return { version: VERSION, listings: {} };
+  return { version: VERSION, listings: {}, transactions: {} };
 }
 
 function normalizeState(raw) {
@@ -54,7 +57,24 @@ function normalizeState(raw) {
       public: row.public !== false,
     };
   }
-  return { version: VERSION, listings };
+  const transactions = {};
+  for (const [key, row] of Object.entries(raw.transactions || {})) {
+    const uuid = uuidKey(key);
+    if (!UUID_LIKE.test(uuid) || !row || typeof row !== "object") continue;
+    transactions[uuid] = {
+      uuid,
+      status: Math.max(0, int(row.status)),
+      updatedMs: Math.max(0, int(row.updatedMs)),
+      role: String(row.role || ""),
+      skin: String(row.skin || ""),
+      quantity: Math.max(0, int(row.quantity)),
+      gross: Math.max(0, int(row.gross)),
+      tax: Math.max(0, int(row.tax)),
+      net: Math.max(0, int(row.net)),
+      counterparty: int(row.counterparty),
+    };
+  }
+  return { version: VERSION, listings, transactions };
 }
 
 function createSkinListings({
@@ -135,6 +155,19 @@ function createSkinListings({
       }
     }
     return live;
+  }
+
+  function transactionRows(characterID) {
+    const id = int(characterID);
+    if (!enabled() || id <= 0) return [];
+    return Object.values(stateOf(id).transactions || {})
+      .sort((left, right) => (right.updatedMs - left.updatedMs) || left.uuid.localeCompare(right.uuid));
+  }
+
+  function transaction(characterID, uuid) {
+    const key = uuidKey(uuid);
+    if (!enabled() || !key) return null;
+    return transactionRows(characterID).find((row) => row.uuid === key) || null;
   }
 
   function all(nowMs) {
@@ -256,6 +289,20 @@ function createSkinListings({
     return { status: "EXPIRY_SET", listing: target };
   }
 
+  // Both sides keep a copy of the transaction, because each of them asks for it from their own
+  // record. The status is the one the client's enum defines (3 = successful).
+  function recordTransaction(actorID, row) {
+    const state = stateOf(actorID);
+    const transactions = state.transactions || {};
+    transactions[row.uuid] = row;
+    state.transactions = transactions;
+    try {
+      writeState(actorID, state);
+    } catch (_error) {
+      // the money and the copies already moved; a missing row must not undo the sale
+    }
+  }
+
   // Buying pays for real: the buyer's gross price moves to the seller through the native wallet
   // transfer, the seller pays the sales tax out of the proceeds, and only then do the escrowed
   // copies change hands. Any failure after the transfer puts the ISK back, so a purchase either
@@ -339,12 +386,39 @@ function createSkinListings({
       }
     }
     const transaction = uuidKey(randomUuid());
+    const nowMs = int(clock());
+    recordTransaction(row.sellerID, {
+      uuid: transaction,
+      status: TRANSACTION_STATUS_SUCCESSFUL,
+      updatedMs: nowMs,
+      role: "seller",
+      skin: row.skin,
+      quantity: wanted,
+      gross,
+      tax,
+      net,
+      counterparty: buyer,
+    });
+    recordTransaction(buyer, {
+      uuid: transaction,
+      status: TRANSACTION_STATUS_SUCCESSFUL,
+      updatedMs: nowMs,
+      role: "buyer",
+      skin: row.skin,
+      quantity: wanted,
+      gross,
+      tax,
+      net,
+      counterparty: row.sellerID,
+    });
     return { status: "PURCHASED", transaction, gross, tax, net, quantity: wanted, skin: row.skin };
   }
 
   return Object.freeze({
     enabled,
     purchase,
+    transaction,
+    transactionRows,
     all,
     owned,
     get,

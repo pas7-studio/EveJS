@@ -54,6 +54,9 @@ const {
 const {
   createSkinListingGatewayService,
 } = require("./skinListingGatewayService");
+const {
+  createMarketTransactionGatewayService,
+} = require("./marketTransactionGatewayService");
 const { createInsurgencyGatewayService } = require("./insurgencyGatewayService");
 const {
   createMercenaryDenGatewayService,
@@ -113,6 +116,7 @@ function createGatewayServiceRegistry(context) {
     createTitleDefinitionGatewayService(context),
     createSkinMarketFeesGatewayService(context),
     createSkinListingGatewayService(context),
+    createMarketTransactionGatewayService(context),
     createInsurgencyGatewayService(context),
     createNewEdenStoreGatewayService(context),
     createPlexVaultGatewayService(context),
