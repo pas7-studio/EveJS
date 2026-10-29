@@ -139,6 +139,7 @@ const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.assetholding.entitlement.api.RedeemRequest",
   "eve_public.assetholding.entitlement.api.admin.ExpireRequest",
   "eve_public.payment.schedule.api.GetRequest",
+  "eve_public.user.license.api.GetRequest",
   "eve_public.payment.schedule.api.GetActiveByTypeRequest",
   "eve_public.payment.code.api.RedeemRequest",
 ]);
@@ -192,6 +193,15 @@ function createAbsentStateGatewayService() {
       if (requestTypeName === "eve_public.assetholding.entitlement.api.admin.ExpireRequest") {
         return emptyAnswer(NOT_FOUND, "no such entitlement in this world",
           "eve_public.assetholding.entitlement.api.admin.ExpireResponse");
+      }
+
+      if (requestTypeName === "eve_public.user.license.api.GetRequest") {
+        // A user licence is an account-level grant (a ToS/EULA acceptance, a subscription) and this
+        // world never issues one. NOT_FOUND is the answer the client's own messenger expects: it
+        // treats 404 as "no user license found" and returns None. The default empty message it used
+        // to receive instead built a licence whose last_modified was the epoch, i.e. a fake record.
+        return emptyAnswer(NOT_FOUND, "no user licences exist in this world",
+          "eve_public.user.license.api.GetResponse");
       }
 
       if (requestTypeName === "eve_public.payment.schedule.api.GetRequest") {
