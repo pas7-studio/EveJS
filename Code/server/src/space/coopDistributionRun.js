@@ -43,8 +43,11 @@ const SALE_SETTLEMENT_READ_MS = 1200;
 const SALE_SETTLEMENT_READS = 4;
 const MAX_POLLS_PER_BEAT = 4;
 // Refusals that mean "not yet" rather than "no": the run waits, bounded, instead of stopping.
+// Refusals that mean "not yet": the hull is busy, being rebuilt, the daemon is away, or the
+// pilot is inside the market cooldown. Measured 2026-10-30: a loaded hull was blocked
+// SALE_NOT_SOLD:NATIVE_NPC_BUSY and stopped carrying 20 255 units for good.
 const SALE_RETRYABLE = new Set(["NOT_AT_NATIVE_STATION", "SALE_TIMEOUT", "MARKET_UNAVAILABLE",
-  "COOLDOWN"]);
+  "COOLDOWN", "NATIVE_NPC_BUSY", "NPC_BUSY", "NO_ELIGIBLE_STACK", "BOOK_UNREADABLE"]);
 
 function num(x) { return Number.isFinite(Number(x)) ? Number(x) : 0; }
 const phase2 = (value) => String(value || PHASE.TO_ORIGIN);
