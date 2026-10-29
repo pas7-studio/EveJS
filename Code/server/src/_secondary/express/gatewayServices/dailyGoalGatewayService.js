@@ -144,6 +144,7 @@ const DAILY_GOAL_PROTO_ROOT = protobuf.Root.fromJSON({
               fields: {
                 kill_npc: { type: "MatcherList", id: 1 },
                 mine_ore: { type: "MatcherList", id: 3 },
+                install_manufacturing_job: { type: "MatcherList", id: 9 },
                 complete_daily_goal: { type: "MatcherList", id: 10 },
                 space_jump: { type: "EmptyConfig", id: 13 },
               },
@@ -289,7 +290,9 @@ function buildAttributesPayload(definition, dayStart, corporationID, rewardSkill
   const configuration = {};
   if (definition.kind === "kill_npc") configuration.kill_npc = {};
   else if (definition.kind === "mine_ore") configuration.mine_ore = {};
-  else if (definition.kind === "complete_daily_goal") configuration.complete_daily_goal = {};
+  else if (definition.kind === "install_manufacturing_job") {
+    configuration.install_manufacturing_job = {};
+  } else if (definition.kind === "complete_daily_goal") configuration.complete_daily_goal = {};
   else if (definition.kind === "space_jump") configuration.space_jump = {};
 
   return {

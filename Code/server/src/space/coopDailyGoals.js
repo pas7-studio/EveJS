@@ -13,6 +13,8 @@
 //                          the share of damage you really did (never a full kill)
 //   space_jump          -> real accepted stargate jumps, counted by the one-line hook
 //                          in space/runtime.startStargateJump
+//   install_manufacturing_job -> real industry jobs this character installed today
+//                          (industryRuntimeState, the same rows the industry window reads)
 //   complete_daily_goal -> goals this character actually redeemed today
 //
 // Names and descriptions are real message ids from the pinned client's own
@@ -44,6 +46,8 @@ const MESSAGES = Object.freeze({
   killNpcDescription: 550642, // "Destroy NPCs"
   jumpName: 532900, // "Jump Through"
   completeGoalsName: 696804, // "Complete other goals"
+  manufactureName: 1040182, // "Manufacture"
+  manufactureDescription: 61487, // "Manufacturing"
   completeGoalsDescription: 696803, // "Complete Goal"
   noHelp: 36, // an empty message in the client's own data
 });
@@ -91,6 +95,7 @@ const REWARD_RULES = Object.freeze({
   // of battleships (6 points each) pays well above it without becoming a farm.
   kill_npc: { perPoint: 3000, minimum: 20000, maximum: 90000 },
   space_jump: { perUnit: 1500, minimum: 12000, maximum: 40000 },
+  install_manufacturing_job: { perUnit: 12000, minimum: 20000, maximum: 40000 },
   complete_daily_goal: { flat: 40000 },
 });
 
@@ -132,6 +137,18 @@ const DEFINITIONS = Object.freeze([
     career: 1,
     target: 10,
     rewardSkillPoints: 15000,
+  }),
+  Object.freeze({
+    goalID: "1e0d0005-0000-4000-8000-000000000005",
+    kind: "install_manufacturing_job",
+    nameID: MESSAGES.manufactureName,
+    descriptionID: MESSAGES.manufactureDescription,
+    helpTextID: MESSAGES.noHelp,
+    category: 1,
+    career: 2,
+    target: 2,
+    // 12 000 SP per job, 20 000 minimum so one job already pays for the flight.
+    rewardSkillPoints: 24000,
   }),
   Object.freeze({
     goalID: "1e0d0004-0000-4000-8000-000000000004",
@@ -274,6 +291,7 @@ function createDailyGoals({
   gameStore,
   characterState,
   miningLogsFor = null,
+  industryJobsFor = null,
   hullWeightFor = null,
   clock = () => Date.now(),
   env = process.env,
@@ -338,6 +356,26 @@ function createDailyGoals({
     )).getCharacterMiningLogs(characterID);
   }
 
+  function industryJobs(characterID) {
+    if (typeof industryJobsFor === "function") {
+      return industryJobsFor(characterID) || [];
+    }
+    return require(path.join(
+      __dirname,
+      "../services/industry/industryRuntimeState",
+    )).listJobsByOwner(characterID, true) || [];
+  }
+
+  function manufacturingJobsToday(characterID, nowMs) {
+    const { start, end } = dayBounds(nowMs);
+    let total = 0;
+    for (const job of industryJobs(characterID)) {
+      const at = filetimeToMs(job && job.startDate);
+      if (at >= start && at < end) total += 1;
+    }
+    return total;
+  }
+
   function minedUnitsToday(characterID, nowMs) {
     const { start, end } = dayBounds(nowMs);
     let total = 0;
@@ -390,6 +428,9 @@ function createDailyGoals({
       return npcKillScoreToday(characterID, nowMs).points;
     }
     if (definition.kind === "space_jump") return state.jumps;
+    if (definition.kind === "install_manufacturing_job") {
+      return manufacturingJobsToday(characterID, nowMs);
+    }
     if (definition.kind === "complete_daily_goal") {
       return claimsToday(state, nowMs, definition.goalID);
     }
