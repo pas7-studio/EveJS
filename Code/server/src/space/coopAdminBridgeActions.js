@@ -528,7 +528,31 @@ function resolveAdminItemType(registry, typeID, name) {
     const lookup = typeID > 0
       ? registry.resolveItemByTypeID(typeID)
       : registry.resolveItemByName(String(name || ""));
-    return lookup && lookup.match ? lookup.match : (lookup || null);
+    if (lookup && lookup.match) return lookup.match;
+    if (lookup && lookup.typeID) return lookup;
+    // An ambiguous name is normal here: the SDE carries unpublished ♦ variants of
+    // the same hull, so "Venture" matches three types. Prefer the published entry
+    // whose label is exactly the requested name, then any published one.
+    if (lookup && Array.isArray(lookup.suggestions) && lookup.suggestions.length) {
+      const wanted = String(name || "").trim().toLowerCase();
+      const parsed = lookup.suggestions.map((text) => {
+        const match = /^(.*?)\s*\((\d+)/.exec(String(text));
+        if (!match) return null;
+        return {
+          label: String(match[1]).replace(/[♦\s]+/g, " ").trim(),
+          typeID: Number(match[2]),
+          unpublished: /unpublished/i.test(String(text)),
+        };
+      }).filter((row) => row && row.typeID > 0);
+      const chosen = parsed.find((row) => !row.unpublished && row.label.toLowerCase() === wanted)
+        || parsed.find((row) => !row.unpublished)
+        || parsed[0];
+      if (chosen) {
+        const resolved = registry.resolveItemByTypeID(chosen.typeID);
+        return resolved && resolved.match ? resolved.match : (resolved || null);
+      }
+    }
+    return null;
   } catch (_error) {
     return null;
   }
