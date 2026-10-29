@@ -8,7 +8,9 @@
 //
 // Nothing is invented: every phase keeps its own env flag and its own durable journals, so
 // this is a dispatcher, not a new authority. A throwing phase is reported and skipped.
-const PHASES = ["refinery", "manufacture", "distribution"];
+const PHASES = ["refinery", "manufacture", "distribution", "distributionRun"];
+let distributionRunInFlight = false;
+let lastDistributionRunStatus = null;
 let lastDistributionStatus = null;
 
 function note(failure, phase, error) {
@@ -24,6 +26,154 @@ function note(failure, phase, error) {
   } catch (_error) { /* telemetry only */ }
 }
 
+function observeLoop(event, detail) {
+  try { require("./coopRuntimeProbe").observe(event, null, null, detail); }
+  catch (_error) { /* telemetry only */ }
+}
+// Everything a freight run needs, built from the world itself: a real hull marker, the real
+// hangars, the real seeded book (read-only), real stations and a real reciprocal gate.
+function distributionRunAuthorities(options = {}) {
+  const env = options.env || process.env;
+  try {
+    const store = require("./npc/nativeNpcStore");
+    const items = require("../services/inventory/itemStore");
+    const inventory = require("../services/inventory/itemTypeRegistry");
+    const worldData = require("./worldData");
+    const runtime = require("./runtime");
+    const npc = require("./npc/npcRuntime");
+    const sceneFor = options.sceneForSystem ||
+      ((id) => runtime.ensureScene(id, {refreshStargates: false}));
+    let db = null;
+    const openDb = () => {
+      if (db !== null) return db || null;
+      try {
+        const Better = require("better-sqlite3");
+        db = new Better(env.EVEJS_MARKET_DB || "/var/lib/evejs/market/market.sqlite",
+          {readonly: true, fileMustExist: true});
+      } catch (_error) { db = false; }
+      return db || null;
+    };
+    const hulls = () => (store.listNativeEntities() || [])
+      .filter((row) => /^coop-distribution-[0-9]+-hauler$/.test(String(row.operatorKind || "")))
+      .map((row) => Number(row.entityID)).filter(Boolean);
+    const distanceTo = (stationID, systemID, haulerID) => {
+      try {
+        const scene = sceneFor(systemID);
+        const ship = scene && scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
+        const station = worldData.getStationByID(stationID);
+        if (!ship || !ship.position || !station || !station.position) return null;
+        const dx = ship.position.x - station.position.x;
+        const dy = ship.position.y - station.position.y;
+        const dz = ship.position.z - station.position.z;
+        return Math.max(0, Math.hypot(dx, dy, dz) - (Number(ship.radius) || 0) -
+          (Number(station.radius) || 0));
+      } catch (_error) { return null; }
+    };
+    // The same durable ship, brought back into its scene from its own record.
+    const ensureLive = (haulerID) => {
+      try {
+        const native = store.getNativeEntity(haulerID);
+        if (!native) return false;
+        const scene = sceneFor(Number(native.systemID) || 0);
+        if (!scene) return false;
+        const ship = typeof scene.getEntityByID === "function" ? scene.getEntityByID(haulerID) : null;
+        if (ship) return true;
+        const answer = require("./npc/nativeNpcService")
+          .materializeStoredNativeController(scene, haulerID);
+        return Boolean(answer && answer.success === true);
+      } catch (_error) { return false; }
+    };
+    const goTo = (stationID, haulerID) => {
+      // The manual order needs a live controller; a restored hull may have its ship back
+      // without one, so the scene follow - the same call the station arrival uses - is the
+      // fallback. Measured 2026-10-30: the order answered NOT_FOUND while the ship was
+      // already sitting at its station.
+      try {
+        const answer = require("./npc/npcService").issueManualOrder(haulerID, {
+          type: "follow", targetID: stationID, followRangeMeters: 2000, allowWeapons: false,
+        });
+        if (answer && answer.success === true) return true;
+      } catch (_error) { /* fall through to the scene order */ }
+      try {
+        const native = store.getNativeEntity(haulerID);
+        const scene = sceneFor(Number(native && native.systemID) || 0);
+        const ship = scene && scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
+        if (!ship || typeof scene.followShipEntity !== "function") return false;
+        return scene.followShipEntity(ship, stationID, 2000, {allowWeapons: false}) !== false;
+      } catch (_error) { return false; }
+    };
+    return {
+      env, hulls, distanceTo, goTo, ensureLive,
+      planTrip: ({haulerID}) => {
+        const native = store.getNativeEntity(haulerID);
+        const systemID = Number(native && native.systemID) || 0;
+        return require("./coopDistributionPlan").planTrip({
+          haulerID, store, items, inventory, db: openDb(), worldData, scene: sceneFor(systemID),
+          connectedGates: ({sourceSystemID, targetSystemID}) => {
+            const pair = require("./coopNpcGateTravel").connectedGates({
+              sourceSystemID, targetSystemID, sourceScene: sceneFor(sourceSystemID),
+              getGate: (id) => worldData.getStargateByID(id),
+            });
+            return pair && pair[0] ? pair[0] : null;
+          },
+        });
+      },
+      lift: async ({haulerID, stationID, systemID, demand}) => {
+        const lift = require("./coopNpcMineralLift").createMineralLift({
+          store, items, getStation: (id) => worldData.getStationByID(id),
+          resolveType: (id) => inventory.resolveItemByTypeID(id),
+          corpID: Number(env.EVEJS_COOP_FACTORY_CORP_ID || 1000129),
+          call: (method, params) => require("../services/market/marketDaemonClient")
+            .marketDaemonClient.call(method, params),
+          root: env.EVEJS_COOP_NPC_MARKET_ROOT || "/var/lib/evejs/coop-native-market",
+          probe: require("./coopRuntimeProbe"),
+        });
+        return lift.lift({systemID, stationID, haulerID, cap: 1e6, demand});
+      },
+      planCrossing: ({haulerID, gate}) => {
+        const native = store.getNativeEntity(haulerID);
+        // The hull needs an identity the registry will accept: the one already bound to it,
+        // or the lowest free name (the crossing itself links it from the durable record).
+        let pilotID = null;
+        try {
+          const links = JSON.parse(require("fs").readFileSync(
+            env.EVEJS_COOP_IDENTITY_FILE || "/var/lib/evejs/coop-npc-links.json", "utf8")).links || {};
+          const bound = Object.values(links).find((row) =>
+            Number(row && row.entityID) === Number(haulerID));
+          if (bound) pilotID = String(bound.pilotID);
+          else {
+            for (let n = 1; n <= 9999; n += 1) {
+              const candidate = "coop-pilot-" + String(n).padStart(3, "0");
+              if (!links[candidate]) { pilotID = candidate; break; }
+            }
+          }
+        } catch (_error) { pilotID = null; }
+        return require("./coopNpcGateCrossing").plan({
+          entityID: haulerID, pilotID,
+          operatorKind: String(native && native.operatorKind || ""), gate, now: Date.now(),
+        });
+      },
+      crossingPhase: (haulerID) => {
+        const row = (require("./coopNpcGateCrossing").read() || [])
+          .find((entry) => Number(entry.entityID) === Number(haulerID));
+        return row ? String(row.phase) : null;
+      },
+      sell: ({haulerID, stationID, systemID}) => {
+        try {
+          return require("./coopVirtualWorldRuntime").sellOnArrival({systemID, stationID,
+            haulerID, types: [], scene: sceneFor(systemID)});
+        } catch (error) {
+          return {status: "SALE_THREW", reason: String((error && error.message) || error)};
+        }
+      },
+      observe: require("./coopRuntimeProbe").observe,
+      minIsk: Number(env.EVEJS_COOP_DISTRIBUTION_MIN_ISK || 200000),
+    };
+  } catch (error) {
+    return {hulls: () => [], planTrip: () => ({status: "AUTHORITY_UNAVAILABLE",
+      reason: String((error && error.message) || error).slice(0, 90)})};
+  }
+}
 // The crossing needs real scenes, real gates, the live identity registry and the verified
 // native transfer - never a stub. Eager requirements are lazy so a world without them still
 // boots; a missing authority is reported, not guessed.
@@ -113,7 +263,8 @@ function distributionAuthorities(options = {}) {
       }),
       // A durable ship whose scene was rebuilt is re-materialized from its own record.
       materialize: options.materialize ||
-        ((scene, id) => require("./npc/nativeNpcService").materializeStoredNativeController(scene, id)),    };
+        ((scene, id) => require("./npc/nativeNpcService").materializeStoredNativeController(scene, id)),
+    };
   } catch (error) {
     return {status: "AUTHORITY_UNAVAILABLE", reason: String((error && error.message) || error).slice(0, 90)};
   }
@@ -147,6 +298,28 @@ function tick(options = {}) {
   // never plans or starts one on its own (cross-system transfer is opt-in, see the docs).
   // It also needs a native transfer adapter, which the caller must supply: without one the
   // phase reports TRANSFER_UNAVAILABLE instead of pretending a hull could cross.
+  // One real freight trip: lift at the origin station, cross the gate, sell at the
+  // destination. It is DISPATCHED rather than awaited here because the lift and the sale
+  // are journaled async work; a second beat while one is in flight would half-do a trip.
+  const wantsRun = String(env.EVEJS_COOP_DISTRIBUTION_RUN || "") === "1";
+  if (!wantsRun) statuses.distributionRun = "DISABLED";
+  else if (distributionRunInFlight) statuses.distributionRun = "IN_FLIGHT";
+  else {
+    distributionRunInFlight = true;
+    Promise.resolve()
+      .then(() => require("./coopDistributionRun").tickAll(distributionRunAuthorities(options)))
+      .then((rows) => {
+        const summary = (rows || []).map((row) => String(row.status || "")).join(",");
+        if (summary !== lastDistributionRunStatus) {
+          lastDistributionRunStatus = summary;
+          observeLoop("living-coop-loop-distribution-run", null, null, { status: summary || "EMPTY" });
+        }
+      })
+      .catch((error) => observeLoop("living-coop-loop-distribution-run-failed", null, null,
+        { reason: String((error && error.message) || error).slice(0, 90) }))
+      .finally(() => { distributionRunInFlight = false; });
+    statuses.distributionRun = "DISPATCHED";
+  }
   const wantsDistribution = String(env.EVEJS_COOP_DISTRIBUTION || "") === "1";
   if (!wantsDistribution) statuses.distribution = "DISABLED";
   else {
@@ -184,4 +357,4 @@ function advanceDistribution(options = {}) {
   });
 }
 
-module.exports = { PHASES, tick, advanceDistribution };
+module.exports = { PHASES, tick, advanceDistribution, distributionAuthorities, distributionRunAuthorities };

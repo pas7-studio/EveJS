@@ -72,15 +72,21 @@ function localBid(buys, {stationID, typeID} = {}) {
 
 // What can be lifted right now: never more than the stack, never more than the
 // station's own real demand, never more than the caller's cap per type.
-function planLift({stacks, buys, stationID, cap = 1e6} = {}) {
+// A demand map is a DISTRIBUTION lift: the stack is taken because the DESTINATION pays for it,
+// not because this station bids. Measured 2026-10-30, every station that holds the
+// corporation's minerals bids for none of them, so a lift that insists on a local bid can
+// never load a freight run - while Jita buys the same Tritanium at 4 ISK x 4 000 000.
+function planLift({stacks, buys, stationID, cap = 1e6, demand = null} = {}) {
   const budget = new Map();
   const out = [];
+  const demandMap = demand && typeof demand === "object" ? demand : null;
   for (const stack of Array.isArray(stacks) ? stacks : []) {
     const typeID = pos(stack.typeID);
     const available = pos(stack.quantity !== undefined ? stack.quantity : stack.stacksize);
     if (!typeID || !available) continue;
-    const bid = localBid(buys, {stationID, typeID});
-    if (!bid) continue;
+    const target = demandMap ? demandMap[typeID] || demandMap[String(typeID)] || null : null;
+    const bid = target ? {price: num(target.price), vol_remaining: num(target.volume || target.vol_remaining), order_id: ""} : localBid(buys, {stationID, typeID});
+    if (!bid || !(num(bid.vol_remaining) > 0)) continue;
     const already = budget.get(typeID) || 0;
     const wanted = Math.max(0, Math.min(available, Math.floor(num(bid.vol_remaining)) - already,
       Math.floor(num(cap)) - already));
@@ -162,7 +168,7 @@ function createMineralLift({store, items, call, getStation, resolveType, corpID,
       recovered, pending};
   }
 
-  async function lift({systemID, stationID, haulerID, cap = 1e6} = {}) {
+  async function lift({systemID, stationID, haulerID, cap = 1e6, demand = null} = {}) {
     if (blocked) return {status: blocked};
     const system = pos(systemID);
     const station = pos(stationID);
@@ -182,7 +188,7 @@ function createMineralLift({store, items, call, getStation, resolveType, corpID,
       const book = await call("GetOrders", {region_id: regionID, type_id: typeID});
       buys.push(...(Array.isArray(book?.buys) ? book.buys : []));
     }
-    const plan = planLift({stacks, buys, stationID: station, cap});
+    const plan = planLift({stacks, buys, stationID: station, cap, demand});
     if (!plan.length) return {status: "NO_LOCAL_BID", stacks: stacks.length};
     const lifted = [];
     for (const step of plan) {
