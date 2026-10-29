@@ -1014,7 +1014,7 @@ function advanceNativeWarOpening(){
   // changed from "no navy" to "no money" kept the same top-level reason
   // NO_OPENABLE_FRONT, so the new precondition was never published and the world
   // looked frozen for an hour. Every distinct refusal now gets its own event.
-  const key=reason+"|"+JSON.stringify(skips).slice(0,600);
+  const key=reason+"|"+String(result.refusedCommand||"")+"|"+String(result.refusedEdge?JSON.stringify(result.refusedEdge):"")+"|"+JSON.stringify(skips).slice(0,600);
   if(warSkipReasons["opening"]!==key){
    try{
     require("./coopRuntimeProbe").observe("living-native-war-opening-blocked",null,null,{
@@ -1022,6 +1022,11 @@ function advanceNativeWarOpening(){
      territories:result.plan?.territories||{},
      presence:result.plan?.summary||{},
      fronts:(result.plan?.fronts||[]).length,
+     // FW-081: which command and which border the state machine refused.
+     refusedCommand:String(result.refusedCommand||""),
+     refusedWarID:String(result.refusedWarID||""),
+     refusedCampaignID:String(result.refusedCampaignID||""),
+     refusedEdge:result.refusedEdge||null,
      skipped:skips.slice(0,8),
      tickSystems,
      visitedSystems:[...visitedSystems].slice(0,12),
