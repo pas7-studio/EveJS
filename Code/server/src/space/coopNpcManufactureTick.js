@@ -307,6 +307,22 @@ async function runOnce(options = {}) {
           stationID: blueprint.stationID, status: "MARKET_UNREACHABLE",
           reason: String((error && error.message) || error).slice(0, 90)});
     }
+    // A station that bids for nothing here is not the end of the story: the corporation now
+    // flies its goods to a buyer one gate away, so demand there is real demand. Measured
+    // 2026-10-30: every local station reported NO_REAL_BUYER while Jita bid 560 000 for the
+    // ammunition the corporation had already produced.
+    if (!bid && typeof options.bidElsewhere === "function") {
+      try {
+        const elsewhere = await options.bidElsewhere({stationID: blueprint.stationID,
+          productTypeID: plan.productTypeID});
+        if (elsewhere && num(elsewhere.price) > 0 && num(elsewhere.volume) > 0) {
+          bid = {...elsewhere, where: "elsewhere"};
+          note(options, "living-npc-manufacture-buyer-elsewhere", {systemID: options.systemID,
+            stationID: blueprint.stationID, productTypeID: plan.productTypeID,
+            status: "BUYER_ELSEWHERE", reason: "system " + num(elsewhere.systemID)});
+        }
+      } catch (_error) { /* no neighbour is no buyer */ }
+    }
     const productValue = bid && bid.price > 0 ? plan.productPerRun * bid.price : 0;
     if (isTrivialRecipe({materialValue, productValue, minRatio})) {
       candidates.push({stationID: blueprint.stationID,

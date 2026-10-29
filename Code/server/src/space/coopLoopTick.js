@@ -504,6 +504,40 @@ function tick(options = {}) {
   run("manufacture", String(env.EVEJS_COOP_NPC_MANUFACTURE || "") === "1", () =>
     String(require("./coopNpcManufactureTick").tick({
       systemID: options.systemID, now: options.now,
+      // Demand one gate away is real demand: the manufacturer may build for a buyer the
+      // freight run can actually reach.
+      bidElsewhere: (query) => {
+        try {
+          const inventory = require("../services/inventory/itemTypeRegistry");
+          const worldData = require("./worldData");
+          const runtime = require("./runtime");
+          const Better = require("better-sqlite3");
+          const db = new Better(process.env.EVEJS_MARKET_DB || "/var/lib/evejs/market/market.sqlite",
+            {readonly: true, fileMustExist: true});
+          const station = worldData.getStationByID(Number(query.stationID));
+          const fromSystemID = Number(station && station.solarSystemID) || 0;
+          if (!fromSystemID) return null;
+          const scene = runtime.ensureScene(fromSystemID, {refreshStargates: false});
+          const systems = new Set();
+          for (const entity of (scene && Array.isArray(scene.staticEntities)
+            ? scene.staticEntities : [])) {
+            if (String(entity.kind) !== "stargate") continue;
+            const gate = worldData.getStargateByID(entity.itemID);
+            const destination = Number(gate && gate.destinationSolarSystemID) || 0;
+            if (destination && destination !== fromSystemID) systems.add(destination);
+          }
+          if (!systems.size) return null;
+          const placeholders = [...systems].map(() => "?").join(",");
+          const row = db.prepare("select station_id, solar_system_id, max(price) as price, " +
+            "sum(quantity) as volume from seed_buy_orders where type_id=? and quantity>0 " +
+            "and solar_system_id in (" + placeholders + ") group by station_id " +
+            "order by price desc limit 1").get(Number(query.productTypeID), ...[...systems]);
+          db.close();
+          if (!row) return null;
+          return {price: Number(row.price) || 0, volume: Number(row.volume) || 0,
+            stationID: Number(row.station_id) || 0, systemID: Number(row.solar_system_id) || 0};
+        } catch (_error) { return null; }
+      },
     }).status || "UNKNOWN"));
   // The distribution crossing only ever advances a run an operator already journaled; it
   // never plans or starts one on its own (cross-system transfer is opt-in, see the docs).
