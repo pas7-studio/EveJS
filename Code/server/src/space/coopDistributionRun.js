@@ -47,7 +47,7 @@ const MAX_POLLS_PER_BEAT = 4;
 // pilot is inside the market cooldown. Measured 2026-10-30: a loaded hull was blocked
 // SALE_NOT_SOLD:NATIVE_NPC_BUSY and stopped carrying 20 255 units for good.
 const SALE_RETRYABLE = new Set(["NOT_AT_NATIVE_STATION", "SALE_TIMEOUT", "MARKET_UNAVAILABLE",
-  "COOLDOWN", "NATIVE_NPC_BUSY", "NPC_BUSY", "NO_ELIGIBLE_STACK", "BOOK_UNREADABLE"]);
+  "COOLDOWN", "NO_ELIGIBLE_STACK", "BOOK_UNREADABLE"]);
 
 function num(x) { return Number.isFinite(Number(x)) ? Number(x) : 0; }
 const phase2 = (value) => String(value || PHASE.TO_ORIGIN);
@@ -472,9 +472,9 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     // The empty hold is proof enough and needs no market at all, so it is asked FIRST.
     const held = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : null;
     if (Number.isFinite(held) && held === 0 && (num(state.quantity) > 0 || num(state.isk) > 0)) {
-      // The goods are gone but the price was never captured: the ledger row says so.
-      appendFreight(state, {quantity: num(state.quantity), isk: 0, at: now, iskUnknown: true,
-        status: "SOLD_VERIFIED_BY_HOLD"}, env);
+      // The goods are gone, but this is NOT a payment row: measured 2026-10-30 the ledger got
+      // rows from here that no settlement could ever back, and the cross-check called it out.
+      // The run records the delivery in its own journal instead.
       return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, iskUnknown: true });
     }
     if (typeof authorities.sell !== "function") return { status: "NO_SELL" };
@@ -572,7 +572,12 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       const why = String(settled.reason || "").slice(0, 50);
       // A refusal that only says "not yet" is not an answer: the hull is being rebuilt,
       // the market daemon is away, or the visit timed out. Those retry; a real refusal stops.
-      const retryable = SALE_RETRYABLE.has(String(settled.reason || ""));
+      // Anything the world reports as BUSY is "not yet", whatever its exact spelling: measured
+      // 2026-10-30 NATIVE_NPC_BUSY and TRADE_BUSY in the same afternoon, each blocking a loaded
+      // hull until an operator reset it.
+      const whyText = String(settled.reason || "");
+      const retryable = SALE_RETRYABLE.has(whyText) || /_BUSY$/.test(whyText) ||
+        /IN_FLIGHT$/.test(whyText);
       if (!retryable) {
         return finish(PHASE.BLOCKED, "SALE_NOT_SOLD:" + why, { sellCalls: calls, isk });
       }
