@@ -16,7 +16,22 @@ const parseFiletime = v => {
 };
 const valid = () => ({ok:true});
 const refuse = error => ({ok:false,error});
-function validateDirect({session, factionID, characterID, character, corporation, corpRuntime, standing, nowFiletime}) {
+// FW-096 (owner decision 2026-10-30): enlistment may require the SECOND reputation
+// level instead of the first. Native Factional Warfare treats a raw 0.0 standing as
+// eligible, which here let a fresh pilot join a war the world had to fund before
+// farming anything at all. The threshold is one env knob so it stays a rule and not
+// a hidden constant: EVEJS_COOP_FW_ENLIST_MIN_STANDING. The DEFAULT stays 0, i.e.
+// exactly the native rule, so nothing changes unless an operator asks for it; a
+// non-numeric value falls back to the default and never silently to something else.
+const DEFAULT_MIN_STANDING = 0;
+function minEnlistStanding(env = process.env) {
+  const raw = env && env.EVEJS_COOP_FW_ENLIST_MIN_STANDING;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return DEFAULT_MIN_STANDING;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : DEFAULT_MIN_STANDING;
+}
+
+function validateDirect({session, factionID, characterID, character, corporation, corpRuntime, standing, nowFiletime, env = process.env}) {
   const charID=POS(characterID),corpID=POS(session && (session.corporationID || session.corpid));
   if (!charID || charID!==POS(session && (session.characterID || session.charid)) || !corpID ||
       !character || !corporation || POS(corporation.corporationID)!==corpID)
@@ -27,9 +42,13 @@ function validateDirect({session, factionID, characterID, character, corporation
     return refuse("FW_UNSUPPORTED_MILITIA_FACTION");
   const present=POS(character.directFactionID);
   if (present && present!==factionID) return refuse("FW_RETIRE_BEFORE_REENLIST");
-  // Native FW treats 0.0 base standing as eligible, NOT effective Social/Diplomacy standing.
+  // RAW standing, never the Social/Diplomacy-adjusted one, because that is what the
+  // client shows as the faction's own reputation line.
+  const required = minEnlistStanding(env);
   if (typeof standing!=="number" || !Number.isFinite(standing) || standing < 0)
     return refuse("FW_RAW_FACTION_STANDING_TOO_LOW");
+  if (standing < required)
+    return {...refuse("FW_RAW_FACTION_STANDING_TOO_LOW"), required, standing};
   const now=parseFiletime(nowFiletime),until=parseFiletime(character.directEnlistmentCooldownTimestamp);
   if (now===null || now<=0n || until===null) return refuse("FW_COOLDOWN_UNVERIFIABLE");
   if (until>now) return refuse("FW_DIRECT_ENLISTMENT_COOLDOWN_ACTIVE");
@@ -146,6 +165,6 @@ function assertPersistedCorpPolicy(session, factions, deps=nativeDependencies())
  const corpID=POS(session && (session.corporationID || session.corpid));
  return raiseIfDenied(verifyPersistedCorpPolicy(deps.corpRuntime.getCorporationRuntime(corpID),factions),deps);
 }
-module.exports={DIRECT_FACTIONS,parseFiletime,parseMask,validateDirect,validateRetire,validateCorpPolicy,
+module.exports={DEFAULT_MIN_STANDING,minEnlistStanding,DIRECT_FACTIONS,parseFiletime,parseMask,validateDirect,validateRetire,validateCorpPolicy,
   assertDirect,assertRetire,assertCorpPolicy,verifyPersistedDirect,verifyPersistedRetire,
   verifyPersistedCorpPolicy,assertPersistedDirect,assertPersistedRetire,assertPersistedCorpPolicy};
