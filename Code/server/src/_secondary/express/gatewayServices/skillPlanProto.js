@@ -383,19 +383,24 @@ function buildSkillPlanProtoRoot() {
 // so they share one storage and one implementation; only the response type name
 // differs, and the two are compared at startup so a client change cannot silently
 // mis-encode a plan.
-const SKILL_PLAN_ALIASES = Object.freeze(Object.fromEntries([
-  "GetAllRequest",
-  "GetRequest",
-  "CreateRequest",
-  "DeleteRequest",
-  "SetNameRequest",
-  "SetDescriptionRequest",
-  "SetSkillRequirementsRequest",
-  "SetActiveRequest",
-].map((name) => [
-  `eve_public.skill.plan.${name}`,
-  `eve_public.character.skill.plan.${name}`,
-])));
+const SKILL_PLAN_ALIASES = Object.freeze({
+  "eve_public.skill.plan.GetAllRequest":
+    "eve_public.character.skill.plan.GetAllRequest",
+  "eve_public.skill.plan.GetRequest":
+    "eve_public.character.skill.plan.GetRequest",
+  "eve_public.skill.plan.CreateRequest":
+    "eve_public.character.skill.plan.CreateRequest",
+  "eve_public.skill.plan.DeleteRequest":
+    "eve_public.character.skill.plan.DeleteRequest",
+  "eve_public.skill.plan.SetNameRequest":
+    "eve_public.character.skill.plan.SetNameRequest",
+  "eve_public.skill.plan.SetDescriptionRequest":
+    "eve_public.character.skill.plan.SetDescriptionRequest",
+  "eve_public.skill.plan.SetSkillRequirementsRequest":
+    "eve_public.character.skill.plan.SetSkillRequirementsRequest",
+  "eve_public.skill.plan.SetActiveRequest":
+    "eve_public.character.skill.plan.SetActiveRequest",
+});;
 
 // Both packages must describe the same wire format, or reusing one payload for the
 // other would silently corrupt a plan. Compare field name/type/number of the request
