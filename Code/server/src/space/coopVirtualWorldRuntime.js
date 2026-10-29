@@ -976,6 +976,16 @@ function advanceNativeWarOpening(){
     try{return require("./coopWarFleetRoster").sharedRoster().presence(args)}
     catch{return []}
    },
+   // FW-092 (measured): a faction only earns from a kill it can SELL. The scenes
+   // carry the real stations of each system, so market access is a measured fact,
+   // not a guess. It is a preference for the planner (an unreachable market is
+   // planned last, never refused) and unknown when the scene cannot be built.
+   marketAccess:systemID=>{
+    try{
+     const scene=require("./runtime").ensureScene(Number(systemID),{refreshStargates:false});
+     return (scene?.staticEntities||[]).some(x=>x&&x.kind==="station"&&Number(x.itemID)>0);
+    }catch(_error){return null}
+   },
    minShips:Math.max(1,Number(process.env.EVEJS_COOP_WAR_TERRITORY_MIN_SHIPS)||1)
   });
  }

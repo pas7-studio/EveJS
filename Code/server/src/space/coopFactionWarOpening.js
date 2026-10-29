@@ -343,10 +343,32 @@ function buildProofs({ plan, presence, territories, getStargatesForSystem, getGa
 
 // Turns the real inputs into one opening per open border, or refuses with the
 // first missing fact. A border that already has a live campaign is not reopened.
+// FW-092 (measured 2026-10-29): a kill only becomes a faction's income if the hull
+// that made it can SELL what it recovered. Measured on the work stack, a war hull
+// really claimed a real wreck and really carried four recovered cargo units, and
+// then sat in a target system that has no station at all (`stationCount: 0`), so
+// `loot-market-settled` never fired and every faction chest answered
+// NO_REAL_FACTION_INCOME - the war could not fund its own bounty anywhere.
+//
+// The planner therefore needs to know whether a border leads somewhere the kill
+// can be turned into money. It is a PREFERENCE, never a gate: a border without
+// market access is still planned when nothing better exists, it is just tried
+// last, so a limited opening budget cannot be spent on a front that can never pay.
+const MARKET_RANK = Object.freeze({ YES: 2, UNKNOWN: 1, NO: 0 });
+function edgeMarketRank(edge, marketAccess) {
+  if (typeof marketAccess !== "function") return MARKET_RANK.UNKNOWN;
+  const target = num(edge && edge.toSystemID);
+  if (!pos(target)) return MARKET_RANK.UNKNOWN;
+  let access = null;
+  try { access = marketAccess(target); } catch (_error) { access = null; }
+  return access === true ? MARKET_RANK.YES
+    : access === false ? MARKET_RANK.NO : MARKET_RANK.UNKNOWN;
+}
+
 function planWars({
   state, presence, getStargatesForSystem, getGate,
   nowMs, minShips = 1, balanceISK = 0, maxOpenings = 4,
-  navyCapability = null,
+  navyCapability = null, marketAccess = null,
 } = {}) {
   if (!state || typeof state !== "object") return refuse("NO_WAR_STATE");
   const { territories, observedCount, registeredCount } =
@@ -355,16 +377,31 @@ function planWars({
   if (!Object.keys(territories).length)
     return refuse("NO_TERRITORY_FROM_PRESENCE", { territories, observedCount, registeredCount, summary });
   if (typeof getStargatesForSystem !== "function") return refuse("NO_GATE_AUTHORITY", { territories });
-  const fronts = buildFronts({ territories, getStargatesForSystem, getGate });
-  if (!fronts.length)
+  const built = buildFronts({ territories, getStargatesForSystem, getGate });
+  if (!built.length)
     return refuse("NO_FRONT", { territories, observedCount, registeredCount, summary });
+  const fronts = built;
+  // FW-092: rank by EDGE, not by front. A single faction pair really holds several
+  // borders at once, so ranking the whole front would keep the historical
+  // first-edge order inside it and the limited opening budget would still be spent
+  // on a border with no market. The flat candidate list is the original
+  // front-by-front, edge-by-edge order unless a market authority reorders it.
+  const candidates = [];
+  for (const front of fronts) for (const edge of front.edges || []) candidates.push({ front, edge });
+  const ordered = typeof marketAccess === "function"
+    ? candidates.map((row, index) => ({ ...row, index,
+      rank: edgeMarketRank(row.edge, marketAccess) }))
+      .sort((a, b) => b.rank - a.rank || a.index - b.index)
+    : candidates;
+  const marketAccessible = typeof marketAccess === "function"
+    ? ordered.filter((row) => row.rank === MARKET_RANK.YES).length : null;
   const limit = Math.max(1, Math.min(8, Math.trunc(num(maxOpenings) || 1)));
   const openings = [], skipped = [];
   // FW-027: orientation of each war planned in THIS tick, so two borders of the
   // same faction pair never disagree with the single war record.
   const plannedWarOrientation = new Map();
-  for (const front of fronts) {
-    for (const edge of front.edges) {
+  for (const { front, edge } of ordered) {
+    {
       if (openings.length >= limit) break;
       let attackerFactionID = num(edge && edge.fromOwner);
       let defenderFactionID = num(edge && edge.toOwner);
@@ -495,12 +532,22 @@ function planWars({
       const proofs = buildProofs({
         plan, presence, territories, getStargatesForSystem, getGate, minShips, funding: supply,
       });
-      openings.push({ plan, proofs, funding: supply, edge, existingWar: Boolean(war), frontID: front.frontID });
+      // FW-092: the opening carries the measured market access of the system it
+      // contests, so a campaign that cannot ever pay for itself is visible in the
+      // record instead of looking like an ordinary front.
+      let targetMarketAccess = null;
+      if (typeof marketAccess === "function") {
+        try { targetMarketAccess = marketAccess(plannedTarget) === true; } catch (_error) { targetMarketAccess = null; }
+      }
+      openings.push({ plan, proofs, funding: supply, edge, existingWar: Boolean(war),
+        frontID: front.frontID, marketAccess: targetMarketAccess });
     }
   }
   if (!openings.length)
-    return refuse("NO_OPENABLE_FRONT", { territories, fronts, skipped, observedCount, registeredCount, summary });
-  return { status: "READY", openings, territories, fronts, skipped, summary, observedCount, registeredCount };
+    return refuse("NO_OPENABLE_FRONT", { territories, fronts, skipped, observedCount, registeredCount, summary,
+      marketAccessible });
+  return { status: "READY", openings, territories, fronts, skipped, summary, observedCount, registeredCount,
+    marketAccessible };
 }
 
 // Applies every planned opening through the authoritative core, reusing an
@@ -743,6 +790,8 @@ function createWarOpening({
   // FW-036: which factions can really field a navy. Without this authority the
   // planner behaves exactly as before (no capability gate).
   navyCapability = null,
+  // FW-092: whether a contested system can sell what its kills produce.
+  marketAccess = null,
   minShips = 1, balanceISK = 0, maxOpenings = 4,
   now = () => Date.now(), maxLinks = MAX_LINKS,
 } = {}) {
@@ -818,6 +867,7 @@ function createWarOpening({
         state, presence, getStargatesForSystem, getGate,
         nowMs: num(now()), minShips, balanceISK, maxOpenings,
         navyCapability: typeof navyCapability === "function" ? navyCapability : null,
+        marketAccess: typeof marketAccess === "function" ? marketAccess : null,
       });
       if (plan.status !== "READY")
         return { status: "NO_OPENING", reason: plan.reason || "PLAN_REFUSED", plan,
@@ -833,6 +883,7 @@ function createWarOpening({
           drifted: num(presence.drifted), fleetShips },
         expiredCampaignIDs,
         territories: plan.territories, fronts: plan.fronts.length,
+        marketAccessible: plan.marketAccessible,
         // A border refused for funding is named here instead of vanishing.
         skipped: plan.skipped.concat(Array.isArray(opened.skipped) ? opened.skipped : []),
       };
