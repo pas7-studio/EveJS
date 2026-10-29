@@ -135,6 +135,9 @@ function createSkinSequencing({
       skin: hex,
       unactivated: job.quantity,
       name: job.name,
+      lineName: job.lineName,
+      layout: job.layout,
+      creatorID: characterID,
     });
     if (minted.status !== "GRANTED") {
       // The design was paid for; a store that cannot take the copies is a failure, not a retry.

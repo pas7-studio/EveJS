@@ -57,7 +57,11 @@ function normalizeState(raw) {
       unactivated: Math.max(0, int(row.unactivated)),
       escrowed: Math.max(0, int(row.escrowed)),
       firstAcquiredMs: Math.max(0, int(row.firstAcquiredMs)),
+      firstSequencedMs: Math.max(0, int(row.firstSequencedMs)),
       name: String(row.name || ""),
+      lineName: String(row.lineName || ""),
+      layout: String(row.layout || ""),
+      creatorID: Math.max(0, int(row.creatorID)),
       shipTypeID: Math.max(0, int(row.shipTypeID)),
     };
   }
@@ -118,7 +122,9 @@ function createThirdPartySkins({
   }
 
   // The admin grant is the only creator: a licence with no row does not exist.
-  function grant(characterID, { skin, unactivated = 1, name = "", shipTypeID = 0 } = {}) {
+  function grant(characterID, {
+    skin, unactivated = 1, name = "", shipTypeID = 0, lineName = "", layout = "", creatorID = 0,
+  } = {}) {
     if (!enabled()) return { status: "DISABLED" };
     const id = int(characterID);
     if (id <= 0) return { status: "NO_CHARACTER" };
@@ -139,6 +145,13 @@ function createThirdPartySkins({
       escrowed: existing ? existing.escrowed : 0,
       firstAcquiredMs: existing && existing.firstAcquiredMs ? existing.firstAcquiredMs : nowMs,
       name: String(name || (existing && existing.name) || ""),
+      lineName: String(lineName || (existing && existing.lineName) || ""),
+      layout: String(layout || (existing && existing.layout) || ""),
+      creatorID: Math.max(0, int(creatorID) || (existing ? existing.creatorID : 0)),
+      // Only a sequencing job records a design and its creator; an admin grant does not, so it
+      // must stay honestly "not sequenced" instead of pretending a date it never had.
+      firstSequencedMs: (existing && existing.firstSequencedMs)
+        || (String(layout || "").trim() && int(creatorID) > 0 ? nowMs : 0),
       shipTypeID: pos(int(shipTypeID)) ? int(shipTypeID) : (existing ? existing.shipTypeID : 0),
     };
     try {
