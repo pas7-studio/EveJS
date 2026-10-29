@@ -114,13 +114,43 @@ function rootShapeReady(tableName) {
   ensureRootShape(tableName);
 }
 
-function readCollection(tableName, key) {
+// FW-097 (measured 2026-10-29 with a CPU profile of the live play server):
+// 82 % of the whole process CPU was inside cloneValue, and another 11 % in
+// listNativeCargo - because every per-entity read first deep-cloned the ENTIRE
+// collection and only then picked the row it was asked for. getNativeEntity(id)
+// cloned every NPC entity in the world, listNativeCargoForEntity(id) cloned every
+// cargo row, and the A-Life haul pass calls the latter once per miner per tick.
+// The rows a caller receives are still private clones (database.read hands out the
+// live cache object, so returning it would let a caller corrupt the cache), but
+// only the rows that are actually returned are cloned now.
+function rawCollection(tableName, key) {
   rootShapeReady(tableName);
   const result = database.read(tableName, `/${key}`);
-  const collection = result.success && result.data && typeof result.data === "object"
+  return result.success && result.data && typeof result.data === "object"
     ? result.data
     : {};
-  return cloneValue(collection);
+}
+
+function readCollection(tableName, key) {
+  return cloneValue(rawCollection(tableName, key));
+}
+
+// One row of one collection, cloned. Never returns the cache reference.
+function readCollectionRow(tableName, key, rowKey) {
+  const row = rawCollection(tableName, key)[String(rowKey)];
+  return row && typeof row === "object" ? cloneValue(row) : null;
+}
+
+// Every row of a collection that the predicate accepts, cloned one at a time.
+function readCollectionWhere(tableName, key, accept) {
+  const rows = rawCollection(tableName, key);
+  const out = [];
+  for (const rowKey of Object.keys(rows)) {
+    const row = rows[rowKey];
+    if (!row || typeof row !== "object" || !accept(row)) continue;
+    out.push(cloneValue(row));
+  }
+  return out;
 }
 
 function writeCollectionRow(tableName, collectionKey, rowID, value, options = {}) {
@@ -209,8 +239,7 @@ function listNativeEntities() {
 }
 
 function getNativeEntity(entityID) {
-  const collection = readCollection(TABLE.ENTITIES, "entities");
-  return collection[String(entityID)] || null;
+  return readCollectionRow(TABLE.ENTITIES, "entities", entityID);
 }
 
 function upsertNativeEntity(entityRecord, options = {}) {
@@ -232,9 +261,10 @@ function upsertNativeEntity(entityRecord, options = {}) {
 
 function listNativeEntitiesForSystem(systemID) {
   const normalizedSystemID = toPositiveInt(systemID, 0);
-  return listNativeEntities().filter(
-    (entity) => toPositiveInt(entity && entity.systemID, 0) === normalizedSystemID,
-  );
+  if (!normalizedSystemID) return [];
+  return readCollectionWhere(TABLE.ENTITIES, "entities",
+    (entity) => toPositiveInt(entity && entity.systemID, 0) === normalizedSystemID)
+    .sort((left, right) => Number(left.entityID || 0) - Number(right.entityID || 0));
 }
 
 function removeNativeEntity(entityID) {
@@ -248,9 +278,10 @@ function listNativeModules() {
 
 function listNativeModulesForEntity(entityID) {
   const normalizedEntityID = toPositiveInt(entityID, 0);
-  return listNativeModules().filter(
-    (moduleRecord) => toPositiveInt(moduleRecord && moduleRecord.entityID, 0) === normalizedEntityID,
-  );
+  if (!normalizedEntityID) return [];
+  return readCollectionWhere(TABLE.MODULES, "modules",
+    (moduleRecord) => toPositiveInt(moduleRecord && moduleRecord.entityID, 0) === normalizedEntityID)
+    .sort((left, right) => Number(left.moduleID || 0) - Number(right.moduleID || 0));
 }
 
 function upsertNativeModule(moduleRecord, options = {}) {
@@ -281,9 +312,10 @@ function listNativeCargo() {
 
 function listNativeCargoForEntity(entityID) {
   const normalizedEntityID = toPositiveInt(entityID, 0);
-  return listNativeCargo().filter(
-    (cargoRecord) => toPositiveInt(cargoRecord && cargoRecord.entityID, 0) === normalizedEntityID,
-  );
+  if (!normalizedEntityID) return [];
+  return readCollectionWhere(TABLE.CARGO, "cargo",
+    (cargoRecord) => toPositiveInt(cargoRecord && cargoRecord.entityID, 0) === normalizedEntityID)
+    .sort((left, right) => Number(left.cargoID || 0) - Number(right.cargoID || 0));
 }
 
 function upsertNativeCargo(cargoRecord, options = {}) {
