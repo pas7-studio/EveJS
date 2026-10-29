@@ -227,6 +227,9 @@ function createNpcMarketTrader({call,store,registry,getStation,resolveType,scene
   const id=pos(entityID),station=pos(stationID),type=pos(typeID);
   if(!id||!pilotName(pilotID)||!station||!type||
    !["buy","sell"].includes(side))return status("INVALID_TRADE");
+  // Another owner may have linked this hull since this instance was built (measured
+  // 2026-10-30: the co-op linked it and the trader refused every sale NO_IDENTITY_LINK).
+  try{registry.refresh?.()}catch(_error){/* a read-only failure is reported below */}
   const link=registry.snapshot().links?.[pilotID];
   const ship=scene?.getEntityByID?.(id);
   const st=getStation(station);
@@ -234,16 +237,22 @@ function createNpcMarketTrader({call,store,registry,getStation,resolveType,scene
   // physical position. Require the matching actual EveJS scene station.
   const physicalStation=scene?.staticEntities?.find(x=>
    x?.kind==="station"&&Number(x.itemID)===station);
-  if(!ship||ship.nativeNpc!==true||ship.kind!=="ship"||
-   Number(link?.entityID)!==id||Number(link?.systemID)!==Number(scene.systemID)||
-   !st||Number(st.stationID||st.itemID)!==station||
-   Number(st.solarSystemID)!==Number(scene.systemID)||
-   !physicalStation||!vec(physicalStation.position)||
-   !vec(ship.position)||ship.session?.characterID||
-   dist(ship.position,physicalStation.position)-
-    Math.max(0,Number(physicalStation.radius)||0)-
-    Math.max(0,Number(ship.radius)||0)>10000)
-   return status("NOT_AT_NATIVE_STATION");
+  // One code for a dozen different reasons taught nothing: measured 2026-10-30 a sale was
+  // refused NOT_AT_NATIVE_STATION for an hour with no way to tell a missing ship from a
+  // missing identity link or a station 11 km away. Each predicate now says its own name.
+  if(!ship)return status("NO_SHIP_IN_SCENE");
+  if(ship.nativeNpc!==true||ship.kind!=="ship")return status("NOT_A_NATIVE_SHIP");
+  if(ship.session?.characterID)return status("PLAYER_SHIP_EXCLUDED");
+  if(!link)return status("NO_IDENTITY_LINK");
+  if(Number(link.entityID)!==id)return status("IDENTITY_LINK_ENTITY_MISMATCH");
+  if(Number(link.systemID)!==Number(scene.systemID))return status("IDENTITY_LINK_OTHER_SYSTEM");
+  if(!st||Number(st.stationID||st.itemID)!==station)return status("NO_STATION_ROW");
+  if(Number(st.solarSystemID)!==Number(scene.systemID))return status("STATION_OTHER_SYSTEM");
+  if(!physicalStation||!vec(physicalStation.position))return status("NO_PHYSICAL_STATION");
+  if(!vec(ship.position))return status("SHIP_WITHOUT_POSITION");
+  if(dist(ship.position,physicalStation.position)-
+   Math.max(0,Number(physicalStation.radius)||0)-
+   Math.max(0,Number(ship.radius)||0)>10000)return status("TOO_FAR_FROM_STATION");
   const players=new Set(Array.from(scene?.sessions?.values?.()||[])
    .map(x=>pos(x?._space?.shipID)).filter(Boolean));
   if(players.has(id))return status("PLAYER_SHIP_EXCLUDED");

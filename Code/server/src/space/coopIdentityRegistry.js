@@ -21,6 +21,7 @@ function createRegistry({file,exists,clock=()=>Date.now()}){
  // Native transfers depend on this JSON identity surviving a process crash.
  // This is still a separate durable owner from SQLite, hence transfer fences.
  let nonce=0;
+ let loadedStamp = null; // the file as this owner last saw it; refresh() compares
  const persist=()=>{
   const dir=path.dirname(file);
   fs.mkdirSync(dir,{recursive:true});
@@ -31,6 +32,7 @@ function createRegistry({file,exists,clock=()=>Date.now()}){
    fs.writeFileSync(fd,JSON.stringify(state));fs.fsyncSync(fd);
    fs.closeSync(fd);fd=null;
    fs.renameSync(tmp,file);
+   if(typeof stamp==="function")loadedStamp=stamp();
    try{
     const dirfd=fs.openSync(dir,"r");
     try{fs.fsyncSync(dirfd);}finally{fs.closeSync(dirfd);}
@@ -43,13 +45,34 @@ function createRegistry({file,exists,clock=()=>Date.now()}){
    }
   }finally{if(fd!==null)fs.closeSync(fd);}
  };
+ // More than one owner reads this file (the world, the market trader, the co-op loop), and
+ // each kept its own copy of the state. Measured 2026-10-30: the co-op linked a hull, the
+ // market trader still had the file as it was at boot and refused every sale NO_IDENTITY_LINK -
+ // and the next write from either side silently dropped the other's link.
+ // refresh() re-reads the file when it really changed, so a reader never acts on a stale copy.
+ function stamp(){
+  try{const s=fs.statSync(file);return s.size + ":" + s.mtimeMs;}catch(_error){return null}
+ }
+ loadedStamp=stamp();
+ function refresh(){
+  const nowStamp=stamp();
+  if(nowStamp===loadedStamp)return false;
+  try{
+   const raw=JSON.parse(fs.readFileSync(file,"utf8"));
+   if(raw?.version!==1||!raw.links||typeof raw.links!=="object")return false;
+   state=raw;loadedStamp=nowStamp;
+   return true;
+  }catch(_error){return false}
+ }
  function get(id){
+  refresh();
   const e=state.links[id];
   if(!e)return null;
   if(!positive(e.entityID)||!positive(e.systemID)||!exists(e.systemID,e.entityID))return null;
   return {...e};
  }
  function link(pilot,systemID,entityID){
+  refresh();
   if(!validID(pilot?.id)||!positive(systemID)||!positive(entityID))throw Error("invalid materialization link");
   const existing=get(pilot.id);
   if(existing){
@@ -75,6 +98,7 @@ function createRegistry({file,exists,clock=()=>Date.now()}){
  // entity the caller means. Without this a long-lived world spends one resident
  // per station trip and every later sale dies with no free identity.
  function release(pilotID,options={}){
+  refresh();
   if(!validID(pilotID))return {status:"INVALID_PILOT"};
   const record=state.links[pilotID];
   if(!record)return {status:"NOT_LINKED"};
@@ -89,6 +113,7 @@ function createRegistry({file,exists,clock=()=>Date.now()}){
  // Only update durable identity AFTER the same native ship physically
  // exists in the destination and is absent from its former EveJS scene.
  function relocate(pilotID,fromSystemID,entityID,toSystemID){
+  refresh();
   const source=positive(fromSystemID),id=positive(entityID),dest=positive(toSystemID);
   if(!validID(pilotID)||!source||!id||!dest||source===dest)
    return {status:"INVALID"};
@@ -114,6 +139,6 @@ function createRegistry({file,exists,clock=()=>Date.now()}){
   if(removed)try{persist()}catch(error){state.links=before;throw error;}
   return removed;
  }
- return {get,link,release,relocate,prune,snapshot:()=>structuredClone(state)};
+ return {get,link,release,relocate,prune,refresh,snapshot:()=>{refresh();return structuredClone(state)}};
 }
 module.exports={createRegistry};

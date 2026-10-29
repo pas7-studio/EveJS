@@ -53,6 +53,22 @@ function distributionRunAuthorities(options = {}) {
       } catch (_error) { db = false; }
       return db || null;
     };
+    // The hull needs an identity the registry will accept: the one already bound to it, or
+    // the lowest free name (the crossing itself links it from the durable record).
+    const pilotFor = (haulerID) => {
+      try {
+        const links = JSON.parse(require("fs").readFileSync(
+          env.EVEJS_COOP_IDENTITY_FILE || "/var/lib/evejs/coop-npc-links.json", "utf8")).links || {};
+        const bound = Object.values(links).find((row) =>
+          Number(row && row.entityID) === Number(haulerID));
+        if (bound) return String(bound.pilotID);
+        for (let n = 1; n <= 9999; n += 1) {
+          const candidate = "coop-pilot-" + String(n).padStart(3, "0");
+          if (!links[candidate]) return candidate;
+        }
+      } catch (_error) { /* no identity file is no identity */ }
+      return null;
+    };
     const hulls = () => (store.listNativeEntities() || [])
       .filter((row) => /^coop-distribution-[0-9]+-hauler$/.test(String(row.operatorKind || "")))
       .map((row) => Number(row.entityID)).filter(Boolean);
@@ -60,7 +76,12 @@ function distributionRunAuthorities(options = {}) {
       try {
         const scene = sceneFor(systemID);
         const ship = scene && scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
-        const station = worldData.getStationByID(stationID);
+        // The physical station in the scene, not only the static-data row: the native
+        // market refuses a sale 10 km from the PHYSICAL one (measured 2026-10-30).
+        const physical = (scene && Array.isArray(scene.staticEntities) ? scene.staticEntities : [])
+          .find((row) => Number(row && row.itemID) === Number(stationID) &&
+            String(row && row.kind) === "station") || null;
+        const station = physical || worldData.getStationByID(stationID);
         if (!ship || !ship.position || !station || !station.position) return null;
         const dx = ship.position.x - station.position.x;
         const dy = ship.position.y - station.position.y;
@@ -69,11 +90,46 @@ function distributionRunAuthorities(options = {}) {
           (Number(station.radius) || 0));
       } catch (_error) { return null; }
     };
+    // A durable hull without an identity link is pruned out of its scene, and then it can
+    // never reach a station: measured 2026-10-30 the distribution hull was rebuilt every beat
+    // because nothing named it. Keeping the link alive is the same bookkeeping the sale needs.
+    const ensureNamed = (haulerID) => {
+      try {
+        const native = store.getNativeEntity(haulerID);
+        const systemID = Number(native && native.systemID) || 0;
+        if (!systemID) return false;
+        const registry = require("./coopIdentityRegistry").createRegistry({
+          file: env.EVEJS_COOP_IDENTITY_FILE || "/var/lib/evejs/coop-npc-links.json",
+          exists: (system, id) => {
+            try {
+              const scene = sceneFor(system);
+              const ship = scene && scene.getEntityByID ? scene.getEntityByID(id) : null;
+              return Boolean(ship && ship.kind === "ship");
+            } catch (_error) { return false; }
+          },
+        });
+        const links = (registry.snapshot() || {}).links || {};
+        const bound = Object.entries(links)
+          .find(([, row]) => Number(row && row.entityID) === Number(haulerID));
+        const role = bound ? String(bound[1].role || "") : "";
+        const rightSystem = bound ? Number(bound[1].systemID) === systemID : false;
+        if (bound && rightSystem && ["hauler", "miner", "trader"].includes(role)) return true;
+        const pilotID = bound ? bound[0] : pilotFor(haulerID);
+        if (!pilotID) return false;
+        if (bound) registry.release(pilotID, {expectedEntityID: Number(haulerID)});
+        registry.link({id: pilotID, name: bound ? bound[1].name : pilotID,
+          faction: "independent", role: "hauler", durable: false}, systemID, haulerID);
+        return true;
+      } catch (_error) { return false; }
+    };
     // The same durable ship, brought back into its scene from its own record.
     const ensureLive = (haulerID) => {
       try {
         const native = store.getNativeEntity(haulerID);
         if (!native) return false;
+        // Named first: an unlinked hull is pruned from its scene, so materializing it first
+        // would only give the pruner something to remove.
+        ensureNamed(haulerID);
         const scene = sceneFor(Number(native.systemID) || 0);
         if (!scene) return false;
         const ship = typeof scene.getEntityByID === "function" ? scene.getEntityByID(haulerID) : null;
@@ -150,27 +206,38 @@ function distributionRunAuthorities(options = {}) {
       },
       planCrossing: ({haulerID, gate}) => {
         const native = store.getNativeEntity(haulerID);
-        // The hull needs an identity the registry will accept: the one already bound to it,
-        // or the lowest free name (the crossing itself links it from the durable record).
-        let pilotID = null;
-        try {
-          const links = JSON.parse(require("fs").readFileSync(
-            env.EVEJS_COOP_IDENTITY_FILE || "/var/lib/evejs/coop-npc-links.json", "utf8")).links || {};
-          const bound = Object.values(links).find((row) =>
-            Number(row && row.entityID) === Number(haulerID));
-          if (bound) pilotID = String(bound.pilotID);
-          else {
-            for (let n = 1; n <= 9999; n += 1) {
-              const candidate = "coop-pilot-" + String(n).padStart(3, "0");
-              if (!links[candidate]) { pilotID = candidate; break; }
-            }
-          }
-        } catch (_error) { pilotID = null; }
         return require("./coopNpcGateCrossing").plan({
-          entityID: haulerID, pilotID,
+          entityID: haulerID, pilotID: pilotFor(haulerID),
           operatorKind: String(native && native.operatorKind || ""), gate, now: Date.now(),
         });
       },
+      // The way home: a real reciprocal gate between where the hull is and where it belongs.
+      planCrossingTo: ({haulerID, targetSystemID}) => {
+        const native = store.getNativeEntity(haulerID);
+        const fromSystemID = Number(native && native.systemID) || 0;
+        if (!fromSystemID || !targetSystemID || fromSystemID === Number(targetSystemID))
+          return {status: "NO_GATE"};
+        const pair = require("./coopNpcGateTravel").connectedGates({
+          sourceSystemID: fromSystemID, targetSystemID: Number(targetSystemID),
+          sourceScene: sceneFor(fromSystemID),
+          getGate: (id) => worldData.getStargateByID(id),
+        });
+        const gate = pair && pair[0] ? pair[0] : null;
+        if (!gate) return {status: "NO_RECIPROCAL_GATE"};
+        return require("./coopNpcGateCrossing").plan({
+          entityID: haulerID, pilotID: pilotFor(haulerID),
+          operatorKind: String(native && native.operatorKind || ""),
+          gate: {sourceGateID: gate.sourceGateID, destinationGateID: gate.destinationGateID,
+            sourceSystemID: fromSystemID, destinationSystemID: Number(targetSystemID)},
+          now: Date.now(),
+        });
+      },
+      hullSystemOf: (haulerID) => {
+        try { return Number(store.getNativeEntity(haulerID)?.systemID || 0); }
+        catch (_error) { return 0; }
+      },
+      // A hull that waits in the buyer system with an empty hold is dead freight.
+      recycle: String(env.EVEJS_COOP_DISTRIBUTION_CYCLE || "") === "1",
       crossingPhase: (haulerID) => {
         const row = (require("./coopNpcGateCrossing").read() || [])
           .find((entry) => Number(entry.entityID) === Number(haulerID));

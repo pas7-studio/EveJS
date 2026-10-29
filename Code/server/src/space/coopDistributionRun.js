@@ -19,10 +19,13 @@ const path = require("path");
 
 const PHASE = Object.freeze({
   PLAN: "PLAN", TO_ORIGIN: "TO_ORIGIN", LOAD: "LOAD", CROSS: "CROSS",
-  TO_DEST: "TO_DEST", SELL: "SELL", DONE: "DONE", BLOCKED: "BLOCKED",
+  TO_DEST: "TO_DEST", SELL: "SELL", RETURN: "RETURN", DONE: "DONE",
+  BLOCKED: "BLOCKED",
 });
-// How close a hull must really be before a station lift or sale is allowed to act.
-const STATION_RANGE_M = 15000;
+// How close a hull must really be before a station lift or sale is allowed to act. The
+// native market refuses a sale beyond 10 km from the PHYSICAL station, so a laxer number here
+// only produces NOT_AT_NATIVE_STATION (measured 2026-10-30).
+const STATION_RANGE_M = 8000;
 // One sale call fills at most the market's own per-order limit, so a loaded hold may need
 // several; the count is bounded so a silent market cannot become an endless loop.
 const MAX_SELL_CALLS = 6;
@@ -33,7 +36,8 @@ const SALE_SETTLE_TIMEOUT_MS = 15 * 60 * 1000;
 const SALE_POLL_MS = 2500;
 const MAX_POLLS_PER_BEAT = 4;
 // Refusals that mean "not yet" rather than "no": the run waits, bounded, instead of stopping.
-const SALE_RETRYABLE = new Set(["NOT_AT_NATIVE_STATION", "SALE_TIMEOUT", "MARKET_UNAVAILABLE"]);
+const SALE_RETRYABLE = new Set(["NOT_AT_NATIVE_STATION", "SALE_TIMEOUT", "MARKET_UNAVAILABLE",
+  "COOLDOWN"]);
 
 function num(x) { return Number.isFinite(Number(x)) ? Number(x) : 0; }
 const phase2 = (value) => String(value || PHASE.TO_ORIGIN);
@@ -97,6 +101,18 @@ function decide(state, facts = {}) {
     return { action: "GO_DEST" };
   }
   if (phase === PHASE.SELL) return { action: "SELL" };
+  if (phase === PHASE.RETURN) {
+    // Home again: the journal is reset and a fresh trip is planned from the real world.
+    if (facts.hullSystemID && facts.hullSystemID === state.returnToSystemID)
+      return { action: "REPLAN" };
+    const crossed = String(facts.crossingPhase || "");
+    if (crossed === "BLOCKED" || crossed === "ABANDONED")
+      return { action: "BLOCK", reason: "RETURN_CROSSING_" + crossed };
+    // A completed journal from the trip OUT is not a crossing home: only the durable record
+    // saying the hull is back home is proof. Measured 2026-10-30: a stale ARRIVED kept the run
+    // reporting RETURNED while the hull sat in the buyer system.
+    return { action: "RETURN_CROSS", crossingPhase: crossed === "ARRIVED" ? null : (crossed || null) };
+  }
   return { action: "BLOCK", reason: "UNKNOWN_PHASE:" + phase };
 }
 
@@ -117,6 +133,9 @@ function note(observe, event, state, extra = {}) {
 
 // How often the same order may be re-issued while a hull flies to a station.
 const ORDER_SPACING_MS = 45000;
+// How many loads one hull may carry before the run reports and stops. A cycle that never
+// ends is indistinguishable from one that is stuck.
+const MAX_TRIPS = 5;
 
 /**
  * Advance one run by at most one step. Never throws, never guesses: an authority that is
@@ -129,14 +148,25 @@ async function tick(haulerID, authorities = {}, env = process.env) {
   const observe = authorities.observe || null;
   let state = read(id, env);
   const planned = decide(state, {});
-  if (!state) {
+  // A run in PLAN (a fresh one, or one that just came home) is planned here, once per beat.
+  if (!state || String(state.phase || PHASE.PLAN) === PHASE.PLAN) {
     // Nothing planned yet: planning is the authority's job and it must be real.
     if (typeof authorities.planTrip !== "function") return { status: "NO_PLANNER" };
     let trip = null;
     try { trip = authorities.planTrip({ haulerID: id }); }
     catch (error) { trip = { status: "PLAN_THREW", reason: String((error && error.message) || error).slice(0, 80) }; }
     if (!trip || trip.status !== "OK" || !trip.trip) {
-      return { status: String((trip && (trip.status || trip.reason)) || "NO_TRIP"), planned: planned.action };
+      const why = String((trip && (trip.status || trip.reason)) || "NO_TRIP");
+      // A second cycle that finds nothing worth shipping is the honest end of the run:
+      // leaving it in PLAN would re-ask the market every beat for ever.
+      if (num(state && state.trips) > 0 || authorities.recycle === true) {
+        const done = { version: 1, haulerID: id, phase: PHASE.DONE, lastReason: why,
+          updatedAt: now, trips: num(state && state.trips), isk: num(state && state.isk) };
+        write(done, env);
+        note(observe, "living-distribution-run", done, { reason: why });
+        return { status: "DONE", reason: why };
+      }
+      return { status: why, planned: planned.action };
     }
     const row = trip.trip;
     if (!worthIt(row, authorities.minIsk) && authorities.allowSmallTrips !== true) {
@@ -181,6 +211,8 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       ? authorities.distanceTo(state.toStationID, state.toSystemID, id) : null,
     crossingPhase: typeof authorities.crossingPhase === "function"
       ? authorities.crossingPhase(id) : null,
+    hullSystemID: typeof authorities.hullSystemOf === "function"
+      ? Number(authorities.hullSystemOf(id)) || 0 : 0,
   };
   const step = decide(state, facts);
   const finish = (phase, reason, extra = {}) => {
@@ -195,7 +227,9 @@ async function tick(haulerID, authorities = {}, env = process.env) {
 
   if (step.action === "GO_ORIGIN" || step.action === "GO_DEST") {
     const stationID = step.action === "GO_ORIGIN" ? state.fromStationID : state.toStationID;
-    if (now - num(state.orderAt) < ORDER_SPACING_MS) return { status: "FLYING", state };
+    // "Never ordered" is not "ordered just now": a run starts with no timestamp at all.
+    if (num(state.orderAt) > 0 && now - num(state.orderAt) < ORDER_SPACING_MS)
+      return { status: "FLYING", state };
     let issued = false;
     try { issued = typeof authorities.goTo === "function" && authorities.goTo(stationID, id) === true; }
     catch (_error) { issued = false; }
@@ -289,8 +323,18 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       else lastReason = "SALE_PENDING";
     }
     if (settled && settled.status === "SOLD") {
-      return finish(PHASE.DONE, "SOLD", { isk: isk + num(settled.isk), sellCalls: calls,
-        soldAt: now, settlement: { quantity: num(settled.quantity), isk: num(settled.isk) } });
+      const paid = isk + num(settled.isk);
+      const trips = num(state.trips) + 1;
+      const settlement = { quantity: num(settled.quantity), isk: num(settled.isk) };
+      // A hull that sits in the buyer system with an empty hold is dead freight: it goes home
+      // and takes another load, bounded by a trip count so a cycle cannot run for ever.
+      if (authorities.recycle !== true || trips >= MAX_TRIPS) {
+        return finish(PHASE.DONE, "SOLD", { isk: paid, sellCalls: calls, soldAt: now,
+          trips, settlement });
+      }
+      return finish(PHASE.RETURN, "SOLD_RETURNING", { isk: paid, sellCalls: 0, trips,
+        settlement, soldAt: now, pendingSince: 0, crossAt: 0,
+        returnToSystemID: pos(state.fromSystemID), returnStationID: pos(state.fromStationID) });
     }
     if (settled && settled.status === "NOT_SOLD") {
       const why = String(settled.reason || "").slice(0, 50);
@@ -321,6 +365,31 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     return { status: "SALE_PENDING", reason: lastReason, state: next };
   }
 
+  if (step.action === "REPLAN") {
+    // The next beat plans a new trip; only the identity of the run survives.
+    const fresh = { version: 1, haulerID: id, phase: PHASE.PLAN, updatedAt: now,
+      trips: num(state.trips), isk: num(state.isk), lastReason: "HOME_AGAIN" };
+    write(fresh, env);
+    note(observe, "living-distribution-run", fresh, { reason: "HOME_AGAIN" });
+    return { status: "REPLANNING", state: fresh };
+  }
+  if (step.action === "RETURN_CROSS") {
+    if (num(state.crossAt) > 0 && now - num(state.crossAt) < ORDER_SPACING_MS)
+      return { status: "RETURNING", state };
+    let plannedCrossing = null;
+    try {
+      plannedCrossing = typeof authorities.planCrossingTo === "function"
+        ? authorities.planCrossingTo({haulerID: id, targetSystemID: state.returnToSystemID,
+          operatorKind: authorities.operatorKind}) : null;
+    } catch (_error) { plannedCrossing = null; }
+    const plannedOk = Boolean(plannedCrossing && (plannedCrossing.status === "PLANNED" ||
+      plannedCrossing.status === "ALREADY_PENDING"));
+    const reason = plannedOk ? "RETURN_CROSSING_PLANNED"
+      : "RETURN_NO_GATE:" + String((plannedCrossing && (plannedCrossing.status || plannedCrossing.reason)) || "UNPLANNED");
+    const next = write({ ...state, crossAt: now, lastReason: reason, updatedAt: now }, env);
+    note(observe, "living-distribution-run", next, { reason });
+    return { status: plannedOk ? "RETURN_CROSSING" : "RETURN_NO_GATE", reason, state: next };
+  }
   return { status: "IDLE", reason: step.reason || null, state };
 }
 
@@ -336,6 +405,6 @@ async function tickAll(authorities = {}, env = process.env) {
   }
   return results;
 }
-module.exports = { PHASE, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
+module.exports = { PHASE, MAX_TRIPS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
   SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
   read, write, list, decide, worthIt, note, tick, tickAll };
