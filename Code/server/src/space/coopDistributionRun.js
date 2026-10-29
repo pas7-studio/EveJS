@@ -355,7 +355,7 @@ async function tick(haulerID, authorities = {}, env = process.env) {
   if (step.action === "SELL") {
     // The empty hold is proof enough and needs no market at all, so it is asked FIRST.
     const held = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : null;
-    if (Number.isFinite(held) && held === 0 && num(state.quantity) > 0) {
+    if (Number.isFinite(held) && held === 0 && (num(state.quantity) > 0 || num(state.isk) > 0)) {
       return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, iskUnknown: true });
     }
     if (typeof authorities.sell !== "function") return { status: "NO_SELL" };
@@ -382,7 +382,7 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     let lastReason = "PENDING";
     // A hold that is empty is the strongest proof there is: the goods really left the ship.
     const cargoNow = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : null;
-    if (Number.isFinite(cargoNow) && cargoNow === 0 && num(state.quantity) > 0) {
+    if (Number.isFinite(cargoNow) && cargoNow === 0 && (num(state.quantity) > 0 || num(state.isk) > 0)) {
       // The empty hold proves the goods left; it does NOT prove the amount paid, so the ISK is
       // recorded as unknown rather than as a misleading zero.
       return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, sellCalls: calls, iskUnknown: true });
