@@ -1291,6 +1291,14 @@ function advanceNativeWarMobilization(){
  const mobilizer=warMobilizerInstance(registry,guard);
  if(!mobilizer)return warSkip("mobilization","MOBILIZER_CREATE_FAILED");
  const result=mobilizer.tick({systemIDs:[...visitedSystems].sort((a,b)=>a-b).slice(0,20)});
+ // FW-110: custody of a hull the pilot provably left is released, and the release is
+ // published. MEASURED 2026-10-30: a restart re-materialized the front fleet with new
+ // entity ids while the registry kept the old ones, so every muster answered PILOT_IN_USE
+ // and five campaigns expired with assigned 0. Silent custody changes would hide that.
+ if(Array.isArray(result.released)&&result.released.length)
+  require("./coopRuntimeProbe").observe("living-native-war-custody-stale",null,null,
+   {status:"RELEASED",rows:result.released.slice(0,8),
+    evidence:"REGISTRY_HULL_NO_LONGER_THE_PILOTS_PHYSICAL_SHIP"});
  if(result.mobilized.length)require("./coopRuntimeProbe").observe(
   "living-native-war-mobilization",null,null,
   {status:result.status,ships:result.mobilized,

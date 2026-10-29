@@ -50,6 +50,38 @@ const enabled=env=>env.EVEJS_COOP_FACTION_WAR==="1"&&
 // write budget. It never writes, so the only risk of a bigger bound is output.
 const DRY_RUN_REPORT_LIMIT=64;
 const SIDE_REJECT_LIMIT=6;
+// FW-110: a war hull is a PHYSICAL ship, not a stored row.
+//
+// MEASURED on the play stack 2026-10-30, one restart after the front reached ASSAULT:
+// 6 of the 10 registered hulls pointed at an entity id the pilot no longer owned
+// (coop-pilot-003 registry 980000062777 while its real hull was 980000067050) and 4 pilots
+// had no identity link at all. Every later muster therefore answered PILOT_IN_USE for the
+// same pilots, both sides reported assigned 0, and r13..r17 expired without a single
+// defender hull ever being destroyed. The registry was staffing a campaign with ghosts.
+//
+// This answers one question only: which custody rows describe a hull the pilot has PROVENLY
+// left? A pilot with no link, or with two links, is ambiguous and is never guessed at.
+function staleCustodyRows({ships={},links=[]}={}){
+ const byPilot=new Map();
+ for(const l of Array.isArray(links)?links:[]){
+  if(!named(l?.pilotID)||!pos(l?.entityID))continue;
+  if(!byPilot.has(l.pilotID))byPilot.set(l.pilotID,[]);
+  byPilot.get(l.pilotID).push(Number(l.entityID));
+ }
+ const out=[];
+ for(const row of Object.values(ships||{})){
+  if(!row||!pos(row.entityID)||!named(row.pilotID))continue;
+  const owned=byPilot.get(row.pilotID)||[];
+  if(owned.length!==1)continue;
+  const current=owned[0];
+  if(current===Number(row.entityID))continue;
+  out.push({entityID:Number(row.entityID),pilotID:String(row.pilotID),
+   fleetID:String(row.fleetID||""),campaignID:String(row.campaignID||""),
+   currentEntityID:current});
+ }
+ return out.sort((a,b)=>a.entityID-b.entityID);
+}
+
 function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
  getNativeEntity,getController,getFactionForCorporation,
  inspectReadiness,getOrderLeases,isTactical=()=>false,
@@ -85,6 +117,32 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
     !Array.isArray(links)||links.length>10000||
     !Array.isArray(leases)||leases.length>10000)
     return {status:"INVALID_MOBILIZATION_STATE",mobilized:[],campaigns:[]};
+   // FW-110: release the custody of hulls the pilot has provably left, before any side
+   // plans a muster that could only ever answer PILOT_IN_USE for them. Bounded by the
+   // same per-tick budget, never during a dry run, never while an order lease is live.
+   const released=[],releasedIDs=new Set();
+   if(!dryRun){
+    for(const row of staleCustodyRows({ships:assigned.ships,links})
+     .slice(0,Math.min(4,maxPerTick))){
+     if(leases.some(l=>l?.entityID===row.entityID&&
+      (l.phase==="OUTCOME_UNKNOWN"||l.phase==="ISSUING"||
+       (l.phase==="ACTIVE"&&(l.expiresAt===null||!Number.isFinite(l.expiresAt)||
+        l.expiresAt>now)))))continue;
+     let answer;
+     try{
+      answer=registry.execute({type:"RELEASE",
+       eventID:"wr:stale:"+row.campaignID+":"+row.entityID+":"+row.currentEntityID,
+       entityID:row.entityID,pilotID:row.pilotID,fleetID:row.fleetID,
+       proofID:"native-release:"+row.campaignID+":"+row.entityID});
+     }catch(_error){answer={status:"NATIVE_RELEASE_UNCERTAIN"};}
+     released.push({entityID:row.entityID,pilotID:row.pilotID,
+      currentEntityID:row.currentEntityID,
+      status:String(answer&&answer.status||"UNKNOWN"),
+      reason:String(answer&&answer.reason||"")});
+     if(answer&&(answer.status==="APPLIED"||answer.status==="DUPLICATE"))
+      releasedIDs.add(row.entityID);
+    }
+   }
    const reachable=new Set(systemIDs);
    // One pass per tick instead of scanning the full identity registry
    // for every NPC candidate of every active campaign.
@@ -116,7 +174,8 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
    const rowIsLive=(row)=>{
     try{return Boolean(getNativeEntity(Number(row&&row.entityID)))}catch{return true}
    };
-   const liveRows=Object.values(assigned.ships).filter(rowIsLive);
+   const liveRows=Object.values(assigned.ships).filter(rowIsLive)
+    .filter(row=>!releasedIDs.has(Number(row&&row.entityID)));
    const existing=new Set(liveRows.map(row=>Number(row&&row.entityID)).filter(pos));
    const usedPilots=new Set(liveRows.map(row=>row&&row.pilotID).filter(named));
    const mobilized=[];
@@ -300,7 +359,7 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
        // The SQLite commit may be ambiguous. Never issue another mutation
        // in this tick after an exception from the authoritative writer.
        return {status:"NATIVE_COMMIT_UNCERTAIN",mobilized,rejected,
-        blocked,campaigns:report};
+        blocked,campaigns:report,released};
       }
       if(result?.status!=="APPLIED"){
        // A refused ASSIGN must never be a silent boolean: the native registry's
@@ -325,9 +384,10 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
     }
    }
    return {status:dryRun?"DRY_RUN":"OBSERVED",mobilized,rejected,blocked,
-    campaigns:report,activeCampaignCount:campaigns.length};
+    campaigns:report,activeCampaignCount:campaigns.length,released};
   }finally{busy=false}
  }
  return Object.freeze({tick});
 }
-module.exports={createWarMobilizer,enabled,physicalCandidateSystem,MOBILIZABLE_ROLES};
+module.exports={createWarMobilizer,enabled,physicalCandidateSystem,MOBILIZABLE_ROLES,
+ staleCustodyRows};
