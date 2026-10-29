@@ -31,22 +31,46 @@ function ledgerInstance() {
   return ledger;
 }
 
+// FW-089: the silence after a successful attribution is itself a finding. Measured:
+// at 17:33:25Z attribution answered NATIVE_DESTRUCTION_ATTACKER_PROVIDED and then NO
+// `war-merit` and NO `war-bounty-skipped` event appeared at all - the function returned
+// before it could say why, and its caller only writes a console warning. Every early
+// return now emits a probe with its own reason, so this rung can never be silent again.
 function note({ proof, victim, emit, ledger: injected } = {}) {
   const p = proof && typeof proof === "object" ? proof : null;
+  const say = (status, reason, extra) => {
+    try {
+      if (typeof emit === "function")
+        emit("living-native-war-merit-skipped", null,
+          { spaceState: { systemID: Number(p && p.systemID) || 0 } },
+          { status: String(status || ""), reason: String(reason || ""),
+            pilotID: String((p && p.attackerPilotID) || ""),
+            victimPilotID: String((p && p.victimPilotID) || ""),
+            wreckID: Number(p && p.wreckID) || 0,
+            attributionStatus: String((p && p.status) || ""),
+            evidence: "MERIT_REFUSED_BEFORE_ANY_AWARD", ...(extra || {}) });
+    } catch (_error) { /* a probe never blocks a refusal */ }
+  };
   if (!p || p.status !== "NATIVE_DESTRUCTION_ATTACKER_PROVIDED") {
-    return { status: "NO_STRICT_NATIVE_ATTACKER", reason: String(p && p.status || "MISSING_PROOF") };
+    const reason = String(p && p.status || "MISSING_PROOF");
+    say("NO_STRICT_NATIVE_ATTACKER", reason);
+    return { status: "NO_STRICT_NATIVE_ATTACKER", reason };
   }
   const wreckID = Number(p.wreckID), attackerID = Number(p.attackerEntityID);
   const attackerPilotID = pilotOf(p.attackerPilotID), victimPilotID = pilotOf(p.victimPilotID);
   if (!pos(wreckID) || !pos(attackerID) || !attackerPilotID || !victimPilotID ||
     attackerPilotID === victimPilotID) {
+    say("BLOCKED", "INVALID_KILL_IDENTITY", { wreckID, attackerEntityID: attackerID,
+      attackerPilotID: String(p.attackerPilotID || ""), victimPilotID: String(p.victimPilotID || "") });
     return { status: "BLOCKED", reason: "INVALID_KILL_IDENTITY" };
   }
   let store = null;
   try {
     store = injected && typeof injected.award === "function" ? injected : ledgerInstance();
   } catch (error) {
-    return { status: "UNAVAILABLE", reason: String(error && error.message || error) };
+    const reason = String(error && error.message || error);
+    say("UNAVAILABLE", reason);
+    return { status: "UNAVAILABLE", reason };
   }
   const evidence = { wreckID, victimEntityID: Number(p.victimEntityID) || 0, attackerEntityID: attackerID };
   const awards = [];

@@ -241,10 +241,30 @@ function note(scene,victim,options,wreck){
   if(proof.status==="NATIVE_DESTRUCTION_ATTACKER_PROVIDED"){
    try{
     const ext=__filename.endsWith(".cjs")?".cjs":"";
-    require("./coopWarKillMerit"+ext).note({proof,victim,
+    const merit=require("./coopWarKillMerit"+ext).note({proof,victim,
      emit:(event,characterID,spaceState,detail)=>
       require("./coopRuntimeProbe").observe(event,characterID,spaceState,detail)});
+    // FW-089: the bridge reports what the merit step decided, so a success without a
+    // `war-merit` event can never pass unnoticed again.
+    try{
+     require("./coopRuntimeProbe").observe("living-native-war-merit-bridge",null,
+      {spaceState:{systemID:Number(proof&&proof.systemID)||0}},
+      {status:String(merit&&merit.status||"UNKNOWN"),
+       reason:String(merit&&merit.reason||""),
+       attackerPilotID:String(merit&&merit.attackerPilotID||""),
+       victimPilotID:String(merit&&merit.victimPilotID||""),
+       promoted:merit&&merit.promoted===true,
+       bountyStatus:String(merit&&merit.bounty&&merit.bounty.status||""),
+       bountyReason:String(merit&&merit.bounty&&merit.bounty.reason||""),
+       evidence:"BRIDGE_FROM_NATIVE_ATTACKER_TO_WAR_MERIT"});
+    }catch(_error){/* probe is best effort */}
    }catch(error){
+    try{
+     require("./coopRuntimeProbe").observe("living-native-war-merit-bridge",null,
+      {spaceState:{systemID:Number(proof&&proof.systemID)||0}},
+      {status:"THREW",reason:String(error&&error.message||error).slice(0,160),
+       evidence:"MERIT_BRIDGE_FAILED"});
+    }catch(_error){/* probe is best effort */}
     console.warn("[CoopWarKillMerit]",String(error?.message||"UNAVAILABLE"));
    }
   }
