@@ -35,9 +35,16 @@ function factionOfPilot({pilotID, links = [], getNativeEntity, getFactionForCorp
   return 0;
 }
 
+// FW-104: a kill the merit ledger accepts must know its faction and its campaign.
+// MEASURED on the play stack 2026-10-30 22:33:15.180Z: coop-pilot-013 earned merit for a
+// real warship kill and the bounty was refused with BOUNTY_PILOT_FACTION_UNKNOWN because
+// its identity link no longer resolved a live native corporation - the same hull was
+// released as a confirmed wreck three seconds later. The war fleet registry already holds
+// that pilot's proven faction and campaign (both verified at ASSIGN), so it is the honest
+// fallback: no guessed hull, and a released identity no longer makes a real kill unpayable.
 function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
   getNativeEntity, getFactionForCorporation, readCasualties = () => null,
-  readCampaignForEntity = null,
+  readCampaignForEntity = null, readFleet = () => null,
   emit = null, clock = () => Date.now(), env = process.env} = {}) {
   if (typeof treasury?.execute !== "function" ||
       typeof chest?.creditPilot !== "function" ||
@@ -107,7 +114,15 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
     if (busy) return {status: "BLOCKED", reason: "WAR_BOUNTY_REENTRANT"};
     const pilot = pilotOf(pilotID);
     if (!pilot) return {status: "BLOCKED", reason: "INVALID_BOUNTY_PILOT"};
-    const campaign = campaignFor({wreckID, campaignID, victimEntityID});
+    // The pilot's own registry row proves which faction and campaign it was mobilised
+    // for, even after its identity link was released with the confirmed wreck.
+    let ownRow = null;
+    try {
+      const rows = readFleet()?.ships || {};
+      ownRow = Object.values(rows).find((row) => row && String(row.pilotID) === pilot) || null;
+    } catch (_error) { ownRow = null; }
+    const campaign = campaignFor({wreckID, campaignID, victimEntityID}) ||
+      String((ownRow && ownRow.campaignID) || "");
     if (!campaign) return {status: "BLOCKED", reason: "NO_REAL_CAMPAIGN_FOR_EVENT"};
     let warState = null;
     try { warState = readWarState(); } catch (_error) { warState = null; }
@@ -115,8 +130,9 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
     if (!record) return {status: "BLOCKED", reason: "WAR_CAMPAIGN_NOT_PERSISTED"};
     let links = [];
     try { links = readLinks() || []; } catch (_error) { links = []; }
-    const factionID = factionOfPilot({pilotID: pilot, links,
+    let factionID = factionOfPilot({pilotID: pilot, links,
       getNativeEntity, getFactionForCorporation});
+    if (!pos(factionID) && ownRow) factionID = num(ownRow.factionID);
     if (!pos(factionID)) return {status: "BLOCKED", reason: "BOUNTY_PILOT_FACTION_UNKNOWN"};
     const reservation = reservationFor({campaignID: campaign, factionID});
     if (!reservation) {
