@@ -17,6 +17,15 @@ const named=x=>typeof x==="string"&&/^coop-pilot-[0-9]{3,}$/.test(x);
 // WRONG_SYSTEM - the side then answered NO_PATROL_CANDIDATE while an armed hull stood in
 // its system, no assault was ever deployed, and the payout rung could never be reached.
 // The native record decides; a link with no readable native system keeps its own value.
+// FW-070: a war hull is any ARMED hull of the faction, and "pirate" is a normal war
+// role in this world - the Angel Cartel raiders that hold 30045342 are linked as
+// `pirate`, and the mobiliser only accepted `patrol`. Measured 10:2xZ: three armed,
+// linked, physically present hulls stood in the campaign's system while both sides
+// answered NO_PATROL_CANDIDATE, so the ASSAULT could never deploy a ship. This is the
+// same definition FW-044 already uses for military ownership (`deriveTerritoryOwners`),
+// so one rule now covers both.
+const MOBILIZABLE_ROLES = new Set(["patrol", "pirate"]);
+
 const physicalCandidateSystem=(link,getNativeEntity)=>{
  try{
   const native=typeof getNativeEntity==="function"?getNativeEntity(Number(link&&link.entityID)):null;
@@ -208,7 +217,7 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
       if(dryRun?mobilized.length>=DRY_RUN_REPORT_LIMIT:mobilized.length>=maxPerTick)break;
       const id=link?.entityID;
       const cheap=!pos(id)?"INVALID_ENTITY":!named(link.pilotID)?"INVALID_PILOT":
-       link.role!=="patrol"?"NOT_PATROL_ROLE":
+       !MOBILIZABLE_ROLES.has(String(link.role||""))?"NOT_PATROL_ROLE":
        physicalCandidateSystem(link,getNativeEntity)!==side.systemID?"WRONG_SYSTEM":
        existing.has(id)?"ALREADY_ASSIGNED":usedPilots.has(link.pilotID)?"PILOT_IN_USE":
        playerIDs.has(id)?"PLAYER_SHIP":isTactical(id)?"TACTICAL_BUSY":"";
@@ -303,4 +312,4 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
  }
  return Object.freeze({tick});
 }
-module.exports={createWarMobilizer,enabled,physicalCandidateSystem};
+module.exports={createWarMobilizer,enabled,physicalCandidateSystem,MOBILIZABLE_ROLES};
