@@ -37267,6 +37267,10 @@ class SpaceRuntime {
       gateActivityDeliveredCount: sourceObserverGateActivity.deliveredCount,
     });
 
+    // COOP_DAILY_GOALS_V1: a real accepted gate jump, counted for the daily goal
+    // "Jump Through". One statement, env-gated, and a counter must never break a jump.
+    if (process.env.EVEJS_COOP_DAILY_GOALS === "1") { try { require("./coopDailyGoals").shared().recordJump(Number(session.characterID || 0)); } catch (_error) { /* goal counter only */ } }
+
     return {
       success: true,
       data: {

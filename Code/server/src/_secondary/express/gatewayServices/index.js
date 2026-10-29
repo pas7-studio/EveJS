@@ -9,6 +9,9 @@ const {
 const {
   createGoalContributionGatewayService,
 } = require("./goalContributionGatewayService");
+const {
+  createDailyGoalGatewayService,
+} = require("./dailyGoalGatewayService");
 const { createInsurgencyGatewayService } = require("./insurgencyGatewayService");
 const {
   createMercenaryDenGatewayService,
@@ -53,6 +56,7 @@ function createGatewayServiceRegistry(context) {
     createFreelanceGatewayService(context),
     createFwAdvantageGatewayService(context),
     createGoalContributionGatewayService(context),
+    createDailyGoalGatewayService(context),
     createInsurgencyGatewayService(context),
     createNewEdenStoreGatewayService(context),
     createPlexVaultGatewayService(context),
