@@ -67,6 +67,32 @@ function write(state, env = process.env) {
   fs.renameSync(temp, file);
   return state;
 }
+// Where the money from freight is written down. The economy ledger counted production and
+// station sales, so a trip's ISK existed only in the pilot's balance and a treasury sweep -
+// invisible exactly where the corporation's capital is accounted. One append-only row per
+// settlement keeps it honest and cheap.
+function freightLedgerFile(env = process.env) {
+  return path.join(root(env), "..", "freight-ledger.jsonl");
+}
+function appendFreight(state, settlement, env = process.env) {
+  try {
+    const row = {
+      at: new Date(num(settlement && settlement.at) || Date.now()).toISOString(),
+      haulerID: pos(state.haulerID),
+      fromSystemID: pos(state.fromSystemID), toSystemID: pos(state.toSystemID),
+      toStationID: pos(state.toStationID),
+      lines: Array.isArray(state.lifted) ? state.lifted.length : 0,
+      units: num(settlement && settlement.quantity),
+      isk: num(settlement && settlement.isk),
+      status: String((settlement && settlement.status) || "SOLD"),
+      iskUnknown: settlement && settlement.iskUnknown === true ? true : undefined,
+    };
+    const file = freightLedgerFile(env);
+    fs.mkdirSync(path.dirname(file), {recursive: true});
+    fs.appendFileSync(file, JSON.stringify(row) + "\n", "utf8");
+    return true;
+  } catch (_error) { return false; }
+}
 function list(env = process.env) {
   try {
     return fs.readdirSync(root(env)).filter((n) => /\.json$/.test(n))
@@ -356,6 +382,9 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     // The empty hold is proof enough and needs no market at all, so it is asked FIRST.
     const held = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : null;
     if (Number.isFinite(held) && held === 0 && (num(state.quantity) > 0 || num(state.isk) > 0)) {
+      // The goods are gone but the price was never captured: the ledger row says so.
+      appendFreight(state, {quantity: num(state.quantity), isk: 0, at: now, iskUnknown: true,
+        status: "SOLD_VERIFIED_BY_HOLD"}, env);
       return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, iskUnknown: true });
     }
     if (typeof authorities.sell !== "function") return { status: "NO_SELL" };
@@ -427,7 +456,9 @@ async function tick(haulerID, authorities = {}, env = process.env) {
         return { status: "PARTIALLY_SOLD", state: next };
       }
       const trips = num(state.trips) + 1;
-      const settlement = { quantity: num(settled.quantity), isk: num(settled.isk) };
+      const settlement = { quantity: num(settled.quantity), isk: num(settled.isk), at: now,
+        status: "SOLD" };
+      appendFreight(state, settlement, env);
       // A hull that sits in the buyer system with an empty hold is dead freight: it goes home
       // and takes another load, bounded by a trip count so a cycle cannot run for ever.
       if (authorities.recycle !== true || trips >= MAX_TRIPS) {
@@ -523,6 +554,6 @@ async function tickAll(authorities = {}, env = process.env) {
   }
   return results;
 }
-module.exports = { PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
+module.exports = { freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
   SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
   read, write, list, decide, worthIt, note, tick, tickAll };
