@@ -162,6 +162,8 @@ function note(observe, event, state, extra = {}) {
 
 // How often the same order may be re-issued while a hull flies to a station.
 const ORDER_SPACING_MS = 45000;
+// A stop that stays unloaded this long is a stall, not patience (beats, not seconds).
+const MAX_STOP_WAITS = 40;
 // How many loads one hull may carry before the run reports and stops. A cycle that never
 // ends is indistinguishable from one that is stuck.
 const MAX_TRIPS = 5;
@@ -350,7 +352,24 @@ async function tick(haulerID, authorities = {}, env = process.env) {
   if (step.action === "PLAN") return { status: "PLAN_REQUIRED" };
 
   if (step.action === "GO_ORIGIN" || step.action === "GO_DEST") {
-    const stationID = step.action === "GO_ORIGIN" ? state.fromStationID : state.toStationID;
+    const stationID = step.action === "GO_ORIGIN" ? (stop.stationID || state.fromStationID)
+      : state.toStationID;
+    // A hull that keeps being ordered to a station is not "flying": it may not be moving at
+    // all. Measured 2026-10-30: four hulls reported FLYING_TO_ORIGIN for over half an hour and
+    // loaded nothing. The wait is counted per stop, reported with the distance we actually
+    // measured, and finally given up on - a phase that looks healthy for ever is a lie.
+    const waits = num(state.stopWaits) + 1;
+    if (waits % 5 === 0) {
+      note(observe, "living-distribution-run-waiting", {
+        haulerID: id, phase: state.phase, stop: stationID, waits,
+        distanceM: facts.distanceToOriginM === null ? null : Math.round(facts.distanceToOriginM),
+        hullSystemID: facts.hullSystemID || 0, toSystemID: state.fromSystemID || 0});
+    }
+    if (waits >= MAX_STOP_WAITS) {
+      return finish(PHASE.BLOCKED, "STALLED_AT_STOP:" + stationID,
+        {stopWaits: waits, distanceM: facts.distanceToOriginM});
+    }
+    state = write({ ...state, stopWaits: waits, updatedAt: now }, env);
     // "Never ordered" is not "ordered just now": a run starts with no timestamp at all.
     if (num(state.orderAt) > 0 && now - num(state.orderAt) < ORDER_SPACING_MS)
       return { status: "FLYING", state };
@@ -380,6 +399,37 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       capM3: typeof authorities.capacityM3 === "function" ? authorities.capacityM3(id) : 0 }); }
     catch (error) { answer = { status: "LIFT_THREW", reason: String((error && error.message) || error).slice(0, 80) }; }
     const status = String((answer && answer.status) || "LIFT_UNKNOWN");
+    // A stop whose goods moved away must not kill a trip that has already loaded elsewhere.
+    // Measured 2026-10-30: two hulls were refused NO_LOCAL_BID at their second stop and the
+    // whole journey stopped with one stop's cargo still aboard.
+    const EMPTY_STOP = new Set(["NO_LOCAL_BID", "NO_MINERAL_STOCK", "STACK_CHANGED",
+      "DOES_NOT_FIT_HOLD"]);
+    if (status !== "LIFTED" && EMPTY_STOP.has(status)) {
+      const skippedStops = [...(state.skippedStops || []), {stationID: stop.stationID,
+        status}];
+      const nextEmpty = stopIndex + 1;
+      if (nextEmpty < stops.length) {
+        const moving = write({ ...state, phase: PHASE.TO_ORIGIN, stopIndex: nextEmpty,
+          stopWaits: 0, orderAt: 0, skippedStops,
+          lastReason: "EMPTY_STOP:" + stop.stationID + ":" + status, updatedAt: now }, env);
+        note(observe, "living-distribution-run", moving, { reason: moving.lastReason });
+        return { status: "EMPTY_STOP", state: moving };
+      }
+      // Nothing left to load anywhere: if the hull carries anything at all, fly and sell it.
+      const aboard = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : 0;
+      if (!(Number(aboard) > 0)) {
+        return finish(PHASE.BLOCKED, "NO_CARGO_AT_ANY_STOP", {skippedStops});
+      }
+      let crossing = null;
+      try {
+        crossing = typeof authorities.planCrossing === "function"
+          ? authorities.planCrossing({haulerID: id, gate: state.gate}) : null;
+      } catch (_error) { crossing = null; }
+      const ok = Boolean(crossing && (crossing.status === "PLANNED" ||
+        crossing.status === "ALREADY_PENDING"));
+      if (!ok) return finish(PHASE.BLOCKED, "CROSSING_UNPLANNED", {skippedStops});
+      return finish(PHASE.CROSS, "LOADED_PARTIAL", {skippedStops, quantity: num(state.quantity)});
+    }
     if (status !== "LIFTED") return finish(PHASE.BLOCKED, status);
     const lifted = Array.isArray(answer.lifted) ? answer.lifted : [];
     const quantity = lifted.reduce((sum, row) => sum + num(row.quantity), 0);
@@ -387,7 +437,7 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     const nextIndex = stopIndex + 1;
     if (nextIndex < stops.length) {
       // Another station holds part of this load: go there before leaving the system.
-      const moving = write({ ...state, phase: PHASE.TO_ORIGIN, stopIndex: nextIndex,
+      const moving = write({ ...state, phase: PHASE.TO_ORIGIN, stopIndex: nextIndex, stopWaits: 0,
         loadedStops, orderAt: 0, lastReason: "LOADED_STOP:" + stop.stationID, updatedAt: now },
         env);
       note(observe, "living-distribution-run", moving, { reason: moving.lastReason });
@@ -587,6 +637,6 @@ async function tickAll(authorities = {}, env = process.env) {
   }
   return results;
 }
-module.exports = { freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
+module.exports = { MAX_STOP_WAITS, freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
   SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
   read, write, list, decide, worthIt, note, tick, tickAll };
