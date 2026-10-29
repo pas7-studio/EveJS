@@ -11,11 +11,14 @@
 //
 // Admin AddProgress adds a real delta; Complete marks the achievement finished and puts its
 // reward on the unclaimed list; Reset clears the row and withdraws the reward that completion
-// put there. A claim pays nothing by itself - it only moves the reward from unclaimed to claimed,
-// because this world has no reward currency to mint (see docs/CLIENT_GAPS.md).
+// put there. A claim moves the reward from unclaimed to claimed and pays the skill points our
+// catalogue declares for that achievement - SP is character state, the same currency the daily
+// goals and the career portal grant. It is paid before the entry is removed, so a failed grant
+// leaves the reward claimable instead of eating it.
 //
 // Rows live inside the character record through its single owner (characterState).
 const path = require("path");
+const { createSkillPointGrant } = require("./coopSkillPointGrant");
 
 const STATE_KEY = "achievements";
 const VERSION = 1;
@@ -84,12 +87,37 @@ function createAchievements({
   characterState = null,
   clock = () => Date.now(),
   env = process.env,
+  rewardLookup = null,
+  grantSkillPoints = null,
 } = {}) {
   const owner = () => characterState || require(path.join(
     __dirname,
     "../services/character/characterState",
   ));
   const enabled = () => env.EVEJS_COOP_ACHIEVEMENTS === "1";
+
+  // What claiming an achievement actually pays. The amount comes from our own catalogue
+  // (space/coopAchievementContent), so the reward shown in the client and the reward paid are the
+  // same number, and an achievement the catalogue does not declare pays nothing.
+  function declaredSkillPoints(achievementKey) {
+    try {
+      const lookup = rewardLookup || require(path.join(__dirname, "coopAchievementContent"));
+      return Number(lookup.skillPointsFor(achievementKey)) || 0;
+    } catch (_error) {
+      return 0;
+    }
+  }
+
+  function pay(characterID, amount) {
+    if (amount <= 0) return { status: "OK" };
+    try {
+      const grant = grantSkillPoints || createSkillPointGrant();
+      grant(characterID, amount);
+      return { status: "OK" };
+    } catch (_error) {
+      return { status: "REWARD_FAILED" };
+    }
+  }
 
   function stateOf(characterID) {
     try {
@@ -205,9 +233,13 @@ function createAchievements({
       && (categoryKey ? entry.category === categoryKey : true)
       && (milestoneKey ? entry.milestone === milestoneKey : true));
     if (index < 0) return { status: "NOT_FOUND" };
+    // Pay first: a claim that removes the reward but fails to pay it would silently eat it.
+    const skillPoints = declaredSkillPoints(state.unclaimed[index].achievement);
+    const paid = pay(id, skillPoints);
+    if (paid.status !== "OK") return paid;
     state.unclaimed.splice(index, 1);
     const written = persist(id, state);
-    return written.status === "OK" ? { status: "CLAIMED" } : written;
+    return written.status === "OK" ? { status: "CLAIMED", skillPoints } : written;
   }
 
   // The showcase score is the sum of the category scores the character really has.

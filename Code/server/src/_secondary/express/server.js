@@ -31,7 +31,20 @@ function getMapTagsCdnAsset(routePath) {
 }
 
 function getGatewayBinaryAsset(routePath) {
-  return getMapTagsCdnAsset(routePath) || getTitleContentCdnAsset(routePath) || null;
+  return getMapTagsCdnAsset(routePath)
+    || getTitleContentCdnAsset(routePath)
+    || getAchievementContentCdnAsset(routePath)
+    || null;
+}
+
+let achievementContentCdnAssetResolver = null;
+
+function getAchievementContentCdnAsset(routePath) {
+  if (!achievementContentCdnAssetResolver) {
+    ({ getAchievementContentAsset: achievementContentCdnAssetResolver } =
+      require("../../space/coopAchievementContent"));
+  }
+  return achievementContentCdnAssetResolver(routePath);
 }
 
 let titleContentCdnAssetResolver = null;

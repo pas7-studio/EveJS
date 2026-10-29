@@ -10,8 +10,8 @@
 // Two honest refusals worth knowing:
 //   - AddProgress with a checklist is refused, because checklist progress has no storage here yet
 //     and silently dropping it would report work that did not happen;
-//   - Claim only moves a reward from unclaimed to claimed. It mints nothing, because this world
-//     has no reward currency funded for players (see docs/CLIENT_GAPS.md).
+//   - Claim pays the skill points our catalogue declares for that achievement and only then
+//     removes it from the unclaimed list (space/coopAchievements owns both steps).
 const path = require("path");
 const protobuf = require("protobufjs");
 
@@ -355,6 +355,7 @@ function createAchievementGatewayService(context = {}) {
       CHECKLIST_UNSUPPORTED: [9, "checklist progress is not supported yet"],
       NO_CHARACTER: [7, "no character in this session"],
       WRITE_FAILED: [13, "the achievement state could not be stored"],
+      REWARD_FAILED: [13, "the reward could not be paid, so it stays claimable"],
     };
     const refusal = refusals[status] || [13, `achievement request failed: ${status}`];
     return error(refusal[0], refusal[1], responseTypeName);

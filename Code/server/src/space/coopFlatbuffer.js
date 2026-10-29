@@ -6,9 +6,9 @@
 // from the start of the buffer, a table starts with a signed offset back to its vtable, and a
 // vtable holds the field offsets relative to the table start.
 //
-// Only what our catalogues need is supported: strings, uint32/int32 scalars, tables and vectors of
-// table offsets. Bigger scalars are deliberately absent - an unused primitive is a silent way to
-// write a wrong width.
+// Only what our catalogues need is supported: strings, uint8/bool/uint16/uint32/int32 scalars,
+// tables and vectors of table offsets. Bigger scalars are deliberately absent - an unused primitive
+// is a silent way to write a wrong width.
 const IDENTIFIER_BYTES = 4;
 
 class FlatbufferBuilder {
@@ -119,11 +119,25 @@ class FlatbufferBuilder {
     this.vtable[index] = this.offset();
   }
 
-  // A scalar field is written in place; there is no offset to follow.
+  // A scalar field is written in place; there is no offset to follow. The width must match the
+  // client's generated `Prepend<Type>Slot` for that field, or the reader decodes the wrong bytes.
   scalarSlot(index, value, width = "uint32") {
+    const numeric = Number(value) || 0;
+    if (width === "uint8" || width === "bool") {
+      this._prep(1, 0);
+      this._writeByte(width === "bool" ? (numeric ? 1 : 0) : numeric);
+      this.vtable[index] = this.offset();
+      return;
+    }
+    if (width === "uint16") {
+      this._prep(2, 0);
+      this._writeUint16(numeric);
+      this.vtable[index] = this.offset();
+      return;
+    }
     this._prep(4, 0);
-    if (width === "int32") this._writeInt32(Number(value) || 0);
-    else this._writeUint32(Number(value) || 0);
+    if (width === "int32") this._writeInt32(numeric);
+    else this._writeUint32(numeric);
     this.vtable[index] = this.offset();
   }
 
