@@ -1195,6 +1195,47 @@ function advanceNativeWarAssault(){
   Number(begunCampaign&&begunCampaign.targetSystemID)||0,
  ]);
 }
+// FW-102: the mobiliser is created lazily by the phase that runs inside the world
+// cycle, and every other reader of it answered MOBILIZER_NOT_INITIALIZED. MEASURED on
+// the play stack 2026-10-30: `war_diagnose` - the one read-only action whose whole job
+// is to explain an empty side - returned MOBILIZER_NOT_INITIALIZED while the phase kept
+// ticking, so the operator could not see a single per-side rejection reason. The
+// factory is shared, so the diagnostic dry-runs the exact same authorities the phase
+// uses (a dry run never writes, reserves or orders anything).
+function warMobilizerInstance(registry,guard){
+ if(warMobilizer)return warMobilizer;
+ if(!registry||!guard||!identityRegistry)return null;
+ const {createWarMobilizer}=require("./coopWarMobilizer");
+ const native=require("./runtime"),npcStore=require("./npc/nativeNpcStore"),
+  controllers=require("./npc/npcRegistry"),
+  factions=require("../services/faction/factionState"),
+  dogma=require("./combat/weaponDogma"),
+  capability=require("./npc/npcCapabilityResolver");
+ const readiness=require("./coopWarMusterReadiness").createWarMusterReadiness({
+  store:npcStore,resolveFamily:dogma.resolveWeaponFamily,
+  isOptional:dogma.isChargeOptionalTurretWeapon,
+  compatible:capability.isNpcChargeCompatibleWithModule
+ });
+ warMobilizer=createWarMobilizer({
+  registry,
+  readWarState:()=>warStateStore().read(),
+  readLinks:()=>Object.values(identityRegistry.snapshot().links||{}),
+  // Existing scenes only: a military director must never manufacture an
+  // enemy or force NPC materialization by observing an unvisited system.
+  sceneForSystem:id=>native.scenes instanceof Map?native.scenes.get(id):null,
+  getNativeEntity:id=>npcStore.getNativeEntity(id),
+  getController:id=>controllers.getControllerByEntityID(id),
+  getFactionForCorporation:id=>factions.getFactionIDForCorporation(id),
+  inspectReadiness:context=>readiness.inspect(context),
+  getOrderLeases:()=>guard.snapshot().leases,
+  isTactical:id=>tacticsDirector?.activeIDs()?.has(id)===true,
+  // Command size comes from real rank. No pilot has earned merit yet, so every
+  // side starts at a recruit's single ship instead of the old blanket two.
+  commandCap:({assignedPilotIDs})=>require("./coopFactionWarMerit")
+   .sideCommandCap({pilotIDs:assignedPilotIDs,records:warMeritRecords()})
+ });
+ return warMobilizer;
+}
 function advanceNativeWarMobilization(){
  const {enabled,createWarMobilizer}=require("./coopWarMobilizer");
  if(!enabled(process.env))return warSkip("mobilization","WAR_FLAGS_OFF");
@@ -1210,40 +1251,9 @@ function advanceNativeWarMobilization(){
   warSkip("mobilization","WAR_STATE_WRITE_FAILED:"+String(error&&error.message||error));
   return;
  }
- if(!warMobilizer){
-  const native=require("./runtime"),npcStore=require("./npc/nativeNpcStore"),
-   controllers=require("./npc/npcRegistry"),
-   factions=require("../services/faction/factionState"),
-   gameStore=require("../gameStore"),
-   {KEY,TABLE}=require("./coopFactionWarStore"),
-   core=require("./coopFactionWarCore"),
-   dogma=require("./combat/weaponDogma"),
-   capability=require("./npc/npcCapabilityResolver");
-  const readiness=require("./coopWarMusterReadiness").createWarMusterReadiness({
-   store:npcStore,resolveFamily:dogma.resolveWeaponFamily,
-   isOptional:dogma.isChargeOptionalTurretWeapon,
-   compatible:capability.isNpcChargeCompatibleWithModule
-  });
-  warMobilizer=createWarMobilizer({
-   registry,
-   readWarState:()=>warStateStore().read(),
-   readLinks:()=>Object.values(identityRegistry.snapshot().links||{}),
-   // Existing scenes only: a military director must never manufacture an
-   // enemy or force NPC materialization by observing an unvisited system.
-   sceneForSystem:id=>native.scenes instanceof Map?native.scenes.get(id):null,
-   getNativeEntity:id=>npcStore.getNativeEntity(id),
-   getController:id=>controllers.getControllerByEntityID(id),
-   getFactionForCorporation:id=>factions.getFactionIDForCorporation(id),
-   inspectReadiness:context=>readiness.inspect(context),
-   getOrderLeases:()=>guard.snapshot().leases,
-   isTactical:id=>tacticsDirector?.activeIDs()?.has(id)===true,
-   // Command size comes from real rank. No pilot has earned merit yet, so every
-   // side starts at a recruit's single ship instead of the old blanket two.
-   commandCap:({assignedPilotIDs})=>require("./coopFactionWarMerit")
-    .sideCommandCap({pilotIDs:assignedPilotIDs,records:warMeritRecords()})
-  });
- }
- const result=warMobilizer.tick({systemIDs:[...visitedSystems].sort((a,b)=>a-b).slice(0,20)});
+ const mobilizer=warMobilizerInstance(registry,guard);
+ if(!mobilizer)return warSkip("mobilization","MOBILIZER_CREATE_FAILED");
+ const result=mobilizer.tick({systemIDs:[...visitedSystems].sort((a,b)=>a-b).slice(0,20)});
  if(result.mobilized.length)require("./coopRuntimeProbe").observe(
   "living-native-war-mobilization",null,null,
   {status:result.status,ships:result.mobilized,
@@ -1258,7 +1268,24 @@ function advanceNativeWarMobilization(){
     null,null,{status:"BLOCKED",ships:result.blocked.slice(0,8),
      evidence:"NATIVE_FLEET_REGISTRY_REFUSED_ASSIGN"});
   }
- } else warSkip("mobilization","NO_MOBILIZED_SHIP:"+String(result.status||"UNKNOWN"));
+ } else{
+  // FW-102: "OBSERVED" with an empty mobilized[] is exactly what a stalled front
+  // looks like, and the phase published nothing but the word OBSERVED. The per-side
+  // report (system tracked? how many candidates passed every native gate? the first
+  // rejection reasons) is published once per distinct set, so the reason a side stays
+  // empty is visible without attaching an inspector to the live server.
+  const report=Array.isArray(result.campaigns)?result.campaigns:[];
+  const signature=JSON.stringify(report.map(c=>[c.campaignID,Array.isArray(c.sides)?
+   c.sides.map(s=>[s.factionID,s.systemID,s.status,s.assigned,
+    (s.rejected||[]).map(r=>r.reason)]):[]]));
+  if(report.length&&warSkipReasons["mobilization-idle"]!==signature){
+   warSkipReasons["mobilization-idle"]=signature;
+   require("./coopRuntimeProbe").observe("living-native-war-mobilization-idle",
+    null,null,{status:String(result.status||"UNKNOWN"),campaigns:report.slice(0,4),
+     activeCampaignCount:Number(result.activeCampaignCount)||0,
+     evidence:"NO_CANDIDATE_PASSED_EVERY_NATIVE_GATE"});
+  } else warSkip("mobilization","NO_MOBILIZED_SHIP:"+String(result.status||"UNKNOWN"));
+ }
 }
 // FW-003D: a registered battle-line hull that has no compatible charge left can
 // never fire again, and the mobiliser counts every registered hull of a side, so
@@ -1370,15 +1397,25 @@ function diagnoseWarState(){
 // many linked pilots resolve to a real faction, and why a link was skipped. A
 // funded faction with no territory here can never get a front.
 function diagnoseMobilization(){
- if(!warMobilizer)return {status:"MOBILIZER_NOT_INITIALIZED"};
  if(!visitedSystems.size)return {status:"NO_VISITED_SYSTEMS"};
+ // FW-102: build the mobiliser with the same factory the phase uses instead of
+ // reporting NOT_INITIALIZED whenever the phase has not ticked in this process yet.
+ let runtimeMobilizer=null,why="";
+ try{
+  const registry=nativeWarFleetRegistry(),guard=npcOrderBridge();
+  if(!registry)why="NO_WAR_FLEET_REGISTRY";
+  else if(!guard)why="NO_ORDER_BRIDGE";
+  else if(!identityRegistry)why="NO_IDENTITY_REGISTRY";
+  else runtimeMobilizer=warMobilizerInstance(registry,guard);
+ }catch(error){why="MOBILIZER_CREATE_THREW:"+String(error&&error.message||error)}
+ if(!runtimeMobilizer)return {status:"MOBILIZER_NOT_INITIALIZED",reason:why||"UNKNOWN"};
  try{
   // Every tracked system is offered to the planner, sorted so the set never
   // depends on the order the world happened to visit systems in. The mobiliser
   // itself reports one block per LIVE campaign (campaigns[]), so a second war
   // can no longer be hidden behind the first one.
   const systemIDs=[...visitedSystems].sort((a,b)=>a-b).slice(0,20);
-  const result=warMobilizer.tick({systemIDs,dryRun:true});
+  const result=runtimeMobilizer.tick({systemIDs,dryRun:true});
   return Object.assign({},result,{systemIDs,
    campaignCount:Array.isArray(result.campaigns)?result.campaigns.length:0});
  }catch(error){
