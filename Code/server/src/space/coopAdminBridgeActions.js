@@ -1111,6 +1111,25 @@ function releaseIdentity(request) {
   const pilotID = String(request.pilotID || "").trim();
   const entityID = Number(request.entityID) || 0;
   if (!pilotID) return { ok: false, error: "pilotID is required" };
+  // FW-075: releasing an identity while its hull is still flying leaves an armed ship
+  // that can be killed but can never be attributed. Measured 12:36Z and 12:40Z: two war
+  // casualties answered NOT_UNIQUE_NAMED_PIRATE because their hulls had no link at all
+  // (the pilots had been released minutes earlier to free the pool). A release now
+  // refuses while the hull is physical, unless the operator forces it explicitly.
+  if (request.force !== true) {
+    try {
+      const pilotRow = require("./npc/nativeNpcStore");
+      const links = require("./coopVirtualWorldRuntime" + siblingSuffix).identityLinks();
+      const bound = (Array.isArray(links) ? links : []).find((row) =>
+        row && String(row.pilotID || "") === pilotID);
+      const liveID = Number(bound && bound.entityID) || entityID;
+      const native = liveID > 0 ? pilotRow.getNativeEntity(liveID) : null;
+      if (native && Number(native.entityID) === liveID)
+        return { ok: false, error: "HULL_STILL_PHYSICAL", pilotID,
+          entityID: liveID, systemID: Number(native.systemID) || 0,
+          evidence: "A_RELEASED_IDENTITY_LEAVES_AN_UNATTRIBUTABLE_ARMED_HULL" };
+    } catch (_error) { /* an unreadable store never blocks an explicit release */ }
+  }
   try {
     const runtimeWorld = require("./coopVirtualWorldRuntime" + siblingSuffix);
     const released = runtimeWorld.releaseSpawnedIdentity({
