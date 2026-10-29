@@ -107,8 +107,18 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
     reachable.has(physicalCandidateSystem(l,getNativeEntity)))
 
     .sort((a,b)=>a.entityID-b.entityID).slice(0,512);
-   const existing=new Set(Object.keys(assigned.ships).map(Number));
-   const usedPilots=new Set(Object.values(assigned.ships).map(x=>x?.pilotID));
+   // FW-072: a registry row whose hull no longer exists is custody of a dead ship, and
+   // it must not block the pilot forever. Measured 10:3xZ: both sides of a live ASSAULT
+   // answered NO_ELIGIBLE_PATROL with reason PILOT_IN_USE for pilots whose hulls had been
+   // destroyed campaigns ago, so no fresh campaign could ever staff a side. A row with a
+   // live native record anywhere still reserves its pilot (that ship is real and busy);
+   // a row with no native record reserves nothing.
+   const rowIsLive=(row)=>{
+    try{return Boolean(getNativeEntity(Number(row&&row.entityID)))}catch{return true}
+   };
+   const liveRows=Object.values(assigned.ships).filter(rowIsLive);
+   const existing=new Set(liveRows.map(row=>Number(row&&row.entityID)).filter(pos));
+   const usedPilots=new Set(liveRows.map(row=>row&&row.pilotID).filter(named));
    const mobilized=[];
    const blocked=[];
    // A hull that was released from a campaign may legitimately be mobilized into
