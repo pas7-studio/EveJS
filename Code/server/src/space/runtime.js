@@ -17986,21 +17986,45 @@ function buildShipEntityCore(source, systemID, options = {}) {
     toInt(source.characterID, 0),
   );
 
+  // The overview panel decides visibility with `slimItem.groupID not in filterGroups`
+  // (eve/client/script/ui/inflight/overview/slimItemDisplayChecker.pyj), so a ship that reports a
+  // generic group is invisible in every tab that does not happen to list that group, and a ship
+  // that reports NO group breaks the client's AddBalls2 loop for every ball after it. The real group
+  // and category come from the item type, not from a hard-coded frigate default: a Catalyst is a
+  // destroyer even though its hull is spawned by a fleet helper that only knows the typeID.
+  const resolvedShipType = (() => {
+    const typeID = toInt(source.typeID, 0);
+    if (typeID <= 0) return null;
+    try {
+      return resolveItemByTypeID(typeID) || null;
+    } catch (_error) {
+      return null;
+    }
+  })();
+  const shipGroupID = toInt(
+    source.groupID,
+    toInt(resolvedShipType && resolvedShipType.groupID, 25),
+  );
+  const shipCategoryID = toInt(
+    source.categoryID,
+    toInt(resolvedShipType && resolvedShipType.categoryID, 6),
+  );
+
   const entity = {
     kind: "ship",
     systemID,
     itemID: allocateRuntimeEntityID(source.itemID),
     typeID: source.typeID,
-    groupID: toInt(source.groupID, 25),
-    categoryID: toInt(source.categoryID, 6),
+    groupID: shipGroupID,
+    categoryID: shipCategoryID,
     itemName: String(source.itemName || source.name || "Ship"),
     ownerID: toInt(
       source.ownerID,
       toInt(source.characterID, toInt(source.corporationID, 0)),
     ),
     slimTypeID: toInt(source.slimTypeID, toInt(source.typeID, 0)),
-    slimGroupID: toInt(source.slimGroupID, toInt(source.groupID, 25)),
-    slimCategoryID: toInt(source.slimCategoryID, toInt(source.categoryID, 6)),
+    slimGroupID: toInt(source.slimGroupID, shipGroupID),
+    slimCategoryID: toInt(source.slimCategoryID, shipCategoryID),
     slimName: String(
       source.slimName ||
         source.itemName ||

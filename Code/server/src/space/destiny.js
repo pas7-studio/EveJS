@@ -1108,12 +1108,13 @@ function buildSlimItemDict(entity) {
   if (slimNameID) {
     entries.push(["nameID", slimNameID]);
   }
-  if (slimGroupID > 0) {
-    entries.push(["groupID", slimGroupID]);
-  }
-  if (slimCategoryID > 0) {
-    entries.push(["categoryID", slimCategoryID]);
-  }
+  // Always present, even when unknown: the client's overview checker reads `slimItem.groupID`
+  // unconditionally (SlimItemDisplayChecker.ShouldDisplayItem), and `michelle.AddBalls2` builds the
+  // objects one after another - an attribute that is missing raises there and every ball after it
+  // is added without a slim item, which shows up as an empty overview panel with ships still
+  // visible in space. A zero still classifies as "unknown", but it never breaks the loop.
+  entries.push(["groupID", slimGroupID]);
+  entries.push(["categoryID", slimCategoryID]);
   const slimGraphicID = toInt32(
     entity && entity.slimGraphicID,
     toInt32(entity && entity.graphicID, 0),
