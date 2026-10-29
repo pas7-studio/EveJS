@@ -144,8 +144,12 @@ const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.payment.code.api.RedeemRequest",
 ]);
 
-const NOT_FOUND = 5;
-const FAILED_PRECONDITION = 9;
+// The client compares these against httplib constants, not against gRPC codes: its own messengers
+// read `status_code == 404` to mean "no such record" (see user_licenses/client/messenger/
+// request_messenger.pyj). Answering 5/9 here made every one of these "absent" answers an unexpected
+// GenericException in the client instead of the "nothing here" it handles.
+const NOT_FOUND = 404;
+const FAILED_PRECONDITION = 412;
 
 function emptyAnswer(statusCode, statusMessage, responseTypeName, payload, type) {
   return {
