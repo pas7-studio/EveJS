@@ -37,57 +37,50 @@ function distributionAuthorities(options = {}) {
       ((id) => runtime.ensureScene(id, {refreshStargates: false}));
     const getGate = options.getGate || ((id) => worldData.getStargateByID(id));
     let transfer = options.transfer || null;
+    let sharedIdentity = null;
     if (!transfer) {
-      const owner = require("./coopVirtualWorldRuntime");
-      const shared = typeof owner.nativeGateTransferAdapter === "function"
-        ? owner.nativeGateTransferAdapter() : null;
-      if (shared) transfer = shared.transfer.bind(shared);
-      else {
-        // The engine keeps its registry private and may not have created one in a given
-        // boot, so the durable file is read fresh for this transfer: the same file, the same
-        // existence rule, no second long-lived writer.
-        let registry = typeof owner.identityRegistryAdapter === "function"
-          ? owner.identityRegistryAdapter() : null;
-        if (!registry) {
-          registry = require("./coopIdentityRegistry").createRegistry({
-            file: (options.env || process.env).EVEJS_COOP_IDENTITY_FILE ||
-              "/var/lib/evejs/coop-npc-links.json",
-            exists: (system, id) => {
-              try {
-                const scene = runtime.ensureScene(system, { refreshStargates: false });
-                const ship = scene && scene.getEntityByID ? scene.getEntityByID(id) : null;
-                return Boolean(ship && ship.kind === "ship");
-              } catch (_error) { return false; }
-            },
-          });
-        }
-        const prepared = require("./coopNativeGateTransfer").createNativeGateTransfer({
-          sceneForSystem, getGate,
-          store: require("./npc/nativeNpcStore"),
-          service: require("./npc/nativeNpcService"),
-          getController: (id) => controllers.getControllerByEntityID(id),
-          registry,
-          isScrambled: (ship) =>
-            require("./modules/hostileModuleRuntime").isEntityWarpScrambled(ship),
-        });
-        // A co-op adapter owns its own interrupted crossings first, exactly as the war
-        // instance does at boot; an unreadable journal must stop it, not be ignored.
-        const recovered = typeof prepared.recoverPending === "function"
-          ? prepared.recoverPending() : {status: "NONE"};
-        if (recovered && recovered.status === "NEEDS_OPERATOR_REPAIR")
-          return {status: "CROSSING_REPAIR_REQUIRED"};
-        transfer = prepared.transfer.bind(prepared);
-      }
+      // NOT the shared war adapter: measured 2026-10-30, it carries the identity registry
+      // built at boot, so a hull linked afterwards is invisible to its preflight and every
+      // attempt is refused SOURCE_IDENTITY_MISMATCH. The co-op builds its own transfer from a
+      // FRESH read of the durable identity file - the same file, one record owner per
+      // journey, and no second long-lived writer.
+      const registry = require("./coopIdentityRegistry").createRegistry({
+        file: (options.env || process.env).EVEJS_COOP_IDENTITY_FILE ||
+          "/var/lib/evejs/coop-npc-links.json",
+        exists: (system, id) => {
+          try {
+            const scene = runtime.ensureScene(system, {refreshStargates: false});
+            const ship = scene && scene.getEntityByID ? scene.getEntityByID(id) : null;
+            return Boolean(ship && ship.kind === "ship");
+          } catch (_error) { return false; }
+        },
+      });
+      const prepared = require("./coopNativeGateTransfer").createNativeGateTransfer({
+        sceneForSystem, getGate,
+        store: require("./npc/nativeNpcStore"),
+        service: require("./npc/nativeNpcService"),
+        getController: (id) => controllers.getControllerByEntityID(id),
+        registry,
+        isScrambled: (ship) =>
+          require("./modules/hostileModuleRuntime").isEntityWarpScrambled(ship),
+      });
+      // A co-op adapter owns its own interrupted crossings first, exactly as the war
+      // instance does at boot; an unreadable journal must stop it, not be ignored.
+      const recovered = typeof prepared.recoverPending === "function"
+        ? prepared.recoverPending() : {status: "NONE"};
+      if (recovered && recovered.status === "NEEDS_OPERATOR_REPAIR")
+        return {status: "CROSSING_REPAIR_REQUIRED"};
+      transfer = prepared.transfer.bind(prepared);
+      // The same durable record answers both questions: who the hull is, and where it is.
+      sharedIdentity = registry;
     }
     return {
       status: "OK",
       sceneForSystem,
       getGate,
       getController: options.getController || ((id) => controllers.getControllerByEntityID(id)),
-      warpToGate: options.warpToGate || ((id, gateID) => {
-        const answer = npc.warpToEntity(id, gateID, {});
-        return !(answer && answer.success === false);
-      }),
+      // The answer is returned whole, so a refusal can report its own reason.
+      warpToGate: options.warpToGate || ((id, gateID) => npc.warpToEntity(id, gateID, {})),
       // The durable final approach the gate travel module proves: a manual follow order,
       // because a warp refuses a target that is already a few kilometres away.
       followGate: options.followGate || ((id, gateID) => {
@@ -99,6 +92,12 @@ function distributionAuthorities(options = {}) {
         } catch (_error) { return false; }
       }),
       transfer,
+      // A crossing may re-establish a pruned identity link from the durable record.
+      identity: options.identity || sharedIdentity,
+      hullSystemOf: options.hullSystemOf || ((id) => {
+        try { return Number(require("./npc/nativeNpcStore").getNativeEntity(id)?.systemID || 0); }
+        catch (_error) { return 0; }
+      }),
       // The adapter refuses a scrambled hull, so the diagnostic asks the same question.
       isScrambled: options.isScrambled || ((ship) => {
         try { return require("./modules/hostileModuleRuntime").isEntityWarpScrambled(ship) === true; }

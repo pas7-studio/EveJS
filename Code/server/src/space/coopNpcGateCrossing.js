@@ -22,7 +22,6 @@ const MAX_ATTEMPTS = 5;
 const DEFAULT_GATE_RANGE_M = 2500;
 const FOLLOW_RANGE_M = 200000;
 const MAX_REVIVE_MISSES = 5;
-const STANDDOWN_AFTER_WAITS = 10;
 const MAX_TARGET_WAITS = 20;
 
 const pos = (x) => (Number.isSafeInteger(Number(x)) && Number(x) > 0 ? Number(x) : 0);
@@ -53,6 +52,14 @@ function physicalGate(scene, gateID) {
   if (!rows) return null;
   return rows.find((row) => Number(row.itemID) === Number(gateID) &&
     String(row.kind) === "stargate") || null;
+}
+function issue(answer) {
+  if (answer === true) return {issued: true, reason: null};
+  if (answer === false || answer === null || answer === undefined)
+    return {issued: false, reason: null};
+  if (answer && answer.success === true) return {issued: true, reason: null};
+  const reason = String((answer && (answer.errorMsg || answer.reason)) || "").slice(0, 60);
+  return {issued: false, reason: reason || null};
 }
 function inRange({ship, gate, maxMeters = DEFAULT_GATE_RANGE_M} = {}) {
   const gap = surfaceGap({ship, gate});
@@ -181,6 +188,7 @@ function preflightBlocker({ sourceScene, ship, controller, isScrambled }) {
 }
 function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, transfer,
   materialize = null, isScrambled = null, standDown = null,
+  identity = null, hullSystemOf = null,
   now = Date.now(), observe = null, maxMeters = DEFAULT_GATE_RANGE_M } = {}) {
   const entries = read().filter((row) =>
     ["APPROACH", "AT_GATE", "CROSSING"].includes(String(row.phase)));
@@ -245,20 +253,24 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, 
       const gap = surfaceGap({ ship, gate });
       // Close range is a FOLLOW order, not a warp: the native warp refuses a target that
       // is already a few kilometres away, so a warp loop never reaches the gate.
+      // A warp lands the hull within a few kilometres and cannot be out-run by its own
+      // behaviour loop; a follow closes the last kilometres. A warp to a target that is
+      // already close is refused, hence the threshold rather than "warp always".
       const closeRange = gap !== null && gap <= FOLLOW_RANGE_M;
       const waitMs = closeRange ? 30000 : 60000;
       if (entry.phase === "APPROACH" && now - Number(entry.warpAt || 0) > waitMs) {
-        let issued = false, how = "WARP_TO_GATE";
+        let issued = false, how = closeRange ? "FOLLOW_GATE" : "WARP_TO_GATE", why = null;
         try {
-          if (closeRange && typeof followGate === "function") {
-            issued = followGate(entry.entityID, entry.sourceGateID) === true;
-            how = "FOLLOW_GATE";
-          } else if (typeof warpToGate === "function") {
-            issued = warpToGate(entry.entityID, entry.sourceGateID) !== false;
-          }
-        } catch (_error) { issued = false; }
+          const answer = closeRange && typeof followGate === "function"
+            ? followGate(entry.entityID, entry.sourceGateID)
+            : (typeof warpToGate === "function" ? warpToGate(entry.entityID, entry.sourceGateID) : false);
+          const seen = issue(answer);
+          issued = seen.issued;
+          why = seen.reason;
+        } catch (error) { issued = false; why = String((error && error.message) || error).slice(0, 60); }
         entry.warpAt = now;
-        entry.lastReason = issued ? how : (closeRange ? "FOLLOW_GATE_REFUSED" : "WARP_REFUSED");
+        entry.lastReason = issued ? how
+          : (closeRange ? "FOLLOW_GATE_REFUSED" : "WARP_REFUSED") + (why ? ":" + why : "");
         entry.updatedAt = now;
         write(entry);
         // Where the hull is, not only how far: a follow that never shrinks the gap must be
@@ -276,26 +288,35 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, 
     // the branch above would throw exactly when the hull is close and something blocks it.
     const atGateGap = surfaceGap({ ship, gate });
     const controller = typeof getController === "function" ? getController(entry.entityID) : null;
-    const blocker = preflightBlocker({ sourceScene, ship, controller, isScrambled });
+    let liveController = controller;
+    let blocker = preflightBlocker({ sourceScene, ship, controller: liveController, isScrambled });
+    // A follow/orbit order LOCKS its target: measured 2026-10-30, the durable controller of
+    // a hull this module had ordered to approach held currentTargetID = the gate, and the
+    // adapter refuses any hull that holds a target. A stop order clears it (stock
+    // issueManualOrder sets currentTargetID = 0), so that is the one order that unlocks a
+    // crossing - never a write into currentTargetID from here.
+    if (blocker === "TARGET_LOCKED" && typeof standDown === "function" &&
+      now - Number(entry.standDownAt || 0) > 15000) {
+      let cleared = false;
+      entry.standDownAt = now;
+      try { cleared = standDown(entry.entityID) === true; } catch (_error) { cleared = false; }
+      if (cleared) {
+        liveController = typeof getController === "function" ? getController(entry.entityID) : null;
+        blocker = preflightBlocker({ sourceScene, ship, controller: liveController, isScrambled });
+        // Only an order that really cleared the lock earns a fresh count; a stop that the
+        // behaviour loop immediately undoes is the persistent case, not a success.
+        if (!blocker) {
+          entry.targetWaits = 0;
+          entry.lastReason = "TARGET_CLEARED_FOR_CROSSING";
+        }
+      }
+    }
     if (blocker) {
       const transient = PREFLIGHT_TRANSIENT.has(blocker);
-      // A target lock is cleared by the same legitimate order that closes the distance.
-      let acted = false;
-      if (blocker === "TARGET_LOCKED" && typeof followGate === "function" &&
-        now - Number(entry.warpAt || 0) > 15000) {
-        try { acted = followGate(entry.entityID, entry.sourceGateID) === true; }
-        catch (_error) { acted = false; }
-        entry.warpAt = now;
-      }
       // A hull whose behaviour loop keeps re-locking is not a waiting game: measured
-      // 2026-10-29 the same miner-hauler held a target through a whole hour of ticks.
-      // One sanctioned stand-down, then an honest stop instead of an endless "calm".
+      // 2026-10-29 the same hull held a target through an hour of ticks.
       if (blocker === "TARGET_LOCKED") {
         entry.targetWaits = Number(entry.targetWaits || 0) + 1;
-        if (entry.targetWaits === STANDDOWN_AFTER_WAITS && typeof standDown === "function") {
-          try { acted = standDown(entry.entityID) === true || acted; }
-          catch (_error) { /* the refusal is reported below */ }
-        }
         if (entry.targetWaits >= MAX_TARGET_WAITS) {
           entry.phase = "BLOCKED";
           entry.lastReason = "TARGET_LOCKED_PERSISTENT";
@@ -307,8 +328,7 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, 
           continue;
         }
       }
-      entry.lastReason = (transient ? "WAITING_CALM:" : "PREFLIGHT_IMPOSSIBLE:") + blocker +
-        (acted ? ":FOLLOW_ISSUED" : "");
+      entry.lastReason = (transient ? "WAITING_CALM:" : "PREFLIGHT_IMPOSSIBLE:") + blocker;
       if (!transient) entry.phase = "BLOCKED";
       entry.updatedAt = now;
       write(entry);
@@ -321,6 +341,46 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, 
     if (now - Number(entry.attemptAt || 0) < 10000) {
       advanced.push(entry);
       continue;
+    }
+    // An identity link that does not describe this hull, in this system, refuses every
+    // attempt with SOURCE_IDENTITY_MISMATCH. Measured 2026-10-30: the durable record and
+    // the journal both proved where the hull was, the link had been pruned, and the run
+    // could never proceed. Re-establish it from the durable record - bookkeeping about a
+    // ship that already exists, never a claim that it moved.
+    if (identity && typeof identity.get === "function" && entry.pilotID) {
+      let link = null;
+      try { link = identity.get(entry.pilotID); } catch (_error) { link = null; }
+      const matches = link && Number(link.entityID) === Number(entry.entityID) &&
+        Number(link.systemID) === Number(entry.fromSystemID);
+      if (!matches) {
+        let here = 0;
+        try { here = typeof hullSystemOf === "function" ? Number(hullSystemOf(entry.entityID)) : 0; }
+        catch (_error) { here = 0; }
+        if (here !== Number(entry.fromSystemID)) {
+          // The hull is not where the journal says it is: stop with the truth.
+          entry.phase = "BLOCKED";
+          entry.lastReason = "HULL_NOT_IN_JOURNAL_SYSTEM:" + (here || "UNKNOWN");
+          entry.updatedAt = now;
+          write(entry);
+          note(entry, { entityID: entry.entityID, status: entry.lastReason, phase: entry.phase });
+          advanced.push(entry);
+          continue;
+        }
+        try {
+          identity.link({ id: entry.pilotID, name: entry.pilotID, faction: "independent",
+            role: "hauler", durable: false }, entry.fromSystemID, entry.entityID);
+          entry.lastReason = "IDENTITY_RELINKED";
+        } catch (error) {
+          entry.phase = "BLOCKED";
+          entry.lastReason = "IDENTITY_RELINK_FAILED:" +
+            String((error && error.message) || error).slice(0, 50);
+          entry.updatedAt = now;
+          write(entry);
+          note(entry, { entityID: entry.entityID, status: entry.lastReason, phase: entry.phase });
+          advanced.push(entry);
+          continue;
+        }
+      }
     }
     entry.attemptAt = now;
     if (typeof transfer !== "function") {
@@ -340,8 +400,7 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, 
       result = transfer({ pilotID: entry.pilotID, entityID: entry.entityID,
         gate: { sourceGateID: entry.sourceGateID, destinationGateID: entry.destinationGateID,
           sourceSystemID: entry.fromSystemID, destinationSystemID: entry.toSystemID },
-        sourceScene, ship,
-        controller: typeof getController === "function" ? getController(entry.entityID) : null });
+        sourceScene, ship, controller: liveController });
     } catch (error) {
       result = { success: false, errorMsg: String((error && error.message) || error).slice(0, 90) };
     }
@@ -366,5 +425,5 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, 
   return { status: "ADVANCED", advanced };
 }
 
-module.exports = { abandon, physicalGate, STANDDOWN_AFTER_WAITS, MAX_TARGET_WAITS, MAX_REVIVE_MISSES, preflightBlocker, PREFLIGHT_TRANSIENT, MAX_ATTEMPTS, DEFAULT_GATE_RANGE_M, FOLLOW_RANGE_M, root, surfaceGap, inRange,
+module.exports = { issue, abandon, physicalGate, MAX_TARGET_WAITS, MAX_REVIVE_MISSES, preflightBlocker, PREFLIGHT_TRANSIENT, MAX_ATTEMPTS, DEFAULT_GATE_RANGE_M, FOLLOW_RANGE_M, root, surfaceGap, inRange,
   judgeCrossing, plan, tick, read };
