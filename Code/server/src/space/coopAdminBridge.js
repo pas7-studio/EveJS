@@ -220,10 +220,12 @@ function executeRequest(request) {
       } else {
         const read = require("../gameStore").read("characters", "/");
         const rows = read && read.success === true && read.data && typeof read.data === "object"
-          ? Object.values(read.data)
-          : [];
-        characterIDs = rows
-          .map((row) => Number(row && (row.characterID || row.charID)) || 0)
+          ? read.data
+          : {};
+        // The characters table is keyed BY character id; the row itself may not repeat it.
+        characterIDs = Object.entries(rows)
+          .map(([key, row]) => Number(key) ||
+            Number(row && (row.characterID || row.charID)) || 0)
           .filter((id) => id > 0);
       }
       const results = [];
