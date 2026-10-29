@@ -95,6 +95,17 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
     ? inventory.resolveItemByTypeID(pos(native.shipTypeID || native.typeID)) : null;
   const capacityM3 = Math.max(0, num(type && type.capacity));
   if (!capacityM3) return { status: "HOLD_CAPACITY_UNKNOWN" };
+  // What is already aboard is not available for the next load: measured 2026-10-30 a hull
+  // went back out with 35 629 units still in the hold and planned a full-size trip anyway.
+  let usedM3 = 0;
+  try {
+    for (const row of store.listNativeCargoForEntity(id) || []) {
+      const meta = inventory.resolveItemByTypeID(pos(row.typeID)) || {};
+      usedM3 += num(row.quantity) * num(meta.volume);
+    }
+  } catch (_error) { usedM3 = 0; }
+  const freeM3 = Math.max(0, capacityM3 - usedM3);
+  if (freeM3 < 1) return { status: "HOLD_ALREADY_FULL", systemID };
 
   // The corporation's real hangar rows, grouped by the station that holds them.
   let owned = [];
@@ -139,7 +150,7 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
       stacks,
       destination: { systemID: destinationSystemID, stationID, bids },
       local: { stationID: 0, bids: {} },
-      capacityM3, minIsk,
+      capacityM3: freeM3, minIsk,
     });
     if (answer && answer.trip) {
       const total = num(answer.trip.quantity) * num(answer.trip.price);

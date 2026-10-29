@@ -33,7 +33,10 @@ const MAX_SELL_CALLS = 6;
 const SALE_SETTLE_TIMEOUT_MS = 15 * 60 * 1000;
 // How often one beat asks again while the market is still thinking, and how long it waits
 // for the answer: the settled result lives for about five seconds.
-const SALE_POLL_MS = 2500;
+// The market refuses a second trade by the same pilot inside its own cooldown window
+// (EVEJS_COOP_NPC_MARKET_COOLDOWN_MS, 5 s here), so polling faster than that only collects
+// COOLDOWN refusals. Measured 2026-10-30: 2.5 s polls produced a settlement of NOT_SOLD COOLDOWN.
+const SALE_POLL_MS = 6000;
 const MAX_POLLS_PER_BEAT = 4;
 // Refusals that mean "not yet" rather than "no": the run waits, bounded, instead of stopping.
 const SALE_RETRYABLE = new Set(["NOT_AT_NATIVE_STATION", "SALE_TIMEOUT", "MARKET_UNAVAILABLE",
@@ -324,6 +327,16 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     }
     if (settled && settled.status === "SOLD") {
       const paid = isk + num(settled.isk);
+      // The market fills in bounded settlements, so a load can be sold in parts. Measured
+      // 2026-10-30: 37 428 units settled while 35 629 stayed aboard, and the run went home
+      // with them. A trip ends when the HOLD is empty, not when one settlement says SOLD.
+      const leftAboard = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : null;
+      if (Number.isFinite(leftAboard) && leftAboard > 0) {
+        const next = write({ ...state, phase: PHASE.SELL, sellCalls: calls, isk: paid,
+          pendingSince: 0, lastReason: "PARTIALLY_SOLD:" + leftAboard, updatedAt: now }, env);
+        note(observe, "living-distribution-run", next, { reason: next.lastReason });
+        return { status: "PARTIALLY_SOLD", state: next };
+      }
       const trips = num(state.trips) + 1;
       const settlement = { quantity: num(settled.quantity), isk: num(settled.isk) };
       // A hull that sits in the buyer system with an empty hold is dead freight: it goes home
