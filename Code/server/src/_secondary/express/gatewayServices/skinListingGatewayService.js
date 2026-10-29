@@ -176,6 +176,24 @@ const SKIN_LISTING_PROTO_ROOT = protobuf.Root.fromJSON({
                               },
                             },
                             CancelListingResponse: { fields: {} },
+                            InitiatePurchaseListingRequest: {
+                              fields: {
+                                listing: {
+                                  type: "eve_public.cosmetic.market.skin.listing.Identifier",
+                                  id: 1,
+                                },
+                                quantity: { type: "uint32", id: 2 },
+                                buyer_fees_version: { type: "string", id: 3 },
+                              },
+                            },
+                            InitiatePurchaseListingResponse: {
+                              fields: {
+                                transaction: {
+                                  type: "eve_public.cosmetic.market.transaction.Identifier",
+                                  id: 1,
+                                },
+                              },
+                            },
                             admin: {
                               nested: {
                                 SetExpirationRequest: {
@@ -238,6 +256,7 @@ const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.cosmetic.market.skin.listing.api.GetRequest",
   "eve_public.cosmetic.market.skin.listing.api.InitiateCreateListingRequest",
   "eve_public.cosmetic.market.skin.listing.api.CancelListingRequest",
+  "eve_public.cosmetic.market.skin.listing.api.InitiatePurchaseListingRequest",
   "eve_public.cosmetic.market.skin.listing.api.admin.SetExpirationRequest",
 ]);
 
@@ -285,6 +304,12 @@ function createSkinListingGatewayService(context = {}) {
       `${LISTING_API}.InitiateCreateListingResponse`,
     ),
     cancelRequest: SKIN_LISTING_PROTO_ROOT.lookupType(`${LISTING_API}.CancelListingRequest`),
+    purchaseRequest: SKIN_LISTING_PROTO_ROOT.lookupType(
+      `${LISTING_API}.InitiatePurchaseListingRequest`,
+    ),
+    purchaseResponse: SKIN_LISTING_PROTO_ROOT.lookupType(
+      `${LISTING_API}.InitiatePurchaseListingResponse`,
+    ),
     expirationRequest: SKIN_LISTING_PROTO_ROOT.lookupType(
       `${LISTING_API}.admin.SetExpirationRequest`,
     ),
@@ -327,6 +352,11 @@ function createSkinListingGatewayService(context = {}) {
       TOO_MANY_LISTINGS: [9, "the market holds too many listings"],
       EXPIRY_REQUIRED: [3, "an expiry is required"],
       EXPIRY_IN_PAST: [3, "that expiry is already in the past"],
+      PAYMENT_FAILED: [13, "the payment could not be made"],
+      TAX_FAILED: [13, "the sales tax could not be charged"],
+      ESCROW_FAILED: [13, "the escrowed copies could not be released"],
+      DELIVERY_FAILED: [13, "the copies could not be delivered"],
+      OWN_LISTING: [9, "you cannot buy your own listing"],
       RELEASE_FAILED: [13, "the escrowed copies could not be returned"],
       NO_CHARACTER: [7, "no character in this session"],
       WRITE_FAILED: [13, "the listing could not be stored"],
@@ -394,6 +424,29 @@ function createSkinListingGatewayService(context = {}) {
         );
         if (result.status === "CANCELLED") return ok(`${LISTING_API}.CancelListingResponse`);
         return refusalFor(result.status, `${LISTING_API}.CancelListingResponse`);
+      }
+
+      if (requestTypeName === `${LISTING_API}.InitiatePurchaseListingRequest`) {
+        const decoded = decode(types.purchaseRequest, requestEnvelope);
+        const result = listings.purchase(
+          activeCharacterID,
+          decoded && decoded.listing && decoded.listing.uuid,
+          Number(decoded && decoded.quantity) || 1,
+        );
+        if (result.status !== "PURCHASED") {
+          const responseTypeName = `${LISTING_API}.InitiatePurchaseListingResponse`;
+          if (result.status === "NOT_ENOUGH_ISK") return error(9, "not enough ISK", responseTypeName);
+          if (result.status === "OWN_LISTING") {
+            return error(9, "you cannot buy your own listing", responseTypeName);
+          }
+          if (result.status === "NOT_ENOUGH_STOCK") {
+            return error(9, `only ${result.available || 0} left in that listing`, responseTypeName);
+          }
+          return refusalFor(result.status, responseTypeName);
+        }
+        return ok(`${LISTING_API}.InitiatePurchaseListingResponse`, types.purchaseResponse, {
+          transaction: { uuid: Buffer.from(result.transaction, "hex") },
+        });
       }
 
       const decoded = decode(types.expirationRequest, requestEnvelope);

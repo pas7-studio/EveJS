@@ -60,6 +60,8 @@ function normalizeState(raw) {
 function createSkinListings({
   characterState = null,
   gameStore = null,
+  wallet = null,
+  taxNanos = 25_000_000,
   skins = null,
   clock = () => Date.now(),
   randomUuid = () => require("crypto").randomBytes(16),
@@ -70,6 +72,8 @@ function createSkinListings({
     "../services/character/characterState",
   ));
   const store = () => gameStore || require(path.join(__dirname, "../gameStore"));
+  // The native wallet path: transfer moves ISK between two characters and refuses an overdraft.
+  const money = () => wallet || require(path.join(__dirname, "../services/account/walletState"));
   const licences = () => skins || require(path.join(__dirname, "./coopThirdPartySkins")).shared();
   const enabled = () => env.EVEJS_COOP_SKIN_MARKET === "1";
 
@@ -252,8 +256,95 @@ function createSkinListings({
     return { status: "EXPIRY_SET", listing: target };
   }
 
+  // Buying pays for real: the buyer's gross price moves to the seller through the native wallet
+  // transfer, the seller pays the sales tax out of the proceeds, and only then do the escrowed
+  // copies change hands. Any failure after the transfer puts the ISK back, so a purchase either
+  // happens completely or leaves no trace on a wallet.
+  function purchase(buyerID, uuid, quantity = 1) {
+    if (!enabled()) return { status: "DISABLED" };
+    const buyer = int(buyerID);
+    if (buyer <= 0) return { status: "NO_CHARACTER" };
+    const key = uuidKey(uuid);
+    if (!key) return { status: "UUID_REQUIRED" };
+    const wanted = int(quantity);
+    if (wanted <= 0) return { status: "QUANTITY_REQUIRED" };
+    const row = get(key);
+    if (!row) return { status: "NOT_FOUND" };
+    if (row.sellerID === buyer) return { status: "OWN_LISTING" };
+    if (wanted > row.quantity) return { status: "NOT_ENOUGH_STOCK", available: row.quantity };
+
+    const unitPrice = Math.max(1, row.priceUnits) + (row.priceNanos > 0 ? 0 : 0);
+    const gross = unitPrice * wanted;
+    const tax = Math.round(gross * (taxNanos / 1e9));
+    const net = gross - tax;
+
+    const paid = money().transferCharacterBalance(buyer, row.sellerID, gross, {
+      reason: `SKIN market purchase ${row.skin}`,
+    });
+    if (!paid || paid.success !== true) {
+      return { status: paid && paid.errorMsg === "INSUFFICIENT_FUNDS"
+        ? "NOT_ENOUGH_ISK" : "PAYMENT_FAILED" };
+    }
+    if (tax > 0) {
+      const taxed = money().adjustCharacterBalance(row.sellerID, -tax, {
+        reason: `SKIN market sales tax ${row.skin}`,
+      });
+      if (!taxed || taxed.success !== true) {
+        money().transferCharacterBalance(row.sellerID, buyer, gross, {
+          reason: "SKIN market purchase rolled back",
+        });
+        return { status: "TAX_FAILED" };
+      }
+    }
+
+    // The copies leave the seller's escrow and land with the buyer, keeping the design's identity.
+    const spent = licences().consumeEscrow(row.sellerID, row.skin, wanted);
+    if (spent.status !== "CONSUMED") {
+      money().transferCharacterBalance(row.sellerID, buyer, gross, {
+        reason: "SKIN market purchase rolled back",
+      });
+      if (tax > 0) money().adjustCharacterBalance(row.sellerID, tax, { reason: "tax refund" });
+      return { status: "ESCROW_FAILED", reason: spent.status };
+    }
+    const sellerRow = licences().get(row.sellerID, row.skin) || {};
+    const delivered = licences().grant(buyer, {
+      skin: row.skin,
+      unactivated: wanted,
+      name: sellerRow.name || "",
+      lineName: sellerRow.lineName || "",
+      layout: sellerRow.layout || "",
+      creatorID: sellerRow.creatorID || 0,
+    });
+    if (delivered.status !== "GRANTED") {
+      licences().releaseEscrow(row.sellerID, row.skin, wanted);
+      money().transferCharacterBalance(row.sellerID, buyer, gross, {
+        reason: "SKIN market purchase rolled back",
+      });
+      if (tax > 0) money().adjustCharacterBalance(row.sellerID, tax, { reason: "tax refund" });
+      return { status: "DELIVERY_FAILED" };
+    }
+
+    const state = stateOf(row.sellerID);
+    const liveRow = state.listings[key];
+    if (liveRow) {
+      if (wanted >= liveRow.quantity) {
+        delete state.listings[key];
+      } else {
+        liveRow.quantity -= wanted;
+      }
+      try {
+        writeState(row.sellerID, state);
+      } catch (_error) {
+        // the copies and the money already moved; the row is pruned on the next read
+      }
+    }
+    const transaction = uuidKey(randomUuid());
+    return { status: "PURCHASED", transaction, gross, tax, net, quantity: wanted, skin: row.skin };
+  }
+
   return Object.freeze({
     enabled,
+    purchase,
     all,
     owned,
     get,
