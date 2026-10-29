@@ -77,6 +77,8 @@ services:
       EVEJS_COOP_STARGATE_LOCKS: "1"
       # Career portal claims: state in space/coopCareerGoals, SP reward.
       EVEJS_COOP_CAREER_GOALS: "1"
+      # Third-party SKIN licences (space/coopThirdPartySkins).
+      EVEJS_COOP_THIRD_PARTY_SKINS: "1"
     volumes:
       - evejs-data:/var/lib/evejs
       # Character/corporation portraits are rendered by the client at creation
