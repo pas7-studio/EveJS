@@ -171,7 +171,13 @@ function note(observe, event, state, extra = {}) {
 // How often the same order may be re-issued while a hull flies to a station.
 const ORDER_SPACING_MS = 45000;
 // A stop that stays unloaded this long is a stall, not patience (beats, not seconds).
-const MAX_STOP_WAITS = 40;
+// Measured 2026-10-30: the worst cycle in the ledger took 95 minutes, and a stall bound of 40
+// beats with a 45 s beat was half an hour of a loaded hull doing nothing. 20 beats is generous
+// for an in-system flight and still bounded.
+const MAX_STOP_WAITS = 20;
+// How long a finished run rests before it takes another load. Long enough that an operator
+// sees the result, short enough that the fleet does not idle away a warehouse of minerals.
+const REST_BETWEEN_CYCLES_MS = 2 * 60 * 1000;
 // How many loads one hull may carry before the run reports and stops. A cycle that never
 // ends is indistinguishable from one that is stuck.
 const MAX_TRIPS = 5;
@@ -294,6 +300,7 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     if (!stops.length && pos(row.fromStationID))
       stops.push({ stationID: pos(row.fromStationID), items: [] });
     state = write({ version: 1, haulerID: id, phase: PHASE.TO_ORIGIN, trip: row,
+      cycles: num(state && state.cycles), trips: 0,
       stops, stopIndex: 0, loadedStops: [],
       // The pure planner calls the origin simply stationID; one name, one meaning.
       fromStationID: pos(row.fromStationID) || pos(row.stationID),
@@ -338,6 +345,15 @@ async function tick(haulerID, authorities = {}, env = process.env) {
   };
   // A run blocked by an environment refusal (call limit, settlement timeout) is not a bad
   // trip: after a long cooldown it may try once more, bounded by retries so it cannot spin.
+  // A finished run rests, then starts again while recycling is on.
+  if (String(state.phase) === PHASE.DONE && authorities.recycle === true &&
+    now - num(state.updatedAt) > REST_BETWEEN_CYCLES_MS) {
+    const fresh = { version: 1, haulerID: id, phase: PHASE.PLAN, updatedAt: now,
+      isk: num(state.isk), cycles: num(state.cycles) + 1, lastReason: "RESTED" };
+    write(fresh, env);
+    note(observe, "living-distribution-run", fresh, { reason: "RESTED" });
+    return { status: "RESTED", state: fresh };
+  }
   if (String(state.phase) === PHASE.BLOCKED && num(state.retries) < 2 &&
     num(state.blockedAt) > 0 && now - num(state.blockedAt) > BLOCKED_RETRY_MS &&
     typeof authorities.cargoUnits === "function" && Number(authorities.cargoUnits(id)) > 0) {
@@ -665,6 +681,6 @@ async function tickAll(authorities = {}, env = process.env) {
   }
   return results;
 }
-module.exports = { SALE_SETTLEMENT_READ_MS, SALE_SETTLEMENT_READS, MAX_STOP_WAITS, freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
+module.exports = { REST_BETWEEN_CYCLES_MS, SALE_SETTLEMENT_READ_MS, SALE_SETTLEMENT_READS, MAX_STOP_WAITS, freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
   SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
   read, write, list, decide, worthIt, note, tick, tickAll };
