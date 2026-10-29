@@ -1,7 +1,7 @@
 ﻿"use strict";
 
 // Pure helpers live in space\coopVirtualWorldRuntime.pure.js (split by scripts/coop-split-module.cjs).
-const { observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningScenes, destroyedNativeShips, wreckCustodyNotes, worldBootAtMs, courierPilotIDs, nativeWarFleetRegistry, warSkipReasons, warSkip, warFrontChatSent, siblingSuffix, warFrontChat, warTreasuryStore, warPilotFaction, warPresencePilots, warFactionCorporation, presenceSummary, advanceNativeAmmoBankRecovery, ensureWarRecoverySocket, diagnoseNativeRaids, npcRealPoints, syncNativeDeliveries, hasPhysicalWreckClaim, nextHeadlessRetryMs, isHeadlessNativeReady, ensureNativeGateTransfer, observeNativeAmmoConsumption, wreckRecoveryNotes, lockedTargets, npcModuleSummary, distanceBetween, nearestBeltMeters, mineableSummary, mineableBeltSummary, miningShipDetail, observeEconomyOre, nativeMarketAllowlist, nativeWarpPoint, raidLeashNotes, raidLeashWrite, raidLeashScope, raidLeashRestore, advanceNativePveBossWreck, advanceNativePveObjectiveDoctrine, advanceNativePveWaveReinforcements, advanceNativePveSiteDefense, advanceNpcRecognition, confirmedWreck, arrivalSales, saleNotes, noteSaleSkip, createWarRecoveryAdmin, witnessedNativeBossWreck, releaseSpawnedIdentity } = require("./coopVirtualWorldRuntime.pure");
+const { observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningScenes, destroyedNativeShips, wreckCustodyNotes, worldBootAtMs, courierPilotIDs, nativeWarFleetRegistry, warSkipReasons, warSkip, warFrontChatSent, siblingSuffix, warFrontChat, warTreasuryStore, warPilotFaction, warPresencePilots, warFactionCorporation, pickFundingCorporation, presenceSummary, advanceNativeAmmoBankRecovery, ensureWarRecoverySocket, diagnoseNativeRaids, npcRealPoints, syncNativeDeliveries, hasPhysicalWreckClaim, nextHeadlessRetryMs, isHeadlessNativeReady, ensureNativeGateTransfer, observeNativeAmmoConsumption, wreckRecoveryNotes, lockedTargets, npcModuleSummary, distanceBetween, nearestBeltMeters, mineableSummary, mineableBeltSummary, miningShipDetail, observeEconomyOre, nativeMarketAllowlist, nativeWarpPoint, raidLeashNotes, raidLeashWrite, raidLeashScope, raidLeashRestore, advanceNativePveBossWreck, advanceNativePveObjectiveDoctrine, advanceNativePveWaveReinforcements, advanceNativePveSiteDefense, advanceNpcRecognition, confirmedWreck, arrivalSales, saleNotes, noteSaleSkip, createWarRecoveryAdmin, witnessedNativeBossWreck, releaseSpawnedIdentity } = require("./coopVirtualWorldRuntime.pure");
 const jsonFileCache = require("./coopJsonFileCache");
 // Optional background driver of virtual world; no NPC ships materialized.
 let world=null,timer=null,combatTimer=null,bridge=null,gateTravelDirector=null,nativeGateTransfer=null,nativeMarketTrader=null,nativeMarketTickRunning=false,nativeMarketBlocked=false,economy=null,lossBridge=null,factionDirector=null,patrolDirector=null,patrolNavigator=null,civilianOrders=null,life=null,identityRegistry=null,raidDirector=null,huntPolicy=null,tacticsDirector=null,pveSiteDefenseDirector=null,pveWaveReinforcementsDirector=null,pveObjectiveDoctrineDirector=null,pveNativeBossDirector=null,activityDirector=null,combatEvidenceDirector=null,stockCombatEvidenceDirector=null,warpPointDirector=null,nativeGunRange=null;
@@ -593,6 +593,59 @@ function warBountyRelease({campaignID,reservationID,corporationID,factionID=0}={
 // Each side now funds its OWN bounty out of its OWN wallet; a side that cannot
 // pay is refused per side (its own reason is kept) and never blocks the other.
 // Env-gated because it takes a second real escrow: EVEJS_COOP_WAR_BOUNTY_BOTH_SIDES=1.
+// FW-093 (measured 2026-10-29): the side was asked to pay from the corporation its
+// PILOTS belong to, and that is not where a faction's money lives. Measured on the
+// work stack: faction 500001 fields pilots whose corporation is 1000180 (0 ISK),
+// while the same faction's corporation 1000035 really held 90 000 ISK that only
+// real mercenary settlements ever put there; faction 500004 had 0 ISK at its
+// militia corporation and 530 000 ISK at 1000120. Every border was therefore
+// refused `WAR_TREASURY_FUNDS_UNAVAILABLE` with the money sitting in the same
+// faction, and the war could not fund itself at all.
+//
+// The money is still real and still the faction's: `coopWarTreasury` verifies the
+// corporation belongs to that faction and debits its native wallet atomically, so
+// this only chooses WHICH of the faction's own corporations pays. Order is the
+// historical corporation first (identity), then the declared militia corporation,
+// then the faction's corporations richest first - and the pilot corporation is
+// kept when nothing can pay, so a refusal still names the same corporation.
+function warFactionCorporationCandidates(factionID,pilots,ledger){
+ const ordered=[],push=id=>{const n=Number(id);
+  if(Number.isSafeInteger(n)&&n>0&&!ordered.includes(n))ordered.push(n)};
+ push(warFactionCorporation(factionID,pilots,ledger));
+ let factions=null;
+ try{factions=require("../services/faction/factionState")}catch(_error){factions=null}
+ if(factions){
+  try{push(factions.getFactionRecord(factionID)?.militiaCorporationID)}catch(_error){/* optional */}
+  try{
+   const read=require("../gameStore").read("corporations","/");
+   const table=read&&read.success&&read.data
+    ?(read.data.records&&typeof read.data.records==="object"?read.data.records:read.data):{};
+   for(const key of Object.keys(table)){
+    const record=table[key];
+    if(!record||typeof record!=="object")continue;
+    if(Number(record.factionID)!==Number(factionID))continue;
+    push(Number(record.corporationID)||Number(record._key)||Number(key));
+   }
+  }catch(_error){/* an unreadable corporation table is not a funding decision */}
+ }
+ return ordered;
+}
+function warCorporationBalanceISK(corporationID){
+ try{
+  const read=require("./coopCorpWallet").readWallet({gameStore:require("../gameStore"),
+   corporationID:Number(corporationID)});
+  const division=read&&read.status==="OK"&&read.divisions?read.divisions["1000"]:null;
+  const isk=Number(division&&division.balance);
+  return Number.isFinite(isk)?isk:null;
+ }catch(_error){return null}
+}
+function warFundingCorporation(factionID,pilots,ledger,needCents){
+ // The DECISION is pure (coopVirtualWorldRuntime.pure) so it is testable without a
+ // world; this function only reads the real wallets it needs.
+ return pickFundingCorporation({ordered:warFactionCorporationCandidates(factionID,pilots,ledger),
+  needCents,readBalance:warCorporationBalanceISK});
+}
+
 function warBountyReserve({war,campaign,campaignID,warID,persist}){
  if(process.env.EVEJS_COOP_WAR_BOUNTY_ISK==="0")return {status:"REFUSED",reason:"WAR_BOUNTY_OFF"};
  const bountyISK=Math.max(1,Math.round(Number(process.env.EVEJS_COOP_WAR_BOUNTY_ISK)||25000));
@@ -605,11 +658,14 @@ function warBountyReserve({war,campaign,campaignID,warID,persist}){
  const reserveSide=(factionID)=>{
   if(!Number.isSafeInteger(factionID)||factionID<=0)
    return {status:"REFUSED",reason:"NO_FACTION",factionID:0};
-  const corporationID=warFactionCorporation(factionID,pilots,ledger);
+  const payer=warFundingCorporation(factionID,pilots,ledger,needCents);
+  const corporationID=Number(payer.corporationID)||0;
   if(!Number.isSafeInteger(corporationID)||corporationID<=0){
    refusals.push({factionID,reason:"NO_MILITIA_CORPORATION"});
    return {status:"REFUSED",reason:"NO_MILITIA_CORPORATION",factionID};
   }
+  if(payer.fallback)refusals.push({factionID,reason:"FUNDED_BY_FACTION_CORPORATION",
+   corporationID,walletISK:payer.walletISK,candidates:payer.candidates});
   let funded=null;
   try{
    funded=chest.fund({factionID,corporationID,warID,campaignID,needCents,pilots,ledger,

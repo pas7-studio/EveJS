@@ -286,6 +286,32 @@ function warFactionCorporation(factionID,pilots,ledger){
  }catch(_error){return 0}
 }
 
+// FW-093: which of a faction's OWN corporations actually pays. Pure decision, so
+// the money rule is provable without a world: the richest corporation that really
+// holds the bounty is used, the historical corporation is kept when nothing can
+// pay (so a refusal still names the same one), and an unreadable balance is never
+// treated as money.
+function pickFundingCorporation({ordered=[],needCents=0,readBalance=null}={}){
+ const needISK=Math.max(0,Number(needCents)||0)/100;
+ const list=(Array.isArray(ordered)?ordered:[]).map(n=>Number(n))
+  .filter(id=>Number.isSafeInteger(id)&&id>0);
+ const balanceOf=(id)=>{
+  if(typeof readBalance!=="function")return null;
+  try{const value=readBalance(id);return Number.isFinite(value)?Number(value):null}
+  catch(_error){return null}
+ };
+ const payable=[];
+ for(const corporationID of list){
+  const walletISK=balanceOf(corporationID);
+  if(walletISK!==null&&walletISK>=needISK)payable.push({corporationID,walletISK});
+ }
+ payable.sort((a,b)=>b.walletISK-a.walletISK||a.corporationID-b.corporationID);
+ if(payable.length)return {...payable[0],candidates:list.length,
+  fallback:payable[0].corporationID!==list[0]};
+ return {corporationID:list[0]||0,
+  walletISK:list.length?balanceOf(list[0]):null,candidates:list.length,fallback:false};
+}
+
 function presenceSummary(){
  try{
   const opening=require("./coopFactionWarOpening");
@@ -1110,4 +1136,4 @@ function releaseSpawnedIdentity({pilotID,entityID=0,reason=""}={}){
  return {...released,reason:String(reason||"IDENTITY_REASSIGNED")};
 }
 
-module.exports = {projectWarPresence, bindWarRuntime, observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningScenes, destroyedNativeShips, wreckCustodyNotes, worldBootAtMs, courierPilotIDs, nativeWarFleetRegistry, warSkipReasons, warSkip, warFrontChatSent, siblingSuffix, warFrontChat, warTreasuryStore, warPilotFaction, warPresencePilots, warFactionCorporation, presenceSummary, advanceNativeAmmoBankRecovery, ensureWarRecoverySocket, diagnoseNativeRaids, npcRealPoints, syncNativeDeliveries, hasPhysicalWreckClaim, nextHeadlessRetryMs, isHeadlessNativeReady, ensureNativeGateTransfer, observeNativeAmmoConsumption, wreckRecoveryNotes, lockedTargets, npcModuleSummary, distanceBetween, nearestBeltMeters, mineableSummary, mineableBeltSummary, miningShipDetail, observeEconomyOre, nativeMarketAllowlist, nativeWarpPoint, raidLeashNotes, raidLeashWrite, raidLeashScope, raidLeashRestore, advanceNativePveBossWreck, advanceNativePveObjectiveDoctrine, advanceNativePveWaveReinforcements, advanceNativePveSiteDefense, advanceNpcRecognition, confirmedWreck, arrivalSales, saleNotes, noteSaleSkip, createWarRecoveryAdmin, witnessedNativeBossWreck, releaseSpawnedIdentity};
+module.exports = {projectWarPresence, pickFundingCorporation, bindWarRuntime, observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningScenes, destroyedNativeShips, wreckCustodyNotes, worldBootAtMs, courierPilotIDs, nativeWarFleetRegistry, warSkipReasons, warSkip, warFrontChatSent, siblingSuffix, warFrontChat, warTreasuryStore, warPilotFaction, warPresencePilots, warFactionCorporation, presenceSummary, advanceNativeAmmoBankRecovery, ensureWarRecoverySocket, diagnoseNativeRaids, npcRealPoints, syncNativeDeliveries, hasPhysicalWreckClaim, nextHeadlessRetryMs, isHeadlessNativeReady, ensureNativeGateTransfer, observeNativeAmmoConsumption, wreckRecoveryNotes, lockedTargets, npcModuleSummary, distanceBetween, nearestBeltMeters, mineableSummary, mineableBeltSummary, miningShipDetail, observeEconomyOre, nativeMarketAllowlist, nativeWarpPoint, raidLeashNotes, raidLeashWrite, raidLeashScope, raidLeashRestore, advanceNativePveBossWreck, advanceNativePveObjectiveDoctrine, advanceNativePveWaveReinforcements, advanceNativePveSiteDefense, advanceNpcRecognition, confirmedWreck, arrivalSales, saleNotes, noteSaleSkip, createWarRecoveryAdmin, witnessedNativeBossWreck, releaseSpawnedIdentity};

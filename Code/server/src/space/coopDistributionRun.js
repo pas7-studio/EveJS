@@ -271,7 +271,20 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       note(observe, "living-distribution-run", refused, { reason: refused.lastReason });
       return { status: "BLOCKED", reason: refused.lastReason };
     }
+    // One trip may load at more than one station: the bundle picks each stack where it really
+    // sits, so the run walks the stops in order instead of pretending one station holds it all.
+    const stops = [];
+    for (const item of (Array.isArray(row.items) ? row.items : [])) {
+      const stationID = pos(item.stationID);
+      if (!stationID) continue;
+      const current = stops.find((stop) => stop.stationID === stationID);
+      if (current) current.items.push(item);
+      else stops.push({ stationID, items: [item] });
+    }
+    if (!stops.length && pos(row.fromStationID))
+      stops.push({ stationID: pos(row.fromStationID), items: [] });
     state = write({ version: 1, haulerID: id, phase: PHASE.TO_ORIGIN, trip: row,
+      stops, stopIndex: 0, loadedStops: [],
       // The pure planner calls the origin simply stationID; one name, one meaning.
       fromStationID: pos(row.fromStationID) || pos(row.stationID),
       fromSystemID: pos(row.fromSystemID),
@@ -298,9 +311,14 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     }
     if (num(state.liveMisses) > 0) state = write({ ...state, liveMisses: 0 }, env);
   }
+  // The stop being served right now (a trip may load at several stations).
+  const stops = Array.isArray(state.stops) && state.stops.length ? state.stops
+    : [{ stationID: state.fromStationID, items: [] }];
+  const stopIndex = Math.min(Math.max(0, num(state.stopIndex)), stops.length - 1);
+  const stop = stops[stopIndex] || { stationID: state.fromStationID, items: [] };
   const facts = {
     distanceToOriginM: typeof authorities.distanceTo === "function"
-      ? authorities.distanceTo(state.fromStationID, state.fromSystemID, id) : null,
+      ? authorities.distanceTo(stop.stationID, state.fromSystemID, id) : null,
     distanceToDestinationM: typeof authorities.distanceTo === "function"
       ? authorities.distanceTo(state.toStationID, state.toSystemID, id) : null,
     crossingPhase: typeof authorities.crossingPhase === "function"
@@ -349,10 +367,15 @@ async function tick(haulerID, authorities = {}, env = process.env) {
   if (step.action === "LIFT") {
     if (typeof authorities.lift !== "function") return { status: "NO_LIFT" };
     let answer = null;
-    try { answer = await authorities.lift({ haulerID: id, stationID: state.fromStationID,
-      systemID: state.fromSystemID,
-      // The trip carries the destination bid it was planned for; that is what the lift serves.
-      demand: state.demand || (state.trip && state.trip.demand) || null,
+    // The demand of THIS stop only: the types that really sit at this station.
+    const stopDemand = {};
+    for (const item of stop.items) {
+      stopDemand[pos(item.typeID)] = {price: num(item.price), volume: num(item.quantity)};
+    }
+    const demand = Object.keys(stopDemand).length ? stopDemand
+      : (state.demand || (state.trip && state.trip.demand) || null);
+    try { answer = await authorities.lift({ haulerID: id, stationID: stop.stationID,
+      systemID: state.fromSystemID, demand,
       cap: state.quantity || authorities.capacityM3 || 1e6,
       capM3: typeof authorities.capacityM3 === "function" ? authorities.capacityM3(id) : 0 }); }
     catch (error) { answer = { status: "LIFT_THREW", reason: String((error && error.message) || error).slice(0, 80) }; }
@@ -360,6 +383,16 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     if (status !== "LIFTED") return finish(PHASE.BLOCKED, status);
     const lifted = Array.isArray(answer.lifted) ? answer.lifted : [];
     const quantity = lifted.reduce((sum, row) => sum + num(row.quantity), 0);
+    const loadedStops = [...(state.loadedStops || []), stop.stationID];
+    const nextIndex = stopIndex + 1;
+    if (nextIndex < stops.length) {
+      // Another station holds part of this load: go there before leaving the system.
+      const moving = write({ ...state, phase: PHASE.TO_ORIGIN, stopIndex: nextIndex,
+        loadedStops, orderAt: 0, lastReason: "LOADED_STOP:" + stop.stationID, updatedAt: now },
+        env);
+      note(observe, "living-distribution-run", moving, { reason: moving.lastReason });
+      return { status: "NEXT_STOP", state: moving };
+    }
     // The crossing is planned by the loop's own gate machinery, not by this module.
     let crossing = null;
     try {
