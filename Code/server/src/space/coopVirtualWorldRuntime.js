@@ -951,15 +951,24 @@ function advanceNativeWarOpening(){
  // this process. A system the war state already owns is a real system for the
  // planner, so the two sets are unioned instead of trusting one of them.
  let knownSystems=[...visitedSystems];
+ let known=null;
  try{
-  const known=store.read();
+  known=store.read();
   for(const id of Object.keys((known&&known.territories)||{})){
    const systemID=Number(id);
    if(Number.isSafeInteger(systemID)&&systemID>0&&!knownSystems.includes(systemID))
     knownSystems.push(systemID);
   }
  }catch(_error){/* the war state is optional here */}
- const tickSystems=knownSystems.slice(0,12);
+ // FW-080: the opener only sees the systems in this list, and the list was cut at
+ // twelve while the world legitimately owns more. Measured 15:50Z: 30003829 was
+ // registered as a 500001 territory (FW-045) and every hull was standing there, yet the
+ // tick list ended at 30045341 - the new front was invisible, and the only refusal the
+ // world could publish was an empty map. Owned systems are ordered newest-change first
+ // so a freshly taken or freshly registered system is never the one that falls off.
+ const ownedIDs=Object.keys((known&&known.territories)||{}).map(Number).filter(id=>Number.isSafeInteger(id)&&id>0);
+ const ordered=[...ownedIDs.reverse(),...knownSystems];
+ const tickSystems=[...new Set(ordered)].slice(0,24);
  let result;
  // FW-062: hand the opener the real funding state. A live campaign whose escrow
  // vanished (measured: the treasury row reverted and two ASSAULT campaigns kept
