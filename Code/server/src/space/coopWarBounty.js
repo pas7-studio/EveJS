@@ -86,6 +86,18 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
       row?.campaignID === campaignID && Number(row.factionID) === Number(factionID) &&
       row.status === "HELD") || null;
   }
+  // FW-090: a replay of a kill that was already paid must SAY so. Measured: the second
+  // call answered NO_HELD_ESCROW_FOR_FACTION, which reads like "this war has no money"
+  // although the money went out on the first call - exactly the ambiguity that cost a day.
+  function alreadyPaidFor({campaignID, factionID, proofID, pilotID}) {
+    let reservations = {};
+    try { reservations = treasury.snapshot()?.reservations || {}; }
+    catch (_error) { reservations = {}; }
+    return Object.values(reservations).find((row) =>
+      row?.campaignID === campaignID && Number(row.factionID) === Number(factionID) &&
+      row.status === "PAID" && String(row.payoutProofID || "") === String(proofID || "") &&
+      String(row.paidToPilotID || "") === String(pilotID || "")) || null;
+  }
 
   // kind is the real merit event that pays; the escrow authorizer below decides
   // whether this exact event may release value.
@@ -107,8 +119,17 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
       getNativeEntity, getFactionForCorporation});
     if (!pos(factionID)) return {status: "BLOCKED", reason: "BOUNTY_PILOT_FACTION_UNKNOWN"};
     const reservation = reservationFor({campaignID: campaign, factionID});
-    if (!reservation) return {status: "BLOCKED", reason: "NO_HELD_ESCROW_FOR_FACTION",
-      pilotID: pilot, factionID, campaignID: campaign};
+    if (!reservation) {
+      const proofAlreadyPaid = key(proofID) ? proofID : String(kind || "event") + ":" + campaign;
+      const settled = alreadyPaidFor({campaignID: campaign, factionID,
+        proofID: proofAlreadyPaid, pilotID: pilot});
+      if (settled) return {status: "ALREADY_PAID", pilotID: pilot, factionID,
+        campaignID: campaign, amountCents: Number(settled.cents) || 0,
+        reservationID: settled.reservationID, proofID: proofAlreadyPaid,
+        evidence: "THIS_EXACT_KILL_WAS_ALREADY_SETTLED"};
+      return {status: "BLOCKED", reason: "NO_HELD_ESCROW_FOR_FACTION",
+        pilotID: pilot, factionID, campaignID: campaign};
+    }
     busy = true;
     try {
       const proof = key(proofID) ? proofID : String(kind || "event") + ":" + campaign;
