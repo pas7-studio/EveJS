@@ -31,7 +31,17 @@ function getMapTagsCdnAsset(routePath) {
 }
 
 function getGatewayBinaryAsset(routePath) {
-  return getMapTagsCdnAsset(routePath) || null;
+  return getMapTagsCdnAsset(routePath) || getTitleContentCdnAsset(routePath) || null;
+}
+
+let titleContentCdnAssetResolver = null;
+
+function getTitleContentCdnAsset(routePath) {
+  if (!titleContentCdnAssetResolver) {
+    ({ getTitleContentAsset: titleContentCdnAssetResolver } =
+      require("../../space/coopTitleContent"));
+  }
+  return titleContentCdnAssetResolver(routePath);
 }
 
 function shouldEnableLocalInterceptByDefault() {
