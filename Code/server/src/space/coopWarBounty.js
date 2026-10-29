@@ -44,7 +44,7 @@ function factionOfPilot({pilotID, links = [], getNativeEntity, getFactionForCorp
 // fallback: no guessed hull, and a released identity no longer makes a real kill unpayable.
 function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
   getNativeEntity, getFactionForCorporation, readCasualties = () => null,
-  readCampaignForEntity = null, readFleet = () => null,
+  readCampaignForEntity = null, readFleet = () => null, reserveFromWallet = null,
   emit = null, clock = () => Date.now(), env = process.env} = {}) {
   if (typeof treasury?.execute !== "function" ||
       typeof chest?.creditPilot !== "function" ||
@@ -134,7 +134,35 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
       getNativeEntity, getFactionForCorporation});
     if (!pos(factionID) && ownRow) factionID = num(ownRow.factionID);
     if (!pos(factionID)) return {status: "BLOCKED", reason: "BOUNTY_PILOT_FACTION_UNKNOWN"};
-    const reservation = reservationFor({campaignID: campaign, factionID});
+    // FW-105 (owner decision 2026-10-30): where the faction never levied its own pilots,
+    // the bounty may still be backed by the faction's REAL native corporation wallet. The
+    // reservation is made on demand by the same escrow authority the opening phase uses
+    // (coopWarTreasury RESERVE: verifies the corporation, debits division 1000 with a real
+    // journal entry and refuses when the money is not there), so this spends ISK that
+    // already exists and can never mint one. MEASURED before this change: the play stack
+    // held zero reservations (no treasury row at all) and every real kill answered
+    // NO_HELD_ESCROW_FOR_FACTION even where a wallet balance existed.
+    let reservation = reservationFor({campaignID: campaign, factionID});
+    let walletBacked = null;
+    if (!reservation && typeof reserveFromWallet === "function" &&
+        env.EVEJS_COOP_WAR_BOUNTY_WALLET_FALLBACK === "1") {
+      try {
+        walletBacked = reserveFromWallet({campaignID: campaign, factionID,
+          needCents: Number(env.EVEJS_COOP_WAR_BOUNTY_ISK || 25000) * 100,
+          proofID: key(proofID) ? proofID : String(kind || "event") + ":" + campaign});
+      } catch (error) {
+        walletBacked = {status: "BLOCKED",
+          reason: "WALLET_RESERVE_THREW:" + String(error && error.message || error)};
+      }
+      if (walletBacked && (walletBacked.status === "RESERVED" ||
+          walletBacked.status === "APPLIED" || walletBacked.status === "DUPLICATE"))
+        reservation = reservationFor({campaignID: campaign, factionID});
+      if (typeof emit === "function") emit("living-native-war-bounty-wallet-backed", {
+        status: String((reservation && "RESERVED") || "REFUSED"), factionID,
+        campaignID: campaign, pilotID: pilot,
+        reserve: walletBacked && (walletBacked.status || walletBacked.reason) || "UNAVAILABLE",
+        evidence: "ESCROW_TAKEN_FROM_THE_FACTIONS_REAL_CORP_WALLET"});
+    }
     if (!reservation) {
       const proofAlreadyPaid = key(proofID) ? proofID : String(kind || "event") + ":" + campaign;
       const settled = alreadyPaidFor({campaignID: campaign, factionID,

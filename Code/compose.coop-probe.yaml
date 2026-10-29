@@ -97,6 +97,14 @@
       # out of that HELD escrow (no ISK is ever minted).
       EVEJS_COOP_WAR_TREASURY: '1'
       EVEJS_COOP_WAR_BOUNTY_ISK: '25000'
+      # FW-105 (owner decision 2026-10-30): a real kill may be backed by the faction's
+      # REAL native corporation wallet, not only by a levy its pilots never earned.
+      # MEASURED on this stack: it had no treasury row at all, so every real kill
+      # answered NO_HELD_ESCROW_FOR_FACTION while the mechanic itself was fine. The
+      # reservation is taken by coopWarTreasury RESERVE, which verifies the corporation,
+      # debits division 1000 with a real journal entry and refuses when the money is not
+      # there. No ISK is ever minted: it is only spent from where it already is.
+      EVEJS_COOP_WAR_BOUNTY_WALLET_FALLBACK: '1'
       # FW-011A: read-only war-control projection into the sovereignty view.
       EVEJS_COOP_WAR_SOVEREIGNTY_PROJECTION: '1'
       # Measured 2026-10-30: with this off, "the world feels laggy" could only be
