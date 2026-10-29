@@ -95,9 +95,17 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
     if(pos(l?.entityID))
      entityCounts.set(l.entityID,(entityCounts.get(l.entityID)||0)+1);
    }
-   const candidateLinks=links.filter(l=>reachable.has(l?.systemID)&&named(l?.pilotID)&&
+   // FW-069/070: the candidate set is built from the ARMED roles and from the system
+   // the HULL is in. The old filter required exactly "patrol" and the link's own
+   // system, so an Angel Cartel raider (role "pirate") or any hull whose virtual pilot
+   // had walked on was never even considered - both sides of a real ASSAULT answered
+   // NO_PATROL_CANDIDATE while armed hulls stood in the system.
+   const candidateLinks=links.filter(l=>named(l?.pilotID)&&
     pilotCounts.get(l.pilotID)===1&&pos(l.entityID)&&
-    entityCounts.get(l.entityID)===1&&l.role==="patrol")
+    entityCounts.get(l.entityID)===1&&
+    MOBILIZABLE_ROLES.has(String(l.role||""))&&
+    reachable.has(physicalCandidateSystem(l,getNativeEntity)))
+
     .sort((a,b)=>a.entityID-b.entityID).slice(0,512);
    const existing=new Set(Object.keys(assigned.ships).map(Number));
    const usedPilots=new Set(Object.values(assigned.ships).map(x=>x?.pilotID));
