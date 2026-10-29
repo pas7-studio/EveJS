@@ -353,6 +353,46 @@ function grantFulfillmentToCharacter(characterID, fulfillment, quantity, options
         },
       };
     }
+    case "skin_license": {
+      // A SKIN offer delivers the real first-party licence record, through the same catalog and the
+      // same grant path the SKIN window reads (services/ship/shipCosmeticsState.giveSkin). A licence
+      // that is not in the catalogue, or that belongs to another skin, is refused instead of granted.
+      const skinID = toPositiveInteger(fulfillmentSource.skinID, 0);
+      const licenseTypeID = toPositiveInteger(fulfillmentSource.licenseTypeID, 0);
+      if (!skinID || !licenseTypeID) {
+        return {
+          success: false,
+          errorMsg: "INVALID_SKIN_LICENSE",
+        };
+      }
+      try {
+        const cosmetics = require(path.join(__dirname, "../ship/shipCosmeticsState"));
+        const grant = cosmetics.giveSkin(characterID, skinID, {
+          licenseTypeID,
+          durationDays: fulfillmentSource.durationDays,
+        });
+        if (!grant || grant.success !== true) {
+          return {
+            success: false,
+            errorMsg: (grant && grant.errorMsg) || "SKIN_LICENSE_GRANT_FAILED",
+          };
+        }
+        return {
+          success: true,
+          data: {
+            type: "skin_license",
+            skinID,
+            licenseTypeID,
+            grant: cloneValue(grant.data || null),
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          errorMsg: "SKIN_LICENSE_GRANT_FAILED: " + String(error && error.message || error),
+        };
+      }
+    }
     case "skill_points": {
       const points = Math.max(
         0,
