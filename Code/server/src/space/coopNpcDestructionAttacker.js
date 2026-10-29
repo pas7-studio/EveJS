@@ -137,6 +137,19 @@ function note(scene,victim,options,wreck){
   // and a real kill in a funded campaign could never pay. The registry rows are merged as
   // one more identity source; scene membership still proves the hull is the real one.
   const links=mergeLinks(Object.values(saved?.links||[]),liveLinks(),fleetLinks());
+  // FW-079: when a kill cannot be attributed, say WHICH identity source was missing
+  // the hull instead of one opaque status. Three different caches can each be the one
+  // that lost it, and guessing between them has cost this world a whole evening.
+  const identityWitness=(victimID)=>{
+   try{
+    const count=(list)=>Array.isArray(list)?list.filter(row=>Number(row&&row.entityID)===Number(victimID)).length:0;
+    return {entityID:Number(victimID)||0,
+     disk:count(Object.values(saved?.links||[])),
+     live:count(liveLinks()),
+     fleet:count(fleetLinks()),
+     merged:count(links)};
+   }catch(_error){return {entityID:Number(victimID)||0,error:"WITNESS_UNAVAILABLE"}}
+  };
   const ext=__filename.endsWith(".cjs")?".cjs":"";
   // FW-024: a PLAYER hull as the upstream attacker is a real war participant
   // only through an ACTIVE militia enlistment against a registered war ship.
@@ -193,6 +206,18 @@ function note(scene,victim,options,wreck){
     {spaceState:{systemID:proof.systemID}},proof);
   // FW-009B: only this strict proof may pay war merit, and only for the exact
   // physical wreck it names. A missing or non-native attacker pays nothing.
+  if(proof.status!=="NATIVE_DESTRUCTION_ATTACKER_PROVIDED"){
+   try{
+    require("./coopRuntimeProbe").observe("living-native-destruction-identity",
+     null,{spaceState:{systemID:Number(proof&&proof.systemID)||Number(scene?.systemID)||0}},
+     {status:String(proof&&proof.status||"UNKNOWN"),
+      victimEntityID:Number(victim?.itemID)||0,
+      victimWitness:identityWitness(Number(victim?.itemID)||0),
+      attackerEntityID:Number(options?.attackerEntity?.itemID)||0,
+      attackerWitness:identityWitness(Number(options?.attackerEntity?.itemID)||0),
+      evidence:"WHICH_IDENTITY_SOURCE_LOST_THE_HULL"});
+   }catch(_error){/* the witness never blocks a proof */}
+  }
   if(proof.status==="NATIVE_DESTRUCTION_ATTACKER_PROVIDED"){
    try{
     const ext=__filename.endsWith(".cjs")?".cjs":"";
