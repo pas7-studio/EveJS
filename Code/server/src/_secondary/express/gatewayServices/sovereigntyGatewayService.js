@@ -47,6 +47,7 @@ const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.sovereignty.resource.planet.api.GetDefinitionsVersionRequest",
   "eve_public.sovereignty.resource.star.api.GetAllConfigurationsRequest",
   "eve_public.sovereignty.hub.upgrade.api.GetDefinitionsRequest",
+  "eve_public.sovereignty.hub.upgrade.api.GetRequest",
   "eve_public.sovereignty.hub.upgrade.api.GetHubUpgradesRequest",
   "eve_public.sovereignty.hub.upgrade.api.ProcessConfigurationRequest",
   "eve_public.sovereignty.hub.upgrade.api.UninstallRequest",
@@ -597,6 +598,44 @@ function createSovereigntyGatewayService({ publishGatewayNotice }) {
           responseTypeName: "eve_public.sovereignty.hub.upgrade.api.GetDefinitionsResponse",
           responsePayloadBuffer: encodePayload(types.upgradeGetDefinitionsResponse, {
             definitions: listUpgradeDefinitions().map(buildUpgradeDefinitionPayload),
+          }),
+        };
+      }
+
+      if (requestTypeName === "eve_public.sovereignty.hub.upgrade.api.GetRequest") {
+        // One installed upgrade, by identifier: exactly the attributes GetHubUpgrades already reports
+        // for it (definition + power state). An upgrade the hub does not carry is NOT_FOUND, never an
+        // invented definition.
+        const decoded = decodePayload(types.upgradeGetRequest, requestEnvelope);
+        const identifier = (decoded && decoded.upgrade) || {};
+        const hubID = Number(identifier.hub && identifier.hub.sequential) || 0;
+        const installationTypeID =
+          Number(identifier.installation_type && identifier.installation_type.sequential) || 0;
+        const upgradeTypeID =
+          Number(identifier.upgrade_type && identifier.upgrade_type.sequential) || 0;
+        const hubUpgrades = getHubUpgrades(hubID, identity);
+        if (hubUpgrades && hubUpgrades.ok === false) {
+          return buildErrorResult(requestTypeName, hubUpgrades.statusCode, hubUpgrades.errorCode);
+        }
+        const installed = hubUpgrades && Array.isArray(hubUpgrades.upgrades)
+          ? hubUpgrades.upgrades.find((upgrade) =>
+            (!installationTypeID || Number(upgrade.installationTypeID) === installationTypeID) &&
+            (!upgradeTypeID || Number(upgrade.typeID) === upgradeTypeID))
+          : null;
+        if (!installed) {
+          return buildErrorResult(requestTypeName, 404, "NOT_FOUND");
+        }
+        const payload = buildHubUpgradesPayload({
+          hubID,
+          upgrades: [installed],
+          lastUpdatedMs: hubUpgrades.lastUpdatedMs,
+        });
+        return {
+          statusCode: 200,
+          statusMessage: "",
+          responseTypeName: "eve_public.sovereignty.hub.upgrade.api.GetResponse",
+          responsePayloadBuffer: encodePayload(types.upgradeGetResponse, {
+            attributes: payload.upgrades[0].attributes,
           }),
         };
       }

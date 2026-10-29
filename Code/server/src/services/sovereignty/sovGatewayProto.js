@@ -79,6 +79,12 @@ function getSovereigntyProtoTypes() {
     upgradeGetDefinitionsResponse: root.lookupType(
       "eve_public.sovereignty.hub.upgrade.api.GetDefinitionsResponse",
     ),
+    upgradeGetRequest: root.lookupType(
+      "eve_public.sovereignty.hub.upgrade.api.GetRequest",
+    ),
+    upgradeGetResponse: root.lookupType(
+      "eve_public.sovereignty.hub.upgrade.api.GetResponse",
+    ),
     upgradeGetHubUpgradesRequest: root.lookupType(
       "eve_public.sovereignty.hub.upgrade.api.GetHubUpgradesRequest",
     ),
