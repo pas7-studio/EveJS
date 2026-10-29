@@ -1,3 +1,5 @@
+const protobuf = require("protobufjs");
+
 const EMPTY_SUCCESS_RESPONSE_TYPES = new Map([
   [
     "eve_public.cosmetic.ship.skin.thirdparty.license.api.GetOwnedRequest",
@@ -98,6 +100,48 @@ const CAREER_GOAL_DEFINITION_STUBS = Object.freeze([
 
 const ZERO_UUID_BYTES = Buffer.alloc(16);
 
+// The shared local gateway root does not define this response, and an eager lookupType() throws
+// at require time - which would take the whole gateway down. The message is small enough to
+// declare here: eve_public/career/goal.proto gives Identifier{uuid=1 bytes} and
+// eve_public/career/goal/api/requests.proto gives GetAllResponse.goals[Goal{goal=1, progress=2,
+// not_completed=3, completed_time=4, reward_label_states=5}].
+const CAREER_PROTO_ROOT = protobuf.Root.fromJSON({
+  nested: {
+    eve_public: {
+      nested: {
+        career: {
+          nested: {
+            goal: {
+              nested: {
+                Identifier: { fields: { uuid: { type: "bytes", id: 1 } } },
+                api: {
+                  nested: {
+                    GetAllResponse: {
+                      fields: { goals: { rule: "repeated", type: "Goal", id: 1 } },
+                      nested: {
+                        Goal: {
+                          fields: {
+                            goal: { type: "Identifier", id: 1 },
+                            progress: { type: "uint64", id: 2 },
+                            not_completed: { type: "bool", id: 3 },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+});
+const CAREER_GET_ALL_RESPONSE = CAREER_PROTO_ROOT.lookupType(
+  "eve_public.career.goal.api.GetAllResponse",
+);
+
 function uuidStringToBytes(value) {
   return Buffer.from(String(value).replace(/-/g, ""), "hex");
 }
@@ -110,6 +154,15 @@ function createCompatibilityGatewayService({ protoRoot, emptyPayload }) {
   const careerGoalGetDefinitionsResponse = protoRoot.lookupType(
     "eve_public.career.goal.api.GetDefinitionsResponse",
   );
+  // Resolved lazily: the local proto root does not define every message the client uses, and an
+  // eager lookupType() throws at require time, which would take the whole gateway down.
+  const lookupOptionalType = (name) => {
+    try {
+      return protoRoot.lookupType(name);
+    } catch (_error) {
+      return null;
+    }
+  };
   const skillPlanGetActiveResponse = protoRoot.lookupType(
     "eve_public.character.skill.plan.GetActiveResponse",
   );
@@ -125,6 +178,34 @@ function createCompatibilityGatewayService({ protoRoot, emptyPayload }) {
       return EMPTY_SUCCESS_RESPONSE_TYPES.get(requestTypeName) || null;
     },
     handleRequest(requestTypeName) {
+      // The career portal iterates its definitions and dereferences `.progress` on the
+      // matching row: answering GetAll with an empty list left the client with
+      // "AttributeError: 'NoneType' object has no attribute 'progress'" (measured in the client
+      // at 21:59). Every definition gets an explicit zero-progress, not-completed row.
+      if (requestTypeName === "eve_public.career.goal.api.GetAllRequest") {
+        const careerGoalGetAllResponse = CAREER_GET_ALL_RESPONSE;
+        if (!careerGoalGetAllResponse) {
+          return {
+            statusCode: 200,
+            statusMessage: "",
+            responseTypeName: "eve_public.career.goal.api.GetAllResponse",
+            responsePayloadBuffer: emptyPayload,
+          };
+        }
+        return {
+          statusCode: 200,
+          statusMessage: "",
+          responseTypeName: "eve_public.career.goal.api.GetAllResponse",
+          responsePayloadBuffer: buildEncodedPayload(careerGoalGetAllResponse, {
+            goals: CAREER_GOAL_DEFINITION_STUBS.map((definition) => ({
+              goal: { uuid: uuidStringToBytes(definition.uuid) },
+              progress: 0,
+              not_completed: true,
+            })),
+          }),
+        };
+      }
+
       if (requestTypeName === "eve_public.career.goal.api.GetDefinitionsRequest") {
         return {
           statusCode: 200,
