@@ -37193,6 +37193,10 @@ class SpaceRuntime {
       };
     }
 
+    // COOP_STARGATE_LOCKS_V1: a real, persisted restriction on this gate refuses the
+    // jump here, where the gate is known exactly. One statement, env-gated.
+    if (process.env.EVEJS_COOP_STARGATE_LOCKS === "1" && require("./coopStargateLocks").shared().isLocked(sourceGateEntity.itemID)) { return { success: false, errorMsg: "STARGATE_LOCKED" }; }
+
     const currentActivationState = coerceActivationState(
       sourceGateEntity.activationState,
       this.resolveStargateActivationState(sourceGateEntity),

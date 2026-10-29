@@ -73,6 +73,8 @@ services:
       EVEJS_COOP_ADMIN_BRIDGE: "1"
       # Daily goals: measured from the real mining/kill/jump ledgers (space/coopDailyGoals).
       EVEJS_COOP_DAILY_GOALS: "1"
+      # Real stargate restrictions (space/coopStargateLocks), enforced in startStargateJump.
+      EVEJS_COOP_STARGATE_LOCKS: "1"
     volumes:
       - evejs-data:/var/lib/evejs
       # Character/corporation portraits are rendered by the client at creation
