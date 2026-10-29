@@ -187,15 +187,42 @@ async function tick(haulerID, authorities = {}, env = process.env) {
           stationID = typeof authorities.stationForCargo === "function"
             ? Number(authorities.stationForCargo({haulerID: id})) || 0 : 0;
         } catch (_error) { stationID = 0; }
+        const hereSystemID = typeof authorities.hullSystemOf === "function"
+          ? Number(authorities.hullSystemOf(id)) || 0 : 0;
         if (stationID) {
           // This path runs before any state exists, so the journal is created here.
           const sell = write({ version: 1, ...(state || {}), haulerID: id, phase: PHASE.SELL,
-            updatedAt: now, toStationID: stationID,
-            toSystemID: typeof authorities.hullSystemOf === "function"
-              ? Number(authorities.hullSystemOf(id)) || 0 : 0,
+            updatedAt: now, toStationID: stationID, toSystemID: hereSystemID,
             sellCalls: 0, pendingSince: 0, lastReason: "LIQUIDATING_LEFTOVERS" }, env);
           note(observe, "living-distribution-run", sell, { reason: sell.lastReason });
           return { status: "LIQUIDATING", state: sell };
+        }
+        // Nothing here buys it, but a neighbour may. Measured 2026-10-30: ore carried in New
+        // Caldari had no local buyer while Jita, one gate away, bid 4 035 826 units for it.
+        // The cargo crosses first, then the ordinary TO_DEST/SELL legs take over.
+        let buyer = null;
+        try {
+          buyer = typeof authorities.buyerForCargo === "function"
+            ? authorities.buyerForCargo({haulerID: id}) : null;
+        } catch (_error) { buyer = null; }
+        const buyerSystemID = Number(buyer && buyer.systemID) || 0;
+        if (buyer && Number(buyer.stationID) > 0 && buyerSystemID &&
+          buyerSystemID !== hereSystemID) {
+          let crossing = null;
+          try {
+            crossing = typeof authorities.planCrossingTo === "function"
+              ? authorities.planCrossingTo({haulerID: id, targetSystemID: buyerSystemID}) : null;
+          } catch (_error) { crossing = null; }
+          const planned = Boolean(crossing && (crossing.status === "PLANNED" ||
+            crossing.status === "ALREADY_PENDING"));
+          if (planned) {
+            const moving = write({ version: 1, ...(state || {}), haulerID: id, phase: PHASE.CROSS,
+              updatedAt: now, toStationID: Number(buyer.stationID), toSystemID: buyerSystemID,
+              sellCalls: 0, pendingSince: 0, lastReason: "LIQUIDATING_ACROSS:" + buyerSystemID },
+              env);
+            note(observe, "living-distribution-run", moving, { reason: moving.lastReason });
+            return { status: "LIQUIDATING_ACROSS", state: moving };
+          }
         }
       }
       // A second cycle that finds nothing worth shipping is the honest end of the run:
@@ -345,6 +372,10 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     if (Number.isFinite(atStation) && atStation > STATION_RANGE_M) {
       return finish(PHASE.TO_DEST, "NOT_AT_STATION");
     }
+    // The market fills in bounded settlements (MAX_SELL_QTY is 100 000 here), so the budget
+    // grows with the load instead of stopping a real haul at a fixed number of calls.
+    const load = Math.max(num(state.quantity), num(state.cargoUnits));
+    const callBudget = Math.max(MAX_SELL_CALLS, Math.ceil(load / 100000) + 2);
     let calls = num(state.sellCalls);
     let isk = num(state.isk);
     let settled = null;
@@ -356,7 +387,7 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       // recorded as unknown rather than as a misleading zero.
       return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, sellCalls: calls, iskUnknown: true });
     }
-    for (let attempt = 0; attempt < MAX_POLLS_PER_BEAT && !settled && calls < MAX_SELL_CALLS;
+    for (let attempt = 0; attempt < MAX_POLLS_PER_BEAT && !settled && calls < callBudget;
       attempt += 1) {
       let answer = null;
       try {
@@ -423,8 +454,10 @@ async function tick(haulerID, authorities = {}, env = process.env) {
         sellCalls: calls, isk, lastReason: "WAITING_FOR_SALE:" + why, updatedAt: now }, env);
       return { status: "WAITING_FOR_SALE", reason: why, state: next };
     }
-    if (calls >= MAX_SELL_CALLS) {
-      return finish(PHASE.BLOCKED, "SALE_STOPPED:CALL_LIMIT", { sellCalls: calls, isk });
+    // A big load needs more than a fixed handful of settlements: the market fills at most
+    // MAX_SELL_QTY per call, so the budget grows with the load.
+    if (calls >= callBudget) {
+      return finish(PHASE.BLOCKED, "SALE_STOPPED:CALL_LIMIT", {sellCalls: calls, isk, callBudget});
     }
     const since = num(state.pendingSince) || now;
     if (now - since > SALE_SETTLE_TIMEOUT_MS) {

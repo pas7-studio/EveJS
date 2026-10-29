@@ -258,6 +258,37 @@ function distributionRunAuthorities(options = {}) {
       },
       // A station in this hull's own system that bids for what it is carrying, so leftovers
       // are sold instead of parked.
+      // The same question one gate away: a neighbour whose book takes what this hull carries.
+      buyerForCargo: ({haulerID}) => {
+        try {
+          const native = store.getNativeEntity(haulerID);
+          const fromSystemID = Number(native && native.systemID) || 0;
+          const carried = (store.listNativeCargoForEntity(haulerID) || [])
+            .map((row) => Number(row.typeID)).filter(Boolean);
+          const db = openDb();
+          if (!fromSystemID || !db || !carried.length) return null;
+          const planModule = require("./coopDistributionPlan");
+          const row = (planModule.stockSystems({items, worldData}) || []).find((entry) =>
+            entry.systemID && entry.systemID !== fromSystemID);
+          const neighbours = new Set();
+          const scene = sceneFor(fromSystemID);
+          for (const entity of (scene && Array.isArray(scene.staticEntities)
+            ? scene.staticEntities : [])) {
+            if (String(entity.kind) !== "stargate") continue;
+            const gate = worldData.getStargateByID(entity.itemID);
+            const destination = Number(gate && gate.destinationSolarSystemID) || 0;
+            if (destination && destination !== fromSystemID) neighbours.add(destination);
+          }
+          const systems = [...neighbours];
+          if (row && neighbours.has(row.systemID)) systems.unshift(row.systemID);
+          for (const systemID of systems) {
+            const answer = planModule.stationForTypes({db, systemID, typeIDs: carried});
+            if (answer && Number(answer.stationID) > 0)
+              return {systemID, stationID: Number(answer.stationID)};
+          }
+        } catch (_error) { return null; }
+        return null;
+      },
       stationForCargo: ({haulerID}) => {
         try {
           const native = store.getNativeEntity(haulerID);

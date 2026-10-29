@@ -21,8 +21,21 @@ function createRegistry({file,exists,clock=()=>Date.now()}){
  // Native transfers depend on this JSON identity surviving a process crash.
  // This is still a separate durable owner from SQLite, hence transfer fences.
  let nonce=0;
+ // Links deleted SINCE the last persist: a merge must not bring them back.
+ const removedLinks=new Set();
  let loadedStamp = null; // the file as this owner last saw it; refresh() compares
  const persist=()=>{
+  // Several owners write this file (the world, the market trader, the co-op loop) and each
+  // used to REPLACE it with its own copy. Measured 2026-10-30: a hull linked by the loop was
+  // dropped by the next write from the market side and every crossing then failed
+  // SOURCE_IDENTITY_MISMATCH. Merge with what is really on disk instead of overwriting it:
+  // this owner always refreshes before it mutates, so its own view is the newest for its keys.
+  let onDisk={};
+  try{onDisk=JSON.parse(fs.readFileSync(file,"utf8")).links||{};}catch(_error){onDisk={};}
+  const merged={...onDisk,...state.links};
+  for(const id of removedLinks)delete merged[id];
+  removedLinks.clear();
+  state={version:1,links:merged};
   const dir=path.dirname(file);
   fs.mkdirSync(dir,{recursive:true});
   const tmp=file+".tmp-"+process.pid+"-"+(++nonce);
@@ -105,6 +118,7 @@ function createRegistry({file,exists,clock=()=>Date.now()}){
   const expected=positive(options?.expectedEntityID);
   if(expected&&Number(record.entityID)!==expected)return {status:"ENTITY_MISMATCH"};
   delete state.links[pilotID];
+  removedLinks.add(pilotID);
   try{persist();}
   catch(error){state.links[pilotID]=record;throw error;}
   return {status:"RELEASED",pilotID,entityID:Number(record.entityID),
