@@ -530,10 +530,18 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = 
   const at = num(nowMs) > 0 ? num(nowMs) : Date.now();
   let current = state;
   const applied = [], warIDs = [], campaignIDs = [], fundings = [], skipped = [];
+  // FW-081: a refusal from the state machine must say WHICH command and WHICH border it
+  // refused. Measured 16:0xZ: the world published NATIVE_WAR_AUTHORITY_MISSING with an
+  // empty skip list, so nobody could tell which of four candidate borders failed a proof.
+  let currentEdge = null;
   const step = (command, proofs) => {
     const result = core.transition(current, command, { now: at, proofs });
     if (result.status !== "APPLIED" && result.status !== "DUPLICATE")
-      throw Object.assign(Error("WAR_OPENING_BLOCKED:" + result.reason), { reason: result.reason });
+      throw Object.assign(Error("WAR_OPENING_BLOCKED:" + result.reason),
+        { reason: result.reason, command: command.type,
+          warID: String(command.warID || (currentEdge && currentEdge.warID) || ""),
+          campaignID: String(command.campaignID || (currentEdge && currentEdge.campaignID) || ""),
+          edge: currentEdge });
     current = result.state || current;
     applied.push(Object.assign({ type: command.type }, result.receipt || {}));
   };
@@ -541,6 +549,9 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = 
     for (const opening of plan.openings) {
       const { war, campaign } = opening.plan;
       const proofs = opening.proofs;
+      currentEdge = { warID: war.warID, campaignID: campaign.campaignID,
+        sourceSystemID: campaign.sourceSystemID, targetSystemID: campaign.targetSystemID,
+        attackerFactionID: war.attackerFactionID, defenderFactionID: war.defenderFactionID };
       // FW-027: two borders of the same pair can name the SAME target system
       // (e.g. a hub that touches both sides). The core refuses a second live
       // campaign on one target, and one bad edge must not discard the borders
@@ -639,7 +650,10 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = 
       return refuse("NO_FUNDED_FRONT", { state: current, applied, fundings, skipped });
     return { status: "OPENED", state: current, warIDs, campaignIDs, applied, fundings, skipped };
   } catch (error) {
-    return refuse(error.reason || String((error && error.message) || error), { state: current, applied });
+    return refuse(error.reason || String((error && error.message) || error),
+      { state: current, applied, refusedCommand: error.command || "",
+        refusedWarID: error.warID || "", refusedCampaignID: error.campaignID || "",
+        refusedEdge: error.edge || null });
   }
 }
 
