@@ -128,7 +128,7 @@ function seedBlueprint({ ownerID, stationID, blueprintTypeID, systemID } = {}) {
 }
 
 // Install: take the real materials once and record the job.
-function install({ ownerID, stationID, blueprintTypeID, runs, systemID } = {}) {
+function install({ ownerID, stationID, blueprintTypeID, runs, systemID, buyer = null } = {}) {
   if (!ENABLED()) return { status: "DISABLED" };
   const plan = recipe(blueprintTypeID, runs);
   if (plan.status !== "READY") return plan;
@@ -156,6 +156,12 @@ function install({ ownerID, stationID, blueprintTypeID, runs, systemID } = {}) {
   const job = {
     version: 1, status: "INSTALLED", jobID, ownerID: owner, stationID: station,
     systemID: pos(systemID) || 0, blueprintTypeID: plan.blueprintTypeID,
+    // The demand this job exists for: the buyer's system and station, when the corporation
+    // builds for a market one gate away instead of the station it builds at. Measured
+    // 2026-10-30: every local station bid for nothing while Jita paid 560 000 for the same
+    // goods, and the job record did not say which demand it was answering.
+    buyerSystemID: pos(buyer && buyer.systemID) || 0,
+    buyerStationID: pos(buyer && buyer.stationID) || 0,
     blueprintName: plan.blueprintName, productTypeID: plan.productTypeID,
     productName: plan.productName, runs: plan.runs, quantity: plan.quantity,
     materials: plan.materials, timeSeconds: plan.timeSeconds,

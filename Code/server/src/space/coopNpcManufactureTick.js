@@ -142,6 +142,9 @@ function choose({candidates = [], maxRuns = 5, minPrice = 0, now = Date.now()} =
     const runs = Math.max(1, Math.min(Math.floor(maxRuns) || 1, byMaterials, byBuyer));
     usable.push({...where, runs, quantity: runs * perRun,
       bestBid: num(bid.price), expectedRevenue: runs * perRun * num(bid.price),
+      // Where the demand really is, so the job can say who it was built for.
+      buyer: bid.where === "elsewhere"
+        ? {systemID: pos(bid.systemID), stationID: pos(bid.stationID)} : null,
       materials: materials.map((m) => ({typeID: pos(m.typeID),
         quantity: Math.max(1, Math.round(num(m.quantity) || 1)) * runs}))});
   }
@@ -367,7 +370,8 @@ async function runOnce(options = {}) {
   let installed = null;
   try {
     installed = manufacture.install({ownerID, stationID: job.stationID,
-      blueprintTypeID: job.blueprintTypeID, runs: job.runs, systemID: options.systemID});
+      blueprintTypeID: job.blueprintTypeID, runs: job.runs, systemID: options.systemID,
+      buyer: job.buyer || null});
   } catch (error) {
     installed = {status: "INSTALL_THREW", reason: String((error && error.message) || error).slice(0, 90)};
   }
@@ -377,6 +381,7 @@ async function runOnce(options = {}) {
     stationID: job.stationID, blueprintTypeID: job.blueprintTypeID,
     productTypeID: job.productTypeID, runs: job.runs, quantity: job.quantity,
     bestBid: job.bestBid, expectedRevenue: Math.round(job.expectedRevenue),
+    buyerSystemID: Number(job.buyer && job.buyer.systemID) || 0,
     status, reason: installed && installed.reason ? String(installed.reason).slice(0, 90) : null,
     jobID: installed && installed.jobID ? String(installed.jobID) : null});
   return {status, installed, job, completed, refusals: decision.refusals};
