@@ -211,6 +211,23 @@ function distributionRunAuthorities(options = {}) {
           return {status: "SALE_THREW", reason: String((error && error.message) || error)};
         }
       },
+      // The settled sale result lives for about five seconds, so the run must be able to
+      // read it directly instead of waiting for the next beat to find it gone.
+      saleSettlement: (haulerID, stationID) => {
+        try {
+          const map = require("./coopVirtualWorldRuntime.pure").arrivalSales;
+          const job = map && typeof map.get === "function"
+            ? map.get(String(Number(stationID)) + ":" + String(Number(haulerID))) : null;
+          return job && job.settled ? job.settled : null;
+        } catch (_error) { return null; }
+      },
+      cargoUnits: (haulerID) => {
+        try {
+          return (store.listNativeCargoForEntity(haulerID) || [])
+            .reduce((sum, row) => sum + Math.max(0, Number(row.quantity) || 0), 0);
+        } catch (_error) { return null; }
+      },
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(1, Number(ms) || 1))),
       observe: require("./coopRuntimeProbe").observe,
       minIsk: Number(env.EVEJS_COOP_DISTRIBUTION_MIN_ISK || 200000),
     };

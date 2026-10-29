@@ -5080,6 +5080,12 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
    try{
     const rows=require("./npc/nativeNpcStore").listNativeCargoForEntity(Number(haulerID))||[];
     for(const row of rows)carried.add(Number(row.typeID));
+    // A carried type OUTSIDE the allowlist was never ASKED for: the filter below only
+    // kept allowlisted types, so a hauled good rode along for ever. Measured 2026-10-30: a
+    // distribution hull held Republic Fleet Depleted Uranium while Jita bid 560 000 for it,
+    // and every sale answered NO_REAL_NATIVE_CARGO because 28338 is not in the env list.
+    for(const typeID of carried)
+     if(Number(typeID)>0&&!sellTypes.includes(Number(typeID)))sellTypes.push(Number(typeID));
    }catch(_error){/* an unreadable hold simply adds no type */}
    const wanted=[...new Set(sellTypes.filter(typeID=>
     liftedTypes.has(Number(typeID))||carried.has(Number(typeID))||
@@ -5162,6 +5168,9 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
     quantity:sold.reduce((sum,entry)=>sum+entry.quantity,0),
     isk:sold.reduce((sum,entry)=>sum+entry.isk,0)}:
    {status:"NOT_SOLD",reason:last};
+ // One line per settled sale: a refusal used to exist only for the five seconds the map
+ // keeps it, which is why a distribution run could call all day and learn nothing.
+ try{require("./coopRuntimeProbe").observe("living-npc-sale-settlement",null,null,{systemID:Number(systemID),stationID:Number(stationID),haulerID:Number(haulerID),status:String(job.settled&&job.settled.status||""),reason:String(job.settled&&(job.settled.reason||job.settled.lastStatus)||"").slice(0,60),quantity:Number(job.settled&&job.settled.quantity||0),isk:Number(job.settled&&job.settled.isk||0)});}catch(_coopSaleError){}
  })().finally(()=>{
   // Keep the settled result readable for the next arrival tick only.
   const timer=setTimeout(()=>{if(arrivalSales.get(key)===job)arrivalSales.delete(key);},5000);

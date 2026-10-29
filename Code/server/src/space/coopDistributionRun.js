@@ -28,6 +28,12 @@ const STATION_RANGE_M = 15000;
 const MAX_SELL_CALLS = 6;
 // A slow market daemon is not a failed sale: the wait is bounded by time.
 const SALE_SETTLE_TIMEOUT_MS = 15 * 60 * 1000;
+// How often one beat asks again while the market is still thinking, and how long it waits
+// for the answer: the settled result lives for about five seconds.
+const SALE_POLL_MS = 2500;
+const MAX_POLLS_PER_BEAT = 4;
+// Refusals that mean "not yet" rather than "no": the run waits, bounded, instead of stopping.
+const SALE_RETRYABLE = new Set(["NOT_AT_NATIVE_STATION", "SALE_TIMEOUT", "MARKET_UNAVAILABLE"]);
 
 function num(x) { return Number.isFinite(Number(x)) ? Number(x) : 0; }
 const phase2 = (value) => String(value || PHASE.TO_ORIGIN);
@@ -233,44 +239,86 @@ async function tick(haulerID, authorities = {}, env = process.env) {
 
   if (step.action === "SELL") {
     if (typeof authorities.sell !== "function") return { status: "NO_SELL" };
-    // The bound is on REAL calls: at most this many, then the run reports what it got.
-    if (num(state.sellCalls) >= MAX_SELL_CALLS)
-      return finish(PHASE.BLOCKED, "SALE_STOPPED:CALL_LIMIT", { sellCalls: num(state.sellCalls) });
-    let answer = null;
-    try { answer = await authorities.sell({ haulerID: id, stationID: state.toStationID,
-      systemID: state.toSystemID }); }
-    catch (error) { answer = { status: "SALE_THREW", reason: String((error && error.message) || error).slice(0, 80) }; }
-    const status = String((answer && answer.status) || "SALE_UNKNOWN");
-    const isk = num(answer && answer.isk);
-    const calls = num(state.sellCalls) + 1;
-    if (status === "SOLD") {
-      return finish(PHASE.DONE, "SOLD", { isk: num(state.isk) + isk, sellCalls: calls,
-        soldAt: now });
+    // The settled answer is only readable for about five seconds after it lands (the drain
+    // polls every 3 s for exactly this reason), so a run that asks once a minute can never
+    // see it. Measured 2026-10-30: six calls in an hour, every one PENDING, cargo untouched.
+    const wait = typeof authorities.wait === "function" ? authorities.wait
+      : (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(1, ms)));
+    // A hull that drifted away (or was rebuilt out of its scene) cannot sell: measured
+    // 2026-10-30 the market answered NOT_AT_NATIVE_STATION while the run believed the hull
+    // was at the station because the phase said so. Fly again instead of asking.
+    const atStation = typeof authorities.distanceTo === "function"
+      ? authorities.distanceTo(state.toStationID, state.toSystemID, id) : null;
+    if (Number.isFinite(atStation) && atStation > STATION_RANGE_M) {
+      return finish(PHASE.TO_DEST, "NOT_AT_STATION");
     }
-    if (status === "PENDING") {
-      // A PENDING call did not sell anything yet: the market daemon accepts the job and
-      // settles it later. Counting it as an attempt would stop a run for a slow daemon,
-      // so the wait is bounded by TIME, not by calls (measured 2026-10-30: six PENDING
-      // calls in four minutes, cargo untouched, market RPC timing out).
+    let calls = num(state.sellCalls);
+    let isk = num(state.isk);
+    let settled = null;
+    let lastReason = "PENDING";
+    // A hold that is empty is the strongest proof there is: the goods really left the ship.
+    const cargoNow = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : null;
+    if (Number.isFinite(cargoNow) && cargoNow === 0 && num(state.quantity) > 0) {
+      return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, sellCalls: calls });
+    }
+    for (let attempt = 0; attempt < MAX_POLLS_PER_BEAT && !settled && calls < MAX_SELL_CALLS;
+      attempt += 1) {
+      let answer = null;
+      try {
+        answer = await authorities.sell({ haulerID: id, stationID: state.toStationID,
+          systemID: state.toSystemID });
+      } catch (error) {
+        answer = { status: "SALE_THREW", reason: String((error && error.message) || error).slice(0, 80) };
+      }
+      const status = String((answer && answer.status) || "SALE_UNKNOWN");
+      calls += 1;
+      if (status === "SOLD") {
+        settled = { status: "SOLD", isk: num(answer && answer.isk) };
+        break;
+      }
+      if (status === "NOT_SOLD") {
+        settled = { status: "NOT_SOLD", reason: String((answer && answer.reason) || "") };
+        break;
+      }
+      if (status === "SALE_THREW") { lastReason = String((answer && answer.reason) || status); break; }
+      // PENDING: the job is running. Give it a moment and read the settlement directly.
+      await wait(SALE_POLL_MS);
+      const proof = typeof authorities.saleSettlement === "function"
+        ? authorities.saleSettlement(id, state.toStationID) : null;
+      if (proof && proof.status) settled = proof;
+      else lastReason = "SALE_PENDING";
+    }
+    if (settled && settled.status === "SOLD") {
+      return finish(PHASE.DONE, "SOLD", { isk: isk + num(settled.isk), sellCalls: calls,
+        soldAt: now, settlement: { quantity: num(settled.quantity), isk: num(settled.isk) } });
+    }
+    if (settled && settled.status === "NOT_SOLD") {
+      const why = String(settled.reason || "").slice(0, 50);
+      // A refusal that only says "not yet" is not an answer: the hull is being rebuilt,
+      // the market daemon is away, or the visit timed out. Those retry; a real refusal stops.
+      const retryable = SALE_RETRYABLE.has(String(settled.reason || ""));
+      if (!retryable) {
+        return finish(PHASE.BLOCKED, "SALE_NOT_SOLD:" + why, { sellCalls: calls, isk });
+      }
       const since = num(state.pendingSince) || now;
       if (now - since > SALE_SETTLE_TIMEOUT_MS) {
-        return finish(PHASE.BLOCKED, "SALE_SETTLE_TIMEOUT", { pendingSince: since,
-          sellCalls: num(state.sellCalls) });
+        return finish(PHASE.BLOCKED, "SALE_NOT_SOLD:" + why, { sellCalls: calls, isk });
       }
       const next = write({ ...state, phase: PHASE.SELL, pendingSince: since,
-        lastReason: "SALE_PENDING", updatedAt: now }, env);
-      return { status: "SALE_PENDING", state: next };
+        sellCalls: calls, isk, lastReason: "WAITING_FOR_SALE:" + why, updatedAt: now }, env);
+      return { status: "WAITING_FOR_SALE", reason: why, state: next };
     }
-    if (status === "NOT_SOLD" && calls <= MAX_SELL_CALLS) {
-      // The market refused this visit: retry only while the bound allows it, honestly.
-      const next = write({ ...state, sellCalls: calls, isk: num(state.isk) + isk,
-        lastReason: "SALE_NOT_SOLD:" + String((answer && answer.reason) || "").slice(0, 40),
-        updatedAt: now }, env);
-      return { status: "SALE_NOT_SOLD", state: next };
+    if (calls >= MAX_SELL_CALLS) {
+      return finish(PHASE.BLOCKED, "SALE_STOPPED:CALL_LIMIT", { sellCalls: calls, isk });
     }
-    return finish(PHASE.BLOCKED, status === "SOLD" ? "SOLD"
-      : "SALE_STOPPED:" + String((answer && (answer.reason || answer.lastStatus)) || status).slice(0, 50),
-      { sellCalls: calls, isk: num(state.isk) + isk });
+    const since = num(state.pendingSince) || now;
+    if (now - since > SALE_SETTLE_TIMEOUT_MS) {
+      return finish(PHASE.BLOCKED, "SALE_SETTLE_TIMEOUT", { pendingSince: since, sellCalls: calls });
+    }
+    const next = write({ ...state, phase: PHASE.SELL, pendingSince: since,
+      sellCalls: calls, isk, lastReason, updatedAt: now }, env);
+    note(observe, "living-distribution-run", next, { reason: lastReason });
+    return { status: "SALE_PENDING", reason: lastReason, state: next };
   }
 
   return { status: "IDLE", reason: step.reason || null, state };
@@ -288,5 +336,6 @@ async function tickAll(authorities = {}, env = process.env) {
   }
   return results;
 }
-module.exports = { PHASE, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS, ORDER_SPACING_MS, root, fileFor,
+module.exports = { PHASE, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
+  SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
   read, write, list, decide, worthIt, note, tick, tickAll };
