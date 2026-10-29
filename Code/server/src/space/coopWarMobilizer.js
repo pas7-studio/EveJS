@@ -9,6 +9,23 @@
 // another border whose two sides really are mustered.
 const pos=x=>Number.isSafeInteger(x)&&x>0;
 const named=x=>typeof x==="string"&&/^coop-pilot-[0-9]{3,}$/.test(x);
+// FW-069: a candidate's system is the system its HULL is in, not the one its identity
+// link remembers. The link follows the virtual pilot, which the world keeps advancing
+// along its route while the native hull stays where it was spawned (the same drift
+// FW-048/FW-049/FW-051 fixed for attribution, presence and the opener). The mobiliser
+// still compared the LINK's system, so every drifted patrol was silently dropped as
+// WRONG_SYSTEM - the side then answered NO_PATROL_CANDIDATE while an armed hull stood in
+// its system, no assault was ever deployed, and the payout rung could never be reached.
+// The native record decides; a link with no readable native system keeps its own value.
+const physicalCandidateSystem=(link,getNativeEntity)=>{
+ try{
+  const native=typeof getNativeEntity==="function"?getNativeEntity(Number(link&&link.entityID)):null;
+  const physical=Number(native&&native.systemID);
+  if(Number.isSafeInteger(physical)&&physical>0)return physical;
+ }catch(_error){/* fall through to the link */}
+ const remembered=Number(link&&link.systemID);
+ return Number.isSafeInteger(remembered)&&remembered>0?remembered:0;
+};
 const identifier=x=>typeof x==="string"&&/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(x);
 const warp=s=>String(s?.mode||"").toUpperCase().includes("WARP")||
  !!(s?.pendingWarp||s?.warpState||s?.isWarping);
@@ -191,7 +208,8 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
       if(dryRun?mobilized.length>=DRY_RUN_REPORT_LIMIT:mobilized.length>=maxPerTick)break;
       const id=link?.entityID;
       const cheap=!pos(id)?"INVALID_ENTITY":!named(link.pilotID)?"INVALID_PILOT":
-       link.role!=="patrol"?"NOT_PATROL_ROLE":link.systemID!==side.systemID?"WRONG_SYSTEM":
+       link.role!=="patrol"?"NOT_PATROL_ROLE":
+       physicalCandidateSystem(link,getNativeEntity)!==side.systemID?"WRONG_SYSTEM":
        existing.has(id)?"ALREADY_ASSIGNED":usedPilots.has(link.pilotID)?"PILOT_IN_USE":
        playerIDs.has(id)?"PLAYER_SHIP":isTactical(id)?"TACTICAL_BUSY":"";
       if(cheap){
@@ -285,4 +303,4 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
  }
  return Object.freeze({tick});
 }
-module.exports={createWarMobilizer,enabled};
+module.exports={createWarMobilizer,enabled,physicalCandidateSystem};
