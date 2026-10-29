@@ -74,6 +74,15 @@ function ids(values){
  const out=values.map(pos);
  return out.every(Boolean)&&new Set(out).size===out.length?out:null;
 }
+// Durable hulls that carry this slot marker but are physically in another system.
+function markedHaulersElsewhere(store,systemID,slot,present){
+ try{
+  const mark=roleMarker(systemID,slot,"hauler"),here=new Set((present||[]).map(Number));
+  return (store.listNativeEntities()||[]).filter(e=>String(e?.operatorKind||"")===mark&&
+   Number(e?.systemID)!==Number(systemID)&&!here.has(Number(e?.entityID)))
+   .map(e=>Number(e.entityID)).filter(Boolean);
+ }catch(_error){return []}
+}
 function markers(store,systemID,slot){
  const all=store.listNativeEntitiesForSystem(systemID);
  if(!Array.isArray(all))throw Error("ALIFE08_NATIVE_ENTITY_LIST_UNAVAILABLE");
@@ -333,7 +342,14 @@ function repairSlotComposition({scene,store,systemID,slot,key,db,spawn,ensureSta
  // the witness still named a hauler, the marker set had none, and the slot stayed
  // NEEDS_OPERATOR_REPAIR for ever because addCount came out 0 and nothing was spawned.
  const expectedHaulers=Array.isArray(haulerIDs)?haulerIDs.length:0;
- const missingHaulers=Math.max(0,expectedHaulers-before.haulers.length);
+ // A hull that is away on a real trip still exists: it is not missing, it is out. Spawning
+ // a duplicate would double the fleet, and marking the slot for repair would be a lie.
+ const awayHaulers=expectedHaulers>before.haulers.length
+  ? markedHaulersElsewhere(store,systemID,slot,before.haulers) : [];
+ const missingHaulers=Math.max(0,expectedHaulers-before.haulers.length-awayHaulers.length);
+ if(!misRoled.length&&!demotable.length&&missingHaulers===0&&awayHaulers.length>0)
+  return {awayHaulers,minerEntityIDs:before.miners,haulerEntityIDs:before.haulers,
+   demoted:[],added:[],kept,status:"HAULER_AWAY"};
  const addCount=Math.max(missingHaulers,Math.max(0,demotable.length-realHaulers)+
   (kept.length>0&&realHaulers===0?1:0));
  let fresh=[];
@@ -619,6 +635,15 @@ function createService({db,store,nativeService,ensureState,spawn,register,destro
      // of healing fixes. Repair the composition additively (flag-gated).
      const recomposed=repairSlotComposition({scene,store,systemID,slot,key,db,spawn,
       ensureState,minerIDs,haulerIDs,log});
+     if(recomposed&&recomposed.status==="HAULER_AWAY"){
+      // The slot is whole, one hull is simply out on a real trip. Say so and leave it
+      // alone: spawning here would double the fleet, and NEEDS_OPERATOR_REPAIR would send
+      // an operator hunting a hull that is doing its job.
+      log("ALIFE08 slot "+key+" -> HAULER_AWAY hauler(s)="+recomposed.awayHaulers.join(","));
+      reports.push(result("HAULER_AWAY",slot,{reason:"HAULER_ON_A_REAL_TRIP",
+       haulerEntityIDs:recomposed.haulerEntityIDs,awayHaulers:recomposed.awayHaulers}));
+      continue;
+     }
      if(recomposed){
       minerIDs=recomposed.minerEntityIDs;
       haulerIDs=recomposed.haulerEntityIDs;
