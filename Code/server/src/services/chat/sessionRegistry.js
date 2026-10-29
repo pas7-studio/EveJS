@@ -110,6 +110,11 @@ function deindexCharacterSession(session) {
 
 function register(session) {
   if (session) {
+    // The one honest source for "how long has this session been in play": stamped once, when the
+    // session joins the registry. userSvc.GetSessionPlaytimeMinutes answers from it instead of 0.
+    if (!(Number(session.evejsRegisteredAtMs) > 0)) {
+      session.evejsRegisteredAtMs = Date.now();
+    }
     sessions.add(session);
     indexCharacterSession(session);
   }

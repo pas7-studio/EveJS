@@ -1004,8 +1004,15 @@ class UserService extends BaseService {
     );
   }
 
-  Handle_GetSessionPlaytimeMinutes() {
-    return 0;
+  Handle_GetSessionPlaytimeMinutes(args, session) {
+    // Real playtime of this session, not a constant: sessionRegistry stamps evejsRegisteredAtMs when
+    // the session joins, and the client shows the result in its regional playtime text.
+    const startedAtMs = Number(session && session.evejsRegisteredAtMs) || 0;
+    if (!(startedAtMs > 0)) {
+      return 0;
+    }
+    const minutes = Math.floor((Date.now() - startedAtMs) / 60000);
+    return Number.isFinite(minutes) && minutes > 0 ? minutes : 0;
   }
 
   Handle_GetUserName(args, session) {
