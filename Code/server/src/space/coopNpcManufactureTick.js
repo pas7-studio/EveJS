@@ -351,6 +351,22 @@ async function runOnce(options = {}) {
       jobInFlight: inFlight > 0,
     });
   }
+  // A ceiling nobody names looks like a healthy loop: measured 2026-10-30 the corporation could
+  // build three products while the buyer system carried thousands of real bids it cannot answer.
+  // When no job is possible, say what the corporation CANNOT make (at most once per half hour).
+  if (!ready.length && typeof options.demandGap === "function") {
+    const last = Number(options.gapReportedAt || 0);
+    if (Date.now() - (Number.isFinite(last) ? last : 0) > 30 * 60 * 1000) {
+      let answer = null;
+      try { answer = await options.demandGap({limit: 5}); }
+      catch (_error) { answer = null; }
+      if (answer && answer.status === "GAP") {
+        note(options, "living-npc-manufacture-demand-gap", {systemID: options.systemID,
+          status: "DEMAND_WITHOUT_BLUEPRINT", reason: String(answer.gapValue) + " ISK across " +
+            String(answer.gap.length) + " named products"});
+      }
+    }
+  }
   const ready = candidates.filter((c) => c.recipeRejected !== true);
   note(options, "living-npc-manufacture-attempt", {systemID: options.systemID,
     blueprints: blueprints.length, candidates: candidates.length, ready: ready.length,

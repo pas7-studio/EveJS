@@ -506,6 +506,44 @@ function tick(options = {}) {
       systemID: options.systemID, now: options.now,
       // Demand one gate away is real demand: the manufacturer may build for a buyer the
       // freight run can actually reach.
+      // What the corporation cannot make, so a full warehouse of demand does not look like
+      // an idle manufacturer.
+      demandGap: ({limit}) => {
+        try {
+          const inventory = require("../services/inventory/itemTypeRegistry");
+          const worldData = require("./worldData");
+          const runtime = require("./runtime");
+          const items = require("../services/inventory/itemStore");
+          const manufacture = require("./coopNpcManufacture");
+          const Better = require("better-sqlite3");
+          const db = new Better(process.env.EVEJS_MARKET_DB || "/var/lib/evejs/market/market.sqlite",
+            {readonly: true, fileMustExist: true});
+          const owned = items.listOwnedItems(Number(process.env.EVEJS_COOP_FACTORY_CORP_ID || 1000129),
+            {locationID: undefined});
+          const rows = Array.isArray(owned) ? owned : (owned && owned.data) || [];
+          const blueprints = [...new Set(rows.filter((row) => Number(row.quantity) === -1)
+            .map((row) => Number(row.typeID)).filter(Boolean))];
+          const systemIDs = [];
+          for (const row of rows) {
+            const station = worldData.getStationByID(Number(row.locationID));
+            const systemID = Number(station && station.solarSystemID) || 0;
+            if (systemID && !systemIDs.includes(systemID)) systemIDs.push(systemID);
+          }
+          const scene = sceneFor(options.systemID || systemIDs[0] || 0);
+          for (const entity of (scene && Array.isArray(scene.staticEntities)
+            ? scene.staticEntities : [])) {
+            if (String(entity.kind) !== "stargate") continue;
+            const gate = worldData.getStargateByID(entity.itemID);
+            const destination = Number(gate && gate.destinationSolarSystemID) || 0;
+            if (destination && !systemIDs.includes(destination)) systemIDs.push(destination);
+          }
+          const answer = require("./coopDemandGap").gap({db, systemIDs, blueprints,
+            recipeOf: (id) => manufacture.recipe(id, 1),
+            resolveType: (id) => inventory.resolveItemByTypeID(id), limit});
+          db.close();
+          return answer;
+        } catch (_error) { return null; }
+      },
       bidElsewhere: (query) => {
         try {
           const inventory = require("../services/inventory/itemTypeRegistry");
