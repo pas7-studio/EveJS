@@ -160,12 +160,14 @@ const SKIN_LICENSE_PROTO_ROOT = protobuf.Root.fromJSON({
 
 const API = "eve_public.cosmetic.ship.skin.thirdparty.license.api";
 
+// Spelled out rather than built from the package prefix: the contract register scans the
+// tree for these literal names, and a built string is invisible to it.
 const HANDLED_REQUEST_TYPES = Object.freeze([
-  `${API}.GetOwnedRequest`,
-  `${API}.GetRequest`,
-  `${API}.ActivateRequest`,
-  `${API}.admin.GrantRequest`,
-  `${API}.admin.RevokeRequest`,
+  "eve_public.cosmetic.ship.skin.thirdparty.license.api.GetOwnedRequest",
+  "eve_public.cosmetic.ship.skin.thirdparty.license.api.GetRequest",
+  "eve_public.cosmetic.ship.skin.thirdparty.license.api.ActivateRequest",
+  "eve_public.cosmetic.ship.skin.thirdparty.license.api.admin.GrantRequest",
+  "eve_public.cosmetic.ship.skin.thirdparty.license.api.admin.RevokeRequest",
 ]);
 
 function timestampOf(ms) {
