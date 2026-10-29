@@ -330,7 +330,27 @@ function createNpcMarketTrader({call,store,registry,getStation,resolveType,scene
     .sort((left,right)=>Number(right.price)-Number(left.price)||
      Number(right.vol_remaining)-Number(left.vol_remaining));
    const row=candidates[0];
-   if(!row)return status("NO_SEEDED_COUNTERPARTY");
+   if(!row){
+    // FW-106: "no counterparty HERE" is not the same as "this cargo is worthless".
+    // MEASURED on the play stack 2026-10-30: combat loot (typeID 17470, 1230) was
+    // refused at stations 60000358/60000682 while the SAME region quoted those types
+    // at a station the hull was not docked at, and only Jita (60003760) quoted them at
+    // all. The refusal now carries the region's real seeded buyers so the routing
+    // (or seeding) question is answered by data, never by a guess.
+    let buyers=[];
+    if(pre.side==="sell"){
+     try{
+      buyers=(Array.isArray(rows)?rows:[]).filter(x=>x&&x.source==="seed"&&
+       Number(x.vol_remaining)>=1&&Number(x.price)>0)
+       .sort((left,right)=>Number(right.price)-Number(left.price))
+       .slice(0,5).map(x=>({stationID:Number(x.station_id)||0,
+        price:Number(x.price)||0,volume:Number(x.vol_remaining)||0}));
+     }catch(_error){buyers=[];}
+    }
+    return {...status("NO_SEEDED_COUNTERPARTY"),typeID:pre.typeID,
+     stationID:pre.stationID,regionID:Number(regionID)||0,
+     seededBuyers:buyers.filter(b=>b.stationID>0)};
+   }
    // The merchant's own asking price: while a stack stays unsold the floor
    // steps down, but a bid below it is never accepted just to make a sale.
    if(pre.side==="sell"&&typeof priceFloorFor==="function"){
