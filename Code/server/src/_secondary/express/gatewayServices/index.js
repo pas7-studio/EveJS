@@ -13,6 +13,9 @@ const {
   createDailyGoalGatewayService,
 } = require("./dailyGoalGatewayService");
 const {
+  createCareerGatewayService,
+} = require("./careerGatewayService");
+const {
   createEntityLookupGatewayService,
 } = require("./entityLookupGatewayService");
 const {
@@ -64,6 +67,7 @@ function createGatewayServiceRegistry(context) {
     createGoalContributionGatewayService(context),
     createDailyGoalGatewayService(context),
     createEntityLookupGatewayService(context),
+    createCareerGatewayService(context),
     createStargateLockGatewayService(context),
     createInsurgencyGatewayService(context),
     createNewEdenStoreGatewayService(context),

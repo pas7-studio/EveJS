@@ -75,6 +75,8 @@ services:
       EVEJS_COOP_DAILY_GOALS: "1"
       # Real stargate restrictions (space/coopStargateLocks), enforced in startStargateJump.
       EVEJS_COOP_STARGATE_LOCKS: "1"
+      # Career portal claims: state in space/coopCareerGoals, SP reward.
+      EVEJS_COOP_CAREER_GOALS: "1"
     volumes:
       - evejs-data:/var/lib/evejs
       # Character/corporation portraits are rendered by the client at creation

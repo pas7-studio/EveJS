@@ -29,6 +29,8 @@
 // from a funded account, and the co-op world has no such sponsor for players.
 const path = require("path");
 
+const { createSkillPointGrant } = require("./coopSkillPointGrant");
+
 const TABLE_CHARACTERS = "characters";
 const TABLE_KILLMAILS = "killmails";
 const STATE_KEY = "dailyGoals";
@@ -503,35 +505,7 @@ function createDailyGoals({
     return { status: "RECORDED", progress: progressFor(definition, id, state, nowMs) };
   }
 
-  function grantSkillPoints(characterID, amount) {
-    const result = owner().updateCharacterRecord(characterID, (record) => ({
-      ...(record || {}),
-      freeSkillPoints: Math.max(0, int(record && record.freeSkillPoints)) + amount,
-    }));
-    if (!result || result.success !== true) {
-      throw Error("DAILY_GOALS_REWARD_WRITE_FAILED");
-    }
-    // Tell the live client, exactly like a campaign skill crate does. Without a
-    // session the points are still on the record and arrive on the next login.
-    try {
-      const notifications = require(path.join(
-        __dirname,
-        "../services/skills/training/skillQueueNotifications",
-      ));
-      const sessions = require(path.join(__dirname, "../services/chat/sessionRegistry"));
-      const session = typeof sessions.findSessionByCharacterID === "function"
-        ? sessions.findSessionByCharacterID(characterID)
-        : null;
-      if (typeof notifications.emitSkillSessionState === "function") {
-        notifications.emitSkillSessionState(session, characterID, [], {
-          freeSkillPoints: int(result.data && result.data.freeSkillPoints),
-        });
-      }
-    } catch (_error) {
-      // the reward is already durable; a missed notification is not a lost reward
-    }
-    return amount;
-  }
+  const grantSkillPoints = createSkillPointGrant({ characterState });
 
   function redeem(characterID, goalID, nowMs = clock()) {
     if (!enabled()) return { status: "DISABLED" };

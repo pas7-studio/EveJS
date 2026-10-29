@@ -1,5 +1,7 @@
 const protobuf = require("protobufjs");
 
+const { getActiveCharacterID } = require("./gatewayServiceHelpers");
+
 const EMPTY_SUCCESS_RESPONSE_TYPES = new Map([
   [
     "eve_public.cosmetic.ship.skin.thirdparty.license.api.GetOwnedRequest",
@@ -150,6 +152,18 @@ function buildEncodedPayload(messageType, payload) {
   return Buffer.from(messageType.encode(messageType.create(payload)).finish());
 }
 
+// The career catalogue and its per-character state have one owner (space/coopCareerGoals).
+function careerGoalSnapshotFor(characterID) {
+  try {
+    const careerGoals = require("../../../space/coopCareerGoals");
+    const id = Number(characterID) || 0;
+    if (id <= 0) return [];
+    return careerGoals.shared().snapshotFor(id);
+  } catch (_error) {
+    return [];
+  }
+}
+
 function createCompatibilityGatewayService({ protoRoot, emptyPayload }) {
   const careerGoalGetDefinitionsResponse = protoRoot.lookupType(
     "eve_public.career.goal.api.GetDefinitionsResponse",
@@ -177,7 +191,7 @@ function createCompatibilityGatewayService({ protoRoot, emptyPayload }) {
     getEmptySuccessResponseType(requestTypeName) {
       return EMPTY_SUCCESS_RESPONSE_TYPES.get(requestTypeName) || null;
     },
-    handleRequest(requestTypeName) {
+    handleRequest(requestTypeName, requestEnvelope) {
       // The career portal iterates its definitions and dereferences `.progress` on the
       // matching row: answering GetAll with an empty list left the client with
       // "AttributeError: 'NoneType' object has no attribute 'progress'" (measured in the client
@@ -197,10 +211,19 @@ function createCompatibilityGatewayService({ protoRoot, emptyPayload }) {
           statusMessage: "",
           responseTypeName: "eve_public.career.goal.api.GetAllResponse",
           responsePayloadBuffer: buildEncodedPayload(careerGoalGetAllResponse, {
-            goals: CAREER_GOAL_DEFINITION_STUBS.map((definition) => ({
-              goal: { uuid: uuidStringToBytes(definition.uuid) },
-              progress: 0,
-              not_completed: true,
+            // The portal shows Claim only for a completed, unclaimed goal, and the
+            // completion is an explicit record (see space/coopCareerGoals): the list and
+            // the claim handler therefore read the same state.
+            goals: careerGoalSnapshotFor(getActiveCharacterID(requestEnvelope)).map((entry) => ({
+              goal: { uuid: uuidStringToBytes(entry.definition.goalID) },
+              progress: entry.progress,
+              not_completed: !entry.completed,
+              completed_time: entry.completedAt
+                ? {
+                  seconds: Math.floor(entry.completedAt / 1000),
+                  nanos: (entry.completedAt % 1000) * 1e6,
+                }
+                : undefined,
             })),
           }),
         };
