@@ -84,6 +84,24 @@ function distributionRunAuthorities(options = {}) {
       } catch (_error) { return false; }
     };
     const goTo = (stationID, haulerID) => {
+      // Distance decides the mode, exactly as the gate approach does: a warp for a long leg,
+      // a follow for the last kilometres. Subwarp across a solar system never arrives.
+      try {
+        const native = store.getNativeEntity(haulerID);
+        const systemID = Number(native && native.systemID) || 0;
+        const scene = sceneFor(systemID);
+        const ship = scene && scene.getEntityByID ? scene.getEntityByID(haulerID) : null;
+        const station = worldData.getStationByID(stationID);
+        if (ship && ship.position && station && station.position) {
+          const gap = Math.hypot(ship.position.x - station.position.x,
+            ship.position.y - station.position.y, ship.position.z - station.position.z);
+          if (gap > 500000 && typeof require("./npc/npcRuntime").warpToPoint === "function") {
+            const warp = require("./npc/npcRuntime").warpToPoint(haulerID, station.position,
+              {forceImmediateStart: true});
+            if (warp && warp.success === true) return true;
+          }
+        }
+      } catch (_error) { /* fall through to the orders below */ }
       // The manual order needs a live controller; a restored hull may have its ship back
       // without one, so the scene follow - the same call the station arrival uses - is the
       // fallback. Measured 2026-10-30: the order answered NOT_FOUND while the ship was
@@ -159,6 +177,33 @@ function distributionRunAuthorities(options = {}) {
         return row ? String(row.phase) : null;
       },
       sell: ({haulerID, stationID, systemID}) => {
+        // The arrival sale only trades through a hull that is NAMED as a hauler. Measured
+        // 2026-10-30: the hull was linked here with an empty role and every sale answered
+        // HAULER_NOT_NAMED while the cargo sat in its real hold.
+        try {
+          const identityFile = env.EVEJS_COOP_IDENTITY_FILE ||
+            "/var/lib/evejs/coop-npc-links.json";
+          const registry = require("./coopIdentityRegistry").createRegistry({
+            file: identityFile,
+            exists: (system, id) => {
+              try {
+                const scene = sceneFor(system);
+                const ship = scene && scene.getEntityByID ? scene.getEntityByID(id) : null;
+                return Boolean(ship && ship.kind === "ship");
+              } catch (_error) { return false; }
+            },
+          });
+          const links = (registry.snapshot() || {}).links || {};
+          const bound = Object.entries(links)
+            .find(([, row]) => Number(row && row.entityID) === Number(haulerID));
+          const role = bound ? String(bound[1].role || "") : "";
+          if (!bound || !role || !["hauler", "miner", "trader"].includes(role)) {
+            const pilotID = bound ? bound[0] : "coop-pilot-027";
+            if (bound) registry.release(pilotID, {expectedEntityID: Number(haulerID)});
+            registry.link({id: pilotID, name: bound ? bound[1].name : pilotID,
+              faction: "independent", role: "hauler", durable: false}, systemID, haulerID);
+          }
+        } catch (_identityError) { /* the sale reports its own refusal below */ }
         try {
           return require("./coopVirtualWorldRuntime").sellOnArrival({systemID, stationID,
             haulerID, types: [], scene: sceneFor(systemID)});

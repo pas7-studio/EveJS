@@ -26,6 +26,8 @@ const STATION_RANGE_M = 15000;
 // One sale call fills at most the market's own per-order limit, so a loaded hold may need
 // several; the count is bounded so a silent market cannot become an endless loop.
 const MAX_SELL_CALLS = 6;
+// A slow market daemon is not a failed sale: the wait is bounded by time.
+const SALE_SETTLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 function num(x) { return Number.isFinite(Number(x)) ? Number(x) : 0; }
 const phase2 = (value) => String(value || PHASE.TO_ORIGIN);
@@ -202,7 +204,9 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     if (typeof authorities.lift !== "function") return { status: "NO_LIFT" };
     let answer = null;
     try { answer = await authorities.lift({ haulerID: id, stationID: state.fromStationID,
-      systemID: state.fromSystemID, demand: state.demand || null,
+      systemID: state.fromSystemID,
+      // The trip carries the destination bid it was planned for; that is what the lift serves.
+      demand: state.demand || (state.trip && state.trip.demand) || null,
       cap: state.quantity || authorities.capacityM3 || 1e6 }); }
     catch (error) { answer = { status: "LIFT_THREW", reason: String((error && error.message) || error).slice(0, 80) }; }
     const status = String((answer && answer.status) || "LIFT_UNKNOWN");
@@ -243,8 +247,17 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       return finish(PHASE.DONE, "SOLD", { isk: num(state.isk) + isk, sellCalls: calls,
         soldAt: now });
     }
-    if (status === "PENDING" && calls <= MAX_SELL_CALLS) {
-      const next = write({ ...state, sellCalls: calls, isk: num(state.isk) + isk,
+    if (status === "PENDING") {
+      // A PENDING call did not sell anything yet: the market daemon accepts the job and
+      // settles it later. Counting it as an attempt would stop a run for a slow daemon,
+      // so the wait is bounded by TIME, not by calls (measured 2026-10-30: six PENDING
+      // calls in four minutes, cargo untouched, market RPC timing out).
+      const since = num(state.pendingSince) || now;
+      if (now - since > SALE_SETTLE_TIMEOUT_MS) {
+        return finish(PHASE.BLOCKED, "SALE_SETTLE_TIMEOUT", { pendingSince: since,
+          sellCalls: num(state.sellCalls) });
+      }
+      const next = write({ ...state, phase: PHASE.SELL, pendingSince: since,
         lastReason: "SALE_PENDING", updatedAt: now }, env);
       return { status: "SALE_PENDING", state: next };
     }
@@ -275,5 +288,5 @@ async function tickAll(authorities = {}, env = process.env) {
   }
   return results;
 }
-module.exports = { PHASE, STATION_RANGE_M, MAX_SELL_CALLS, ORDER_SPACING_MS, root, fileFor,
+module.exports = { PHASE, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS, ORDER_SPACING_MS, root, fileFor,
   read, write, list, decide, worthIt, note, tick, tickAll };

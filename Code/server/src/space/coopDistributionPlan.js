@@ -144,9 +144,14 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
     if (answer && answer.trip) {
       const total = num(answer.trip.quantity) * num(answer.trip.price);
       if (!best || total > best.expectedIsk) {
-        // The pure planner names the destination in its own fields; the run wants one shape.
+        const typeID = pos(answer.trip.typeID);
+        // What the DESTINATION really bids for the chosen product: the lift serves that,
+        // not a local bid that does not exist. Measured 2026-10-30: without this the lift
+        // answered NO_LOCAL_BID at a station that bids for none of its own goods.
         best = { ...answer.trip, expectedIsk: total, fromSystemID: systemID,
           fromStationID: pos(answer.trip.stationID),
+          demand: { [typeID]: { price: num(answer.trip.price),
+            volume: num((bids[typeID] || {}).volume) } },
           toStationID: pos(answer.trip.destinationStationID),
           toSystemID: destinationSystemID, gate: {
             sourceGateID: pos(gate.sourceGateID), destinationGateID: pos(gate.destinationGateID),
