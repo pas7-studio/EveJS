@@ -11,7 +11,7 @@
 //
 // It reads the market database READ-ONLY: the market daemon is a separate process and its RPC
 // timed out live on 2026-10-29, which must never turn a decision into a stall.
-const { plan } = require("./coopNpcDistribution");
+const { plan, planBundle } = require("./coopNpcDistribution");
 
 const pos = (x) => (Number.isSafeInteger(Number(x)) && Number(x) > 0 ? Number(x) : 0);
 const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : 0);
@@ -146,24 +146,25 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
       ? connectedGates({ sourceSystemID: systemID, targetSystemID: destinationSystemID })
       : null;
     if (!gate) { refusals.push({ stationID, reason: "NO_RECIPROCAL_GATE" }); continue; }
-    const answer = plan({
+    // A trip fills the hold with the densest cargo it can carry, so ammunition does not ride
+    // alone while 3 099 m3 of hold flies empty.
+    const answer = planBundle({
       stacks,
       destination: { systemID: destinationSystemID, stationID, bids },
       local: { stationID: 0, bids: {} },
       capacityM3: freeM3, minIsk,
     });
-    if (answer && answer.trip) {
-      const total = num(answer.trip.quantity) * num(answer.trip.price);
+    if (answer && answer.status === "TRIP" && answer.items.length) {
+      const total = num(answer.totalIsk);
       if (!best || total > best.expectedIsk) {
-        const typeID = pos(answer.trip.typeID);
-        // What the DESTINATION really bids for the chosen product: the lift serves that,
-        // not a local bid that does not exist. Measured 2026-10-30: without this the lift
-        // answered NO_LOCAL_BID at a station that bids for none of its own goods.
-        best = { ...answer.trip, expectedIsk: total, fromSystemID: systemID,
-          fromStationID: pos(answer.trip.stationID),
-          demand: { [typeID]: { price: num(answer.trip.price),
-            volume: num((bids[typeID] || {}).volume) } },
-          toStationID: pos(answer.trip.destinationStationID),
+        const demand = {};
+        for (const item of answer.items) demand[pos(item.typeID)] = { price: num(item.price),
+          volume: num(item.quantity) };
+        const first = answer.items[0] || {};
+        best = { ...first, items: answer.items, demand, expectedIsk: total,
+          fromSystemID: systemID, fromStationID: pos(first.stationID || stationID),
+          quantity: answer.items.reduce((sum, item) => sum + num(item.quantity), 0),
+          m3: num(answer.m3), toStationID: stationID,
           toSystemID: destinationSystemID, gate: {
             sourceGateID: pos(gate.sourceGateID), destinationGateID: pos(gate.destinationGateID),
             sourceSystemID: systemID, destinationSystemID,
@@ -177,6 +178,29 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
   return { status: "OK", trip: best };
 }
 
+
+
+/** The station in this system whose seeded book takes the most of what the hull carries. */
+function stationForTypes({ db, systemID, typeIDs = [] } = {}) {
+  const system = pos(systemID);
+  const want = (Array.isArray(typeIDs) ? typeIDs : []).map(Number).filter(Boolean);
+  if (!db || !system || !want.length) return { status: "UNKNOWN", stationID: 0 };
+  let rows = [];
+  try {
+    rows = db.prepare("select station_id, type_id, sum(quantity) as volume " +
+      "from seed_buy_orders where solar_system_id=? and quantity>0 " +
+      "group by station_id, type_id").all(system);
+  } catch (_error) { return { status: "BOOK_UNREADABLE", stationID: 0 }; }
+  let best = 0;
+  let units = 0;
+  for (const row of rows) {
+    if (!want.includes(Number(row.type_id))) continue;
+    // The seeded book is read with a sum() alias; a plain row count is equally valid.
+    const volume = num(row.volume !== undefined ? row.volume : row.quantity);
+    if (volume > units) { best = pos(row.station_id); units = volume; }
+  }
+  return best ? { status: "OK", stationID: best, units } : { status: "NO_BUYER_FOR_CARGO", stationID: 0 };
+}
 
 /**
  * Where the corporation actually holds hangar stock, by system - the answer to "where does this
@@ -204,4 +228,4 @@ function stockSystems({ items, worldData, corpID = 1000129 } = {}) {
   return [...totals.values()].sort((a, b) => b.units - a.units);
 }
 
-module.exports = { stockSystems, planTrip, gateNeighbours, seededBids, stationRowsOfSystem };
+module.exports = { stationForTypes, stockSystems, planTrip, gateNeighbours, seededBids, stationRowsOfSystem };

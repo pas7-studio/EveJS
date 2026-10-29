@@ -50,7 +50,11 @@ function distributionRunAuthorities(options = {}) {
         const Better = require("better-sqlite3");
         db = new Better(env.EVEJS_MARKET_DB || "/var/lib/evejs/market/market.sqlite",
           {readonly: true, fileMustExist: true});
-      } catch (_error) { db = false; }
+      } catch (error) {
+        db = false;
+        observeLoop("living-distribution-book-unavailable",
+          {reason: String((error && error.message) || error).slice(0, 90)});
+      }
       return db || null;
     };
     // The hull needs an identity the registry will accept: the one already bound to it, or
@@ -93,6 +97,20 @@ function distributionRunAuthorities(options = {}) {
     // A durable hull without an identity link is pruned out of its scene, and then it can
     // never reach a station: measured 2026-10-30 the distribution hull was rebuilt every beat
     // because nothing named it. Keeping the link alive is the same bookkeeping the sale needs.
+    // The hold that is really free: capacity minus what the hull already carries.
+    const capacityM3 = (haulerID) => {
+      try {
+        const native = store.getNativeEntity(haulerID);
+        const type = inventory.resolveItemByTypeID(Number(native && (native.shipTypeID || native.typeID)));
+        const total = Number(type && type.capacity) || 0;
+        let used = 0;
+        for (const row of store.listNativeCargoForEntity(haulerID) || []) {
+          const meta = inventory.resolveItemByTypeID(Number(row.typeID)) || {};
+          used += Number(row.quantity) * Number(meta.volume || 0);
+        }
+        return Math.max(0, total - used);
+      } catch (_error) { return 0; }
+    };
     const ensureNamed = (haulerID) => {
       try {
         const native = store.getNativeEntity(haulerID);
@@ -177,7 +195,7 @@ function distributionRunAuthorities(options = {}) {
       } catch (_error) { return false; }
     };
     return {
-      env, hulls, distanceTo, goTo, ensureLive,
+      env, hulls, distanceTo, goTo, ensureLive, capacityM3,
       planTrip: ({haulerID}) => {
         const native = store.getNativeEntity(haulerID);
         const systemID = Number(native && native.systemID) || 0;
@@ -202,7 +220,9 @@ function distributionRunAuthorities(options = {}) {
           root: env.EVEJS_COOP_NPC_MARKET_ROOT || "/var/lib/evejs/coop-native-market",
           probe: require("./coopRuntimeProbe"),
         });
-        return lift.lift({systemID, stationID, haulerID, cap: 1e6, demand});
+        return lift.lift({systemID, stationID, haulerID, cap: 1e6, demand,
+          capM3: Number(capacityM3) || 0,
+          volumeOf: (id) => Number(inventory.resolveItemByTypeID(id)?.volume) || 0});
       },
       planCrossing: ({haulerID, gate}) => {
         const native = store.getNativeEntity(haulerID);
@@ -235,6 +255,19 @@ function distributionRunAuthorities(options = {}) {
       hullSystemOf: (haulerID) => {
         try { return Number(store.getNativeEntity(haulerID)?.systemID || 0); }
         catch (_error) { return 0; }
+      },
+      // A station in this hull's own system that bids for what it is carrying, so leftovers
+      // are sold instead of parked.
+      stationForCargo: ({haulerID}) => {
+        try {
+          const native = store.getNativeEntity(haulerID);
+          const systemID = Number(native && native.systemID) || 0;
+          const carried = (store.listNativeCargoForEntity(haulerID) || [])
+            .map((row) => Number(row.typeID)).filter(Boolean);
+          const answer = require("./coopDistributionPlan").stationForTypes({
+            db: openDb(), systemID, typeIDs: carried});
+          return Number(answer && answer.stationID) || 0;
+        } catch (_error) { return 0; }
       },
       // Where the corporation really keeps its freight, so a hull parked in the buyer system
       // can go and get some instead of idling there.

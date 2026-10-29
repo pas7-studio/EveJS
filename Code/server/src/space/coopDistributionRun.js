@@ -179,6 +179,25 @@ async function tick(haulerID, authorities = {}, env = process.env) {
         note(observe, "living-distribution-run", moving, { reason: moving.lastReason });
         return { status: "REPOSITIONING", reason: moving.lastReason, state: moving };
       }
+      // Goods still aboard are worth more sold than parked: if the planner refuses because the
+      // hold is already full, go and sell what is in it instead of ending the run.
+      if (why === "HOLD_ALREADY_FULL") {
+        let stationID = 0;
+        try {
+          stationID = typeof authorities.stationForCargo === "function"
+            ? Number(authorities.stationForCargo({haulerID: id})) || 0 : 0;
+        } catch (_error) { stationID = 0; }
+        if (stationID) {
+          // This path runs before any state exists, so the journal is created here.
+          const sell = write({ version: 1, ...(state || {}), haulerID: id, phase: PHASE.SELL,
+            updatedAt: now, toStationID: stationID,
+            toSystemID: typeof authorities.hullSystemOf === "function"
+              ? Number(authorities.hullSystemOf(id)) || 0 : 0,
+            sellCalls: 0, pendingSince: 0, lastReason: "LIQUIDATING_LEFTOVERS" }, env);
+          note(observe, "living-distribution-run", sell, { reason: sell.lastReason });
+          return { status: "LIQUIDATING", state: sell };
+        }
+      }
       // A second cycle that finds nothing worth shipping is the honest end of the run:
       // leaving it in PLAN would re-ask the market every beat for ever.
       if (num(state && state.trips) > 0 || authorities.recycle === true) {
@@ -281,7 +300,8 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       systemID: state.fromSystemID,
       // The trip carries the destination bid it was planned for; that is what the lift serves.
       demand: state.demand || (state.trip && state.trip.demand) || null,
-      cap: state.quantity || authorities.capacityM3 || 1e6 }); }
+      cap: state.quantity || authorities.capacityM3 || 1e6,
+      capM3: typeof authorities.capacityM3 === "function" ? authorities.capacityM3(id) : 0 }); }
     catch (error) { answer = { status: "LIFT_THREW", reason: String((error && error.message) || error).slice(0, 80) }; }
     const status = String((answer && answer.status) || "LIFT_UNKNOWN");
     if (status !== "LIFTED") return finish(PHASE.BLOCKED, status);
