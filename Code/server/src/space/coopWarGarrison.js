@@ -85,12 +85,32 @@ function createWarGarrison({
     const applied = [], skips = [];
     let spawned = 0;
     for (const campaign of campaigns) {
-      const systemID = Number(campaign.targetSystemID);
+      const targetSystemID = Number(campaign.targetSystemID);
       const war = state.wars[campaign.warID];
-      const factions = [Number(war.attackerFactionID), Number(war.defenderFactionID)]
-        .filter(pos);
-      for (const factionID of factions) {
+      // FW-103: each side musters in ITS OWN system. MEASURED on the play stack
+      // 2026-10-30 21:17:46Z and 21:19:09Z: this garrison spawned the attacker
+      // (500004) and the defender (500001) both inside the campaign TARGET
+      // (30003837), while `coopWarGateStaging` - and the mobiliser, with the very
+      // same rule - need the attacker's hull in `campaign.sourceSystemID`
+      // (30045344) until the campaign reaches ASSAULT. So one tick reported
+      // GARRISON_APPLIED and NO_ATTACKER_SHIP_REGISTERED at the same time, the
+      // front could never deploy, and it expired with NO_ASSAULT_DEPLOYMENT_PROOF.
+      const attackerSystemID = String(campaign.state) === "PREPARING"
+        ? (pos(Number(campaign.sourceSystemID)) ? Number(campaign.sourceSystemID) : 0)
+        : targetSystemID;
+      const sides = [
+        { factionID: Number(war.attackerFactionID), systemID: attackerSystemID },
+        { factionID: Number(war.defenderFactionID), systemID: targetSystemID },
+      ].filter(side => pos(side.factionID));
+      for (const side of sides) {
         if (spawned >= maxSpawnsPerTick) break;
+        const factionID = side.factionID;
+        const systemID = side.systemID;
+        if (!pos(systemID)) {
+          skips.push({ campaignID: campaign.campaignID, factionID,
+            reason: "SIDE_SYSTEM_MISSING" });
+          continue;
+        }
         const key = systemID + "|" + factionID;
         // A registry row is custody, not a ship on the field. A hull that was
         // destroyed or despawned without a confirmed wreck keeps its row (custody
