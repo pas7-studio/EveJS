@@ -177,4 +177,31 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
   return { status: "OK", trip: best };
 }
 
-module.exports = { planTrip, gateNeighbours, seededBids, stationRowsOfSystem };
+
+/**
+ * Where the corporation actually holds hangar stock, by system - the answer to "where does this
+ * hull have to go to find freight?". Measured 2026-10-30: a distribution hull parked in Jita has
+ * nothing to load and the run could only report NO_STOCK_IN_SYSTEM.
+ */
+function stockSystems({ items, worldData, corpID = 1000129 } = {}) {
+  const totals = new Map();
+  let owned = [];
+  try {
+    const answer = items.listOwnedItems(corpID, { locationID: undefined });
+    owned = Array.isArray(answer) ? answer : (Array.isArray(answer && answer.data) ? answer.data : []);
+  } catch (_error) { return []; }
+  for (const row of owned) {
+    const stationID = pos(row.locationID);
+    if (!stationID || Number(row.flagID) !== 4 || !(num(row.quantity) > 0)) continue;
+    const station = worldData.getStationByID(stationID);
+    const systemID = pos(station && station.solarSystemID);
+    if (!systemID) continue;
+    const current = totals.get(systemID) || { systemID, units: 0, stations: 0 };
+    current.units += num(row.quantity);
+    current.stations += 1;
+    totals.set(systemID, current);
+  }
+  return [...totals.values()].sort((a, b) => b.units - a.units);
+}
+
+module.exports = { stockSystems, planTrip, gateNeighbours, seededBids, stationRowsOfSystem };

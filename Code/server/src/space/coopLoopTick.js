@@ -236,6 +236,24 @@ function distributionRunAuthorities(options = {}) {
         try { return Number(store.getNativeEntity(haulerID)?.systemID || 0); }
         catch (_error) { return 0; }
       },
+      // Where the corporation really keeps its freight, so a hull parked in the buyer system
+      // can go and get some instead of idling there.
+      homeSystemFor: ({haulerID}) => {
+        try {
+          const systems = require("./coopDistributionPlan").stockSystems({items, worldData});
+          const native = store.getNativeEntity(haulerID);
+          const here = Number(native && native.systemID) || 0;
+          for (const row of systems) {
+            if (!row.systemID || row.systemID === here) continue;
+            const pair = require("./coopNpcGateTravel").connectedGates({
+              sourceSystemID: here, targetSystemID: row.systemID,
+              sourceScene: sceneFor(here), getGate: (id) => worldData.getStargateByID(id),
+            });
+            if (pair && pair[0]) return row.systemID;
+          }
+        } catch (_error) { /* no reachable stock is no reposition */ }
+        return 0;
+      },
       // A hull that waits in the buyer system with an empty hold is dead freight.
       recycle: String(env.EVEJS_COOP_DISTRIBUTION_CYCLE || "") === "1",
       crossingPhase: (haulerID) => {

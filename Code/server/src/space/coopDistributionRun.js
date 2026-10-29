@@ -139,6 +139,10 @@ const ORDER_SPACING_MS = 45000;
 // How many loads one hull may carry before the run reports and stops. A cycle that never
 // ends is indistinguishable from one that is stuck.
 const MAX_TRIPS = 5;
+// One hull per budget: a hung market call must not freeze the whole phase.
+const HULL_TIMEOUT_MS = 25000;
+// How long a blocked run waits before one bounded retry (a slow market, not a bad trip).
+const BLOCKED_RETRY_MS = 30 * 60 * 1000;
 
 /**
  * Advance one run by at most one step. Never throws, never guesses: an authority that is
@@ -156,10 +160,25 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     // Nothing planned yet: planning is the authority's job and it must be real.
     if (typeof authorities.planTrip !== "function") return { status: "NO_PLANNER" };
     let trip = null;
-    try { trip = authorities.planTrip({ haulerID: id }); }
+    // Planning may read the market: awaiting it keeps a slow answer from becoming NO_TRIP.
+    try { trip = await authorities.planTrip({ haulerID: id }); }
     catch (error) { trip = { status: "PLAN_THREW", reason: String((error && error.message) || error).slice(0, 80) }; }
     if (!trip || trip.status !== "OK" || !trip.trip) {
       const why = String((trip && (trip.status || trip.reason)) || "NO_TRIP");
+      // No freight HERE is not the end of the work: the corporation may keep its stock in the
+      // next system over. Reposition there (the return leg already knows how) and plan again.
+      let home = 0;
+      try {
+        home = typeof authorities.homeSystemFor === "function"
+          ? Number(authorities.homeSystemFor({haulerID: id})) || 0 : 0;
+      } catch (_error) { home = 0; }
+      if (home && home !== num(state && state.hullSystemID) && authorities.recycle === true) {
+        const moving = write({ version: 1, haulerID: id, phase: PHASE.RETURN, updatedAt: now,
+          trips: num(state && state.trips), isk: num(state && state.isk), returnToSystemID: home,
+          lastReason: "REPOSITIONING_FOR_FREIGHT:" + why }, env);
+        note(observe, "living-distribution-run", moving, { reason: moving.lastReason });
+        return { status: "REPOSITIONING", reason: moving.lastReason, state: moving };
+      }
       // A second cycle that finds nothing worth shipping is the honest end of the run:
       // leaving it in PLAN would re-ask the market every beat for ever.
       if (num(state && state.trips) > 0 || authorities.recycle === true) {
@@ -217,9 +236,21 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     hullSystemID: typeof authorities.hullSystemOf === "function"
       ? Number(authorities.hullSystemOf(id)) || 0 : 0,
   };
+  // A run blocked by an environment refusal (call limit, settlement timeout) is not a bad
+  // trip: after a long cooldown it may try once more, bounded by retries so it cannot spin.
+  if (String(state.phase) === PHASE.BLOCKED && num(state.retries) < 2 &&
+    num(state.blockedAt) > 0 && now - num(state.blockedAt) > BLOCKED_RETRY_MS &&
+    typeof authorities.cargoUnits === "function" && Number(authorities.cargoUnits(id)) > 0) {
+    const again = write({ ...state, phase: PHASE.SELL, updatedAt: now, sellCalls: 0,
+      pendingSince: 0, retries: num(state.retries) + 1,
+      lastReason: "RETRY_AFTER_COOLDOWN" }, env);
+    note(observe, "living-distribution-run", again, { reason: again.lastReason });
+    return { status: "RETRYING", state: again };
+  }
   const step = decide(state, facts);
   const finish = (phase, reason, extra = {}) => {
-    const next = write({ ...state, ...extra, phase, lastReason: reason, updatedAt: now }, env);
+    const stamp = phase === PHASE.BLOCKED ? { blockedAt: now } : {};
+    const next = write({ ...state, ...stamp, ...extra, phase, lastReason: reason, updatedAt: now }, env);
     note(observe, "living-distribution-run", next, { reason });
     return { status: phase, reason, state: next };
   };
@@ -275,6 +306,11 @@ async function tick(haulerID, authorities = {}, env = process.env) {
   if (step.action === "TO_DEST") return finish(PHASE.TO_DEST, "CROSSED");
 
   if (step.action === "SELL") {
+    // The empty hold is proof enough and needs no market at all, so it is asked FIRST.
+    const held = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : null;
+    if (Number.isFinite(held) && held === 0 && num(state.quantity) > 0) {
+      return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, iskUnknown: true });
+    }
     if (typeof authorities.sell !== "function") return { status: "NO_SELL" };
     // The settled answer is only readable for about five seconds after it lands (the drain
     // polls every 3 s for exactly this reason), so a run that asks once a minute can never
@@ -296,7 +332,9 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     // A hold that is empty is the strongest proof there is: the goods really left the ship.
     const cargoNow = typeof authorities.cargoUnits === "function" ? authorities.cargoUnits(id) : null;
     if (Number.isFinite(cargoNow) && cargoNow === 0 && num(state.quantity) > 0) {
-      return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, sellCalls: calls });
+      // The empty hold proves the goods left; it does NOT prove the amount paid, so the ISK is
+      // recorded as unknown rather than as a misleading zero.
+      return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, sellCalls: calls, iskUnknown: true });
     }
     for (let attempt = 0; attempt < MAX_POLLS_PER_BEAT && !settled && calls < MAX_SELL_CALLS;
       attempt += 1) {
@@ -411,13 +449,27 @@ async function tick(haulerID, authorities = {}, env = process.env) {
 async function tickAll(authorities = {}, env = process.env) {
   const hulls = typeof authorities.hulls === "function" ? authorities.hulls() : [];
   const results = [];
+  // One hull must never stall the others: a market call that never answers would otherwise
+  // keep the whole phase marked in flight for ever (measured 2026-10-30: no run event for
+  // minutes while three hulls waited behind one hung promise).
+  const budget = Math.max(1000, Number(authorities.hullTimeoutMs) || HULL_TIMEOUT_MS);
   for (const haulerID of Array.isArray(hulls) ? hulls : []) {
-    try { results.push({ haulerID, ...(await tick(haulerID, authorities, env)) }); }
-    catch (error) { results.push({ haulerID, status: "THREW",
-      reason: String((error && error.message) || error).slice(0, 90) }); }
+    try {
+      const answer = await Promise.race([
+        tick(haulerID, authorities, env),
+        new Promise((resolve) => {
+          const timer = setTimeout(() => resolve({ status: "HULL_TIMEOUT" }), budget);
+          if (timer && typeof timer.unref === "function") timer.unref();
+        }),
+      ]);
+      results.push({ haulerID, ...(answer || { status: "NO_ANSWER" }) });
+    } catch (error) {
+      results.push({ haulerID, status: "THREW",
+        reason: String((error && error.message) || error).slice(0, 90) });
+    }
   }
   return results;
 }
-module.exports = { PHASE, MAX_TRIPS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
+module.exports = { PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
   SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
   read, write, list, decide, worthIt, note, tick, tickAll };
