@@ -270,6 +270,52 @@ function createThirdPartySkins({
     return { status: "UNAPPLIED", skin: current, shipID: ship };
   }
 
+  // Escrow is a real move between two counters on the same row: the copies leave "unactivated"
+  // and come back only through releaseEscrow (cancel) or disappear through consumeEscrow (sold).
+  function escrow(characterID, skinHex, quantity = 1) {
+    if (!enabled()) return { status: "DISABLED" };
+    const id = int(characterID);
+    const hex = normalizeHex(skinHex);
+    const count = int(quantity);
+    if (id <= 0) return { status: "NO_CHARACTER" };
+    if (!hex) return { status: "SKIN_REQUIRED" };
+    if (count <= 0) return { status: "COUNT_REQUIRED" };
+    const state = stateOf(id);
+    const row = state.licences[hex];
+    if (!row) return { status: "LICENCE_NOT_FOUND" };
+    if (row.unactivated < count) return { status: "NOT_ENOUGH_COPIES", available: row.unactivated };
+    row.unactivated -= count;
+    row.escrowed += count;
+    try {
+      save(id, state);
+    } catch (_error) {
+      return { status: "WRITE_FAILED" };
+    }
+    return { status: "ESCROWED", escrowed: row.escrowed, unactivated: row.unactivated };
+  }
+
+  function releaseEscrow(characterID, skinHex, quantity = 1) {
+    if (!enabled()) return { status: "DISABLED" };
+    const id = int(characterID);
+    const hex = normalizeHex(skinHex);
+    const count = int(quantity);
+    if (id <= 0) return { status: "NO_CHARACTER" };
+    if (!hex) return { status: "SKIN_REQUIRED" };
+    if (count <= 0) return { status: "COUNT_REQUIRED" };
+    const state = stateOf(id);
+    const row = state.licences[hex];
+    if (!row) return { status: "LICENCE_NOT_FOUND" };
+    if (row.escrowed < count) return { status: "NOT_ENOUGH_ESCROW", escrowed: row.escrowed };
+    row.escrowed -= count;
+    row.unactivated += count;
+    try {
+      save(id, state);
+    } catch (_error) {
+      return { status: "WRITE_FAILED" };
+    }
+    return { status: "RELEASED", escrowed: row.escrowed, unactivated: row.unactivated };
+  }
+
   return Object.freeze({
     enabled,
     list,
@@ -277,6 +323,8 @@ function createThirdPartySkins({
     grant,
     revoke,
     activate,
+    escrow,
+    releaseEscrow,
     appliedFor,
     apply,
     unapply,
