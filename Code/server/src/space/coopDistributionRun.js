@@ -89,6 +89,7 @@ function appendFreight(state, settlement, env = process.env) {
       fromSystemID: pos(state.fromSystemID), toSystemID: pos(state.toSystemID),
       toStationID: pos(state.toStationID),
       lines: Array.isArray(state.lifted) ? state.lifted.length : 0,
+      handledAt: pos(state.toStationID),
       units: num(settlement && settlement.quantity),
       isk: num(settlement && settlement.isk),
       status: String((settlement && settlement.status) || "SOLD"),
@@ -435,7 +436,8 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       const ok = Boolean(crossing && (crossing.status === "PLANNED" ||
         crossing.status === "ALREADY_PENDING"));
       if (!ok) return finish(PHASE.BLOCKED, "CROSSING_UNPLANNED", {skippedStops});
-      return finish(PHASE.CROSS, "LOADED_PARTIAL", {skippedStops, quantity: num(state.quantity)});
+      return finish(PHASE.CROSS, "LOADED_PARTIAL", {skippedStops, quantity: num(state.quantity),
+        lifted: state.liftedAll || state.lifted || []});
     }
     if (status !== "LIFTED") return finish(PHASE.BLOCKED, status);
     const lifted = Array.isArray(answer.lifted) ? answer.lifted : [];
@@ -445,7 +447,8 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     if (nextIndex < stops.length) {
       // Another station holds part of this load: go there before leaving the system.
       const moving = write({ ...state, phase: PHASE.TO_ORIGIN, stopIndex: nextIndex, stopWaits: 0,
-        loadedStops, orderAt: 0, lastReason: "LOADED_STOP:" + stop.stationID, updatedAt: now },
+        loadedStops, liftedAll: [...(state.liftedAll || []), ...lifted], orderAt: 0,
+        lastReason: "LOADED_STOP:" + stop.stationID, updatedAt: now },
         env);
       note(observe, "living-distribution-run", moving, { reason: moving.lastReason });
       return { status: "NEXT_STOP", state: moving };
@@ -462,8 +465,12 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       return finish(PHASE.BLOCKED, "CROSSING_" + String((crossing && (crossing.status || crossing.reason)) || "UNPLANNED"),
         { lifted, quantity });
     }
-    return finish(PHASE.CROSS, "LOADED", { lifted, quantity,
-      loadedAt: now, cargoUnits: quantity });
+    // Every stop's cargo, accumulated: measured 2026-10-30 the ledger reported "lines: 1" for
+    // trips that really loaded at four stations, because only the LAST lift was kept.
+    const liftedAll = [...(state.liftedAll || []), ...lifted];
+    return finish(PHASE.CROSS, "LOADED", { lifted: liftedAll, liftedAll,
+      quantity: liftedAll.reduce((sum, row) => sum + num(row.quantity), 0),
+      loadedAt: now });
   }
 
   if (step.action === "TO_DEST") return finish(PHASE.TO_DEST, "CROSSED");
