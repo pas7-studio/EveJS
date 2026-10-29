@@ -27,6 +27,9 @@ const {
 const {
   createThirdPartySkinGatewayService,
 } = require("./thirdPartySkinGatewayService");
+const {
+  createThirdPartySkinDraftGatewayService,
+} = require("./thirdPartySkinDraftGatewayService");
 const { createInsurgencyGatewayService } = require("./insurgencyGatewayService");
 const {
   createMercenaryDenGatewayService,
@@ -77,6 +80,7 @@ function createGatewayServiceRegistry(context) {
     createAbsentStateGatewayService(context),
     createStargateLockGatewayService(context),
     createThirdPartySkinGatewayService(context),
+    createThirdPartySkinDraftGatewayService(context),
     createInsurgencyGatewayService(context),
     createNewEdenStoreGatewayService(context),
     createPlexVaultGatewayService(context),
