@@ -180,6 +180,26 @@ function warFrontChat(kind,details={},systemIDs=[]){
 // the earned ISK its own pilots really hold, escrowed in its native corporation
 // wallet, reserved BEFORE the campaign exists, and paid out of that HELD escrow.
 
+// FW-094 (measured 2026-10-29): the both-sides rule funds a side and then refuses the
+// border because the OTHER side cannot pay, so that escrow belongs to a campaign that
+// was never created. `coopWarTreasury` already has exactly that escape hatch (it
+// accepts a REFUND with an `unfunded:` proof when no campaign exists), but this
+// authority only ever authorised TERMINAL campaigns, so it vetoed the hatch and the
+// money stayed HELD forever. Measured on the work stack: `war:500011-500020:...:r7`
+// reserved 5 000 ISK from 1000138 and released it as
+// WAR_TREASURY_REFUND_NOT_AUTHORIZED, on top of two older orphan HELD rows of the
+// same corporation - a faction's real income drained by openings that never existed.
+function warRefundAuthorization({war,campaign,proofID}={}){
+ const proof=String(proofID||"");
+ if(!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(proof))return false;
+ const terminal=(war&&war.state==="ENDED")||
+  ["CANCELLED","EXPIRED","OCCUPIED"].includes(String(campaign&&campaign.state||""));
+ if(terminal)return true;
+ // No campaign record at all: nothing can ever spend this escrow. The proof string
+ // must still be the explicit aborted-opening one, so a normal refund cannot use it.
+ return !campaign&&/^unfunded:/.test(proof);
+}
+
 function warTreasuryStore(){
  if(warTreasuryInstance)return warTreasuryInstance;
  const gameStore=require("../gameStore"),
@@ -188,14 +208,7 @@ function warTreasuryStore(){
  warTreasuryInstance=require("./coopWarTreasuryNative").createNativeWarTreasury({
   gameStore,corporationState,factionState:factions,
   // FW-053: a refund may only return escrow that no campaign can ever spend again.
-  // Without this authority the runtime refused every refund by default, so an
-  // expired campaign's HELD escrow stayed locked forever with no way out.
-  authorizeRefund({war,campaign,proofID}){
-   const terminal=(war&&war.state==="ENDED")||
-    ["CANCELLED","EXPIRED","OCCUPIED"].includes(String(campaign&&campaign.state||""));
-   if(!terminal)return false;
-   return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(String(proofID||""));
-  },
+  authorizeRefund:warRefundAuthorization,
   authorizePayout({factionID,pilotID,campaign}){
    // The payer must be a real member of the faction that owns this escrow, and
    // the campaign must be a real campaign of that war. The event proof itself
@@ -1136,4 +1149,4 @@ function releaseSpawnedIdentity({pilotID,entityID=0,reason=""}={}){
  return {...released,reason:String(reason||"IDENTITY_REASSIGNED")};
 }
 
-module.exports = {projectWarPresence, pickFundingCorporation, bindWarRuntime, observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningScenes, destroyedNativeShips, wreckCustodyNotes, worldBootAtMs, courierPilotIDs, nativeWarFleetRegistry, warSkipReasons, warSkip, warFrontChatSent, siblingSuffix, warFrontChat, warTreasuryStore, warPilotFaction, warPresencePilots, warFactionCorporation, presenceSummary, advanceNativeAmmoBankRecovery, ensureWarRecoverySocket, diagnoseNativeRaids, npcRealPoints, syncNativeDeliveries, hasPhysicalWreckClaim, nextHeadlessRetryMs, isHeadlessNativeReady, ensureNativeGateTransfer, observeNativeAmmoConsumption, wreckRecoveryNotes, lockedTargets, npcModuleSummary, distanceBetween, nearestBeltMeters, mineableSummary, mineableBeltSummary, miningShipDetail, observeEconomyOre, nativeMarketAllowlist, nativeWarpPoint, raidLeashNotes, raidLeashWrite, raidLeashScope, raidLeashRestore, advanceNativePveBossWreck, advanceNativePveObjectiveDoctrine, advanceNativePveWaveReinforcements, advanceNativePveSiteDefense, advanceNpcRecognition, confirmedWreck, arrivalSales, saleNotes, noteSaleSkip, createWarRecoveryAdmin, witnessedNativeBossWreck, releaseSpawnedIdentity};
+module.exports = {projectWarPresence, pickFundingCorporation, warRefundAuthorization, bindWarRuntime, observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningScenes, destroyedNativeShips, wreckCustodyNotes, worldBootAtMs, courierPilotIDs, nativeWarFleetRegistry, warSkipReasons, warSkip, warFrontChatSent, siblingSuffix, warFrontChat, warTreasuryStore, warPilotFaction, warPresencePilots, warFactionCorporation, presenceSummary, advanceNativeAmmoBankRecovery, ensureWarRecoverySocket, diagnoseNativeRaids, npcRealPoints, syncNativeDeliveries, hasPhysicalWreckClaim, nextHeadlessRetryMs, isHeadlessNativeReady, ensureNativeGateTransfer, observeNativeAmmoConsumption, wreckRecoveryNotes, lockedTargets, npcModuleSummary, distanceBetween, nearestBeltMeters, mineableSummary, mineableBeltSummary, miningShipDetail, observeEconomyOre, nativeMarketAllowlist, nativeWarpPoint, raidLeashNotes, raidLeashWrite, raidLeashScope, raidLeashRestore, advanceNativePveBossWreck, advanceNativePveObjectiveDoctrine, advanceNativePveWaveReinforcements, advanceNativePveSiteDefense, advanceNpcRecognition, confirmedWreck, arrivalSales, saleNotes, noteSaleSkip, createWarRecoveryAdmin, witnessedNativeBossWreck, releaseSpawnedIdentity};
