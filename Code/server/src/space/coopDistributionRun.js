@@ -37,6 +37,10 @@ const SALE_SETTLE_TIMEOUT_MS = 15 * 60 * 1000;
 // (EVEJS_COOP_NPC_MARKET_COOLDOWN_MS, 5 s here), so polling faster than that only collects
 // COOLDOWN refusals. Measured 2026-10-30: 2.5 s polls produced a settlement of NOT_SOLD COOLDOWN.
 const SALE_POLL_MS = 6000;
+// The settled sale is readable for only ~5 s: read it sooner than a poll interval, or the
+// amount is lost and a paid trip is recorded as an unknown price (measured 2026-10-30: 4 of 9).
+const SALE_SETTLEMENT_READ_MS = 1200;
+const SALE_SETTLEMENT_READS = 4;
 const MAX_POLLS_PER_BEAT = 4;
 // Refusals that mean "not yet" rather than "no": the run waits, bounded, instead of stopping.
 const SALE_RETRYABLE = new Set(["NOT_AT_NATIVE_STATION", "SALE_TIMEOUT", "MARKET_UNAVAILABLE",
@@ -523,12 +527,17 @@ async function tick(haulerID, authorities = {}, env = process.env) {
         break;
       }
       if (status === "SALE_THREW") { lastReason = String((answer && answer.reason) || status); break; }
-      // PENDING: the job is running. Give it a moment and read the settlement directly.
-      await wait(SALE_POLL_MS);
-      const proof = typeof authorities.saleSettlement === "function"
-        ? authorities.saleSettlement(id, state.toStationID) : null;
-      if (proof && proof.status) settled = proof;
-      else lastReason = "SALE_PENDING";
+      // PENDING: the job is running. The settled answer is dropped about five seconds after it
+      // lands, so waiting a whole cooldown-sized beat before looking (6 s) MISSED it - that is
+      // exactly why four of nine trips recorded no price. Read the settlement itself, often,
+      // and only ask the market again once those reads are exhausted.
+      for (let read = 0; read < SALE_SETTLEMENT_READS && !settled; read += 1) {
+        await wait(SALE_SETTLEMENT_READ_MS);
+        const proof = typeof authorities.saleSettlement === "function"
+          ? authorities.saleSettlement(id, state.toStationID) : null;
+        if (proof && proof.status) settled = proof;
+      }
+      if (!settled) lastReason = "SALE_PENDING";
     }
     if (settled && settled.status === "SOLD") {
       const paid = isk + num(settled.isk);
@@ -641,6 +650,6 @@ async function tickAll(authorities = {}, env = process.env) {
   }
   return results;
 }
-module.exports = { MAX_STOP_WAITS, freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
+module.exports = { SALE_SETTLEMENT_READ_MS, SALE_SETTLEMENT_READS, MAX_STOP_WAITS, freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
   SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
   read, write, list, decide, worthIt, note, tick, tickAll };
