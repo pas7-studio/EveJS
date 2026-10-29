@@ -80,6 +80,7 @@ services:
       # Third-party SKIN licences (space/coopThirdPartySkins).
       EVEJS_COOP_THIRD_PARTY_SKINS: "1"
       EVEJS_COOP_CHARACTER_TITLES: "1"
+      EVEJS_COOP_ACHIEVEMENTS: "1"
     volumes:
       - evejs-data:/var/lib/evejs
       # Character/corporation portraits are rendered by the client at creation
