@@ -1890,10 +1890,14 @@ function mergeDerivedMissionPopulationHints(baseHints, derivedHints) {
       ...normalizeArray(baseHints && baseHints.objectiveMarkers),
       ...normalizeArray(derivedHints && derivedHints.objectiveMarkers),
     ],
-    miningRocks: [
-      ...normalizeArray(baseHints && baseHints.miningRocks),
-      ...normalizeArray(derivedHints && derivedHints.miningRocks),
-    ],
+    miningRocks: normalizeArray(baseHints && baseHints.miningRocks).length > 0
+      // Real rocks in the static data always win; the derived ones are a fallback for templates that
+      // declare only their ore, never an addition on top of authored content.
+      ? normalizeArray(baseHints.miningRocks)
+      : [
+        ...normalizeArray(baseHints && baseHints.miningRocks),
+        ...normalizeArray(derivedHints && derivedHints.miningRocks),
+      ],
     objectiveQuantity: Math.max(
       toInt(baseHints && baseHints.objectiveQuantity, 0),
       toInt(derivedHints && derivedHints.objectiveQuantity, 0),

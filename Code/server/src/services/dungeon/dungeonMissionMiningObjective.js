@@ -19,9 +19,11 @@
 
 // Mirrors the shipped mining missions: one asteroid per declared ore type, carrying the whole
 // objective quantity (client-dungeon:2449 = 1 rock of 20000, 2450/2451 = 3600, 2454 = 1800).
-// 2500 per ore keeps the objective inside one mining-barge ore hold for a two-ore ORE site.
+// This site's own objective is cover mining ("go uncover as an ORE miner"), not a hauling job, so the
+// quantity stays small: one rock per ore, 500 m3 each (1000 m3 for a two-ore ORE site) - a few Venture
+// cycles, not a barge run.
 const DERIVED_ROCK_COUNT_PER_ORE = 1;
-const DERIVED_ROCK_QUANTITY = 2500;
+const DERIVED_ROCK_QUANTITY = 500;
 
 function toInt(value, fallback = 0) {
   const numeric = Number(value);
