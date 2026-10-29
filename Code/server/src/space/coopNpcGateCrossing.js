@@ -409,6 +409,18 @@ function tick({ sceneForSystem, getGate, getController, warpToGate, followGate, 
     entry.lastReason = verdict.reason;
     entry.updatedAt = now;
     if (verdict.ok) {
+      // The hull is provably there: make the identity follow it now, instead of leaving a link
+      // that points at the old system for the next reader to prune (measured 2026-10-30: the
+      // link was pruned and the next crossing failed SOURCE_IDENTITY_MISMATCH until it was
+      // rebuilt from the durable record).
+      if (identity && typeof identity.relocate === "function" && entry.pilotID) {
+        let moved = null;
+        try {
+          moved = identity.relocate(entry.pilotID, entry.fromSystemID, entry.entityID,
+            entry.toSystemID);
+        } catch (_error) { moved = null; }
+        entry.identityRelocated = String((moved && moved.status) || "UNKNOWN");
+      }
       entry.phase = "ARRIVED";
       entry.arrivedAt = now;
     } else if (entry.attempts >= MAX_ATTEMPTS) {
