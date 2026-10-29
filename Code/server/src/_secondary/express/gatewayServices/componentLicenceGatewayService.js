@@ -41,6 +41,15 @@ const COMPONENT_LICENCE_PROTO_ROOT = protobuf.Root.fromJSON({
     },
     eve_public: {
       nested: {
+        inventory: {
+          nested: {
+            genericitem: {
+              nested: {
+                Identifier: { fields: { sequential: { type: "uint64", id: 1 } } },
+              },
+            },
+          },
+        },
         character: {
           nested: {
             Identifier: { fields: { sequential: { type: "uint32", id: 1 } } },
@@ -73,6 +82,32 @@ const COMPONENT_LICENCE_PROTO_ROOT = protobuf.Root.fromJSON({
                             },
                             license: {
                               nested: {
+                                item: {
+                                  nested: {
+                                    Identifier: {
+                                      fields: {
+                                        item: {
+                                          type: "eve_public.inventory.genericitem.Identifier",
+                                          id: 1,
+                                        },
+                                      },
+                                    },
+                                    api: {
+                                      nested: {
+                                        ConsumeRequest: {
+                                          fields: {
+                                            item: {
+                                              type: "eve_public.cosmetic.ship.skin.thirdparty.component.license.item.Identifier",
+                                              id: 1,
+                                            },
+                                            quantity: { type: "int32", id: 2 },
+                                          },
+                                        },
+                                        ConsumeResponse: { fields: {} },
+                                      },
+                                    },
+                                  },
+                                },
                                 finite: {
                                   nested: {
                                     Identifier: {
@@ -261,6 +296,7 @@ const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.cosmetic.ship.skin.thirdparty.component.license.infinite.api.GetRequest",
   "eve_public.cosmetic.ship.skin.thirdparty.component.license.infinite.api.admin.GrantRequest",
   "eve_public.cosmetic.ship.skin.thirdparty.component.license.infinite.api.admin.RevokeRequest",
+  "eve_public.cosmetic.ship.skin.thirdparty.component.license.item.api.ConsumeRequest",
 ]);
 
 function timestampOf(ms) {
@@ -317,6 +353,9 @@ function createComponentLicenceGatewayService(context = {}) {
     ),
     infiniteRevokeRequest: COMPONENT_LICENCE_PROTO_ROOT.lookupType(
       `${INFINITE}.admin.RevokeRequest`,
+    ),
+    consumeRequest: COMPONENT_LICENCE_PROTO_ROOT.lookupType(
+      `${ROOT_PACKAGE}.license.item.api.ConsumeRequest`,
     ),
   };
 
@@ -434,6 +473,30 @@ function createComponentLicenceGatewayService(context = {}) {
         return ok(`${INFINITE}.admin.GrantResponse`, types.infiniteGrantResponse, {
           license: infiniteIdentifier(activeCharacterID, result.licence.component),
         });
+      }
+
+      if (requestTypeName === `${ROOT_PACKAGE}.license.item.api.ConsumeRequest`) {
+        const decoded = decode(types.consumeRequest, requestEnvelope);
+        const result = licences.consumeItem(activeCharacterID, {
+          itemID: Number(decoded && decoded.item && decoded.item.item && decoded.item.item.sequential) || 0,
+          quantity: Number(decoded && decoded.quantity) || 0,
+        });
+        if (result.status === "CONSUMED") {
+          return ok(`${ROOT_PACKAGE}.license.item.api.ConsumeResponse`);
+        }
+        const responseTypeName = `${ROOT_PACKAGE}.license.item.api.ConsumeResponse`;
+        const refusals = {
+          ITEM_REQUIRED: [3, "an item is required"],
+          QUANTITY_REQUIRED: [3, "quantity must be greater than zero"],
+          ITEM_NOT_FOUND: [5, "no such item"],
+          ITEM_NOT_OWNED: [7, "that item belongs to somebody else"],
+          NOT_A_LICENCE_ITEM: [9, "that item is not a component licence"],
+          NOT_ENOUGH_ITEMS: [9, "there are not enough of that item"],
+          ITEM_LOOKUP_FAILED: [13, "the item could not be read"],
+          CONSUME_FAILED: [13, `the item could not be consumed: ${result.reason || ""}`.trim()],
+        };
+        const refusal = refusals[result.status] || [13, `consume failed: ${result.status}`];
+        return error(refusal[0], refusal[1], responseTypeName);
       }
 
       const infinite = requestTypeName === `${INFINITE}.admin.RevokeRequest`;

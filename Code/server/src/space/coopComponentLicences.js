@@ -63,8 +63,23 @@ function normalizeState(raw) {
   return { version: VERSION, finite, infinite };
 }
 
+// A component licence item is an inventory item whose type somebody mapped to a component:
+// { "<typeID>": { "component": 11, "infinite": false, "capacity": 1 } }. The SDE alone does not
+// make anything a licence, so without a mapping an item is refused instead of guessed.
+function licenceItemTypes(env) {
+  const raw = String(env && env.EVEJS_COOP_COMPONENT_LICENCE_ITEMS || "").trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
 function createComponentLicences({
   characterState = null,
+  itemStore = null,
   clock = () => Date.now(),
   env = process.env,
 } = {}) {
@@ -73,6 +88,8 @@ function createComponentLicences({
     "../services/character/characterState",
   ));
   const enabled = () => env.EVEJS_COOP_THIRD_PARTY_SKINS === "1";
+
+  const items = () => itemStore || require(path.join(__dirname, "../services/inventory/itemStore"));
 
   function stateOf(characterID) {
     try {
@@ -205,6 +222,55 @@ function createComponentLicences({
       : written;
   }
 
+  // Consuming a licence item is the only way an item turns into capacity: the item is looked up
+  // in the real inventory, it must belong to this character and there must be enough of it, and
+  // only then is the licence written.
+  function consumeItem(characterID, { itemID, quantity = 1 } = {}) {
+    if (!enabled()) return { status: "DISABLED" };
+    const id = int(characterID);
+    if (id <= 0) return { status: "NO_CHARACTER" };
+    const item = int(itemID);
+    if (item <= 0) return { status: "ITEM_REQUIRED" };
+    const wanted = int(quantity);
+    if (wanted <= 0) return { status: "QUANTITY_REQUIRED" };
+    const mapping = licenceItemTypes(env);
+    let row = null;
+    try {
+      row = items().findItemById(item);
+    } catch (_error) {
+      return { status: "ITEM_LOOKUP_FAILED" };
+    }
+    if (!row) return { status: "ITEM_NOT_FOUND" };
+    if (int(row.ownerID) !== id) return { status: "ITEM_NOT_OWNED" };
+    const entry = mapping[String(int(row.typeID))];
+    if (!entry || int(entry.component) <= 0) return { status: "NOT_A_LICENCE_ITEM" };
+    // A singleton (an unstackable item such as a ship) is one item, and the store reports its
+    // quantity as -1 or nothing; reading that as a real count would refuse every consume.
+    const rawQuantity = int(row.quantity != null ? row.quantity : row.stacksize);
+    const available = row.singleton === 1 || rawQuantity < 1 ? 1 : rawQuantity;
+    if (available < wanted) return { status: "NOT_ENOUGH_ITEMS", available };
+    let consumed = null;
+    try {
+      consumed = items().consumeInventoryItemQuantity(item, wanted);
+    } catch (_error) {
+      return { status: "CONSUME_FAILED" };
+    }
+    if (!consumed || consumed.success !== true) {
+      return { status: "CONSUME_FAILED", reason: (consumed && consumed.errorMsg) || "" };
+    }
+    if (entry.infinite === true) {
+      const granted = grantInfinite(id, { component: int(entry.component) });
+      return granted.status === "GRANTED"
+        ? { status: "CONSUMED", infinite: true, component: int(entry.component) }
+        : granted;
+    }
+    const perItem = Math.max(1, int(entry.capacity) || 1);
+    const granted = grantFinite(id, { component: int(entry.component), capacity: perItem * wanted });
+    return granted.status === "GRANTED"
+      ? { status: "CONSUMED", component: int(entry.component), capacity: granted.licence.capacity }
+      : granted;
+  }
+
   return Object.freeze({
     enabled,
     list,
@@ -214,6 +280,7 @@ function createComponentLicences({
     grantInfinite,
     revoke,
     takeFinite,
+    consumeItem,
   });
 }
 
