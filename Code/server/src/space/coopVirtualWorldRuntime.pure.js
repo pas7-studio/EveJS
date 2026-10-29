@@ -192,7 +192,7 @@ function warTreasuryStore(){
   // expired campaign's HELD escrow stayed locked forever with no way out.
   authorizeRefund({war,campaign,proofID}){
    const terminal=(war&&war.state==="ENDED")||
-    ["CANCELLED","EXPIRED"].includes(String(campaign&&campaign.state||""));
+    ["CANCELLED","EXPIRED","OCCUPIED"].includes(String(campaign&&campaign.state||""));
    if(!terminal)return false;
    return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(String(proofID||""));
   },

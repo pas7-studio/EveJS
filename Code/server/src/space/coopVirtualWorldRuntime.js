@@ -405,7 +405,8 @@ function reconcileTerminalEscrow(){
   const campaign=(state.campaigns||{})[row.campaignID];
   const war=(state.wars||{})[row.warID];
   if(war&&war.state==="ENDED")return true;
-  return ["CANCELLED","EXPIRED"].includes(String(campaign&&campaign.state||""));
+  // FW-066: a won campaign has no further kill to pay for, so its escrow is terminal.
+  return ["CANCELLED","EXPIRED","OCCUPIED"].includes(String(campaign&&campaign.state||""));
  };
  let snapshot=null;
  try{snapshot=treasury.snapshot()}catch(_error){return []}

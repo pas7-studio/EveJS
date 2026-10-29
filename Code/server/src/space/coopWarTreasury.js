@@ -202,7 +202,11 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
      // campaign that could ever pay it - real ISK locked forever, because only
      // CANCELLED and ENDED were accepted here and the live runtime never provides
      // an authorizeRefund at all.
-     if(!(war.state==="ENDED"||campaign?.state==="CANCELLED"||campaign?.state==="EXPIRED"))
+     // FW-066 (validation): a WON campaign is finished too. Once CAPTURE_TERRITORY moves
+     // the campaign to OCCUPIED no further kill of THIS campaign can happen, so its
+     // bounty escrow can never be spent - measured after the capture of 30003837, where
+     // two HELD rows (25 000 ISK each) sat behind a campaign that was already over.
+     if(!(war.state==="ENDED"||["CANCELLED","EXPIRED","OCCUPIED"].includes(String(campaign?.state||""))))
       return {status:"BLOCKED",reason:"WAR_TREASURY_STILL_IN_USE"};
      let valid=false;
      try{valid=authorizeRefund({...r,proofID:command.proofID,war,campaign},tx)===true}catch{}
