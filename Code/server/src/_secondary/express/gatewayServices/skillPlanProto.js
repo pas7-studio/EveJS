@@ -56,6 +56,79 @@ function buildSkillPlanProtoRoot() {
                       level: { type: "uint32", id: 2 },
                     },
                   },
+                  // The client calls the SAME operations through two packages:
+                  // eve_public.character.skill.plan.* (answered by
+                  // skillPlanGatewayService) and eve_public.skill.plan.* (the newer
+                  // names its own UI uses). Field numbers and types are identical in
+                  // the client's eve_public/skill/plan/plan.proto, so one storage
+                  // serves both and the service refuses to start if they ever diverge.
+                  GetAllRequest: { fields: {} },
+                  GetAllResponse: {
+                    fields: {
+                      skill_plans: {
+                        rule: "repeated",
+                        type: "eve_public.skill.plan.Identifier",
+                        id: 1,
+                      },
+                    },
+                  },
+                  GetRequest: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Identifier", id: 1 },
+                    },
+                  },
+                  GetResponse: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Attributes", id: 1 },
+                    },
+                  },
+                  CreateRequest: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Attributes", id: 1 },
+                    },
+                  },
+                  CreateResponse: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Identifier", id: 1 },
+                    },
+                  },
+                  SetSkillRequirementsRequest: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Identifier", id: 1 },
+                      requirements: {
+                        rule: "repeated",
+                        type: "eve_public.skill.plan.SkillRequirement",
+                        id: 2,
+                      },
+                    },
+                  },
+                  SetSkillRequirementsResponse: { fields: {} },
+                  SetNameRequest: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Identifier", id: 1 },
+                      name: { type: "string", id: 2 },
+                    },
+                  },
+                  SetNameResponse: { fields: {} },
+                  SetDescriptionRequest: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Identifier", id: 1 },
+                      description: { type: "string", id: 2 },
+                    },
+                  },
+                  SetDescriptionResponse: { fields: {} },
+                  DeleteRequest: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Identifier", id: 1 },
+                    },
+                  },
+                  DeleteResponse: { fields: {} },
+                  SetActiveRequest: {
+                    fields: {
+                      skill_plan: { type: "eve_public.skill.plan.Identifier", id: 1 },
+                    },
+                  },
+                  SetActiveResponse: { fields: {} },
                   milestone: {
                     nested: {
                       Identifier: {
@@ -303,6 +376,59 @@ function buildSkillPlanProtoRoot() {
   });
 }
 
+// The client asks for the same plan operations through two packages. The newer
+// eve_public.skill.plan.* names (its own UI) had no handler at all, so creating,
+// renaming, retargeting, activating or deleting a plan from that UI did nothing.
+// Both packages carry identical messages (client eve_public/skill/plan/plan.proto),
+// so they share one storage and one implementation; only the response type name
+// differs, and the two are compared at startup so a client change cannot silently
+// mis-encode a plan.
+const SKILL_PLAN_ALIASES = Object.freeze(Object.fromEntries([
+  "GetAllRequest",
+  "GetRequest",
+  "CreateRequest",
+  "DeleteRequest",
+  "SetNameRequest",
+  "SetDescriptionRequest",
+  "SetSkillRequirementsRequest",
+  "SetActiveRequest",
+].map((name) => [
+  `eve_public.skill.plan.${name}`,
+  `eve_public.character.skill.plan.${name}`,
+])));
+
+// Both packages must describe the same wire format, or reusing one payload for the
+// other would silently corrupt a plan. Compare field name/type/number of the request
+// and its response across the two packages.
+function assertAliasShapes(protoRoot) {
+  const signature = (type) => type.fieldsArray
+    .map((field) => {
+      const kind = field.resolvedType
+        ? field.resolvedType.fullName.split(".").pop()
+        : field.type;
+      return `${field.name}:${kind}:${field.id}:${field.repeated ? "repeated" : "single"}`;
+    })
+    .sort()
+    .join("|");
+
+  for (const [aliasType, canonicalType] of Object.entries(SKILL_PLAN_ALIASES)) {
+    const aliasRequest = protoRoot.lookupType(aliasType);
+    const canonicalRequest = protoRoot.lookupType(canonicalType);
+    if (signature(aliasRequest) !== signature(canonicalRequest)) {
+      throw Error(`SKILL_PLAN_ALIAS_SHAPE_MISMATCH ${aliasType}`);
+    }
+    const aliasResponse = protoRoot.lookupType(aliasType.replace(/Request$/, "Response"));
+    const canonicalResponse = protoRoot.lookupType(
+      canonicalType.replace(/Request$/, "Response"),
+    );
+    if (signature(aliasResponse) !== signature(canonicalResponse)) {
+      throw Error(`SKILL_PLAN_ALIAS_SHAPE_MISMATCH ${aliasType.replace(/Request$/, "Response")}`);
+    }
+  }
+}
+
 module.exports = {
+  SKILL_PLAN_ALIASES,
+  assertAliasShapes,
   buildSkillPlanProtoRoot,
 };

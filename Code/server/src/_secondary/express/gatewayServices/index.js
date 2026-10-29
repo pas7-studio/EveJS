@@ -6,6 +6,9 @@ const { createFreelanceGatewayService } = require("./freelanceGatewayService");
 const {
   createFwAdvantageGatewayService,
 } = require("./fwAdvantageGatewayService");
+const {
+  createGoalContributionGatewayService,
+} = require("./goalContributionGatewayService");
 const { createInsurgencyGatewayService } = require("./insurgencyGatewayService");
 const {
   createMercenaryDenGatewayService,
@@ -49,6 +52,7 @@ function createGatewayServiceRegistry(context) {
     createEvermarksGatewayService(context),
     createFreelanceGatewayService(context),
     createFwAdvantageGatewayService(context),
+    createGoalContributionGatewayService(context),
     createInsurgencyGatewayService(context),
     createNewEdenStoreGatewayService(context),
     createPlexVaultGatewayService(context),
