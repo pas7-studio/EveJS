@@ -509,12 +509,16 @@ async function tick(haulerID, authorities = {}, env = process.env) {
         answer = { status: "SALE_THREW", reason: String((error && error.message) || error).slice(0, 80) };
       }
       const status = String((answer && answer.status) || "SALE_UNKNOWN");
-      calls += 1;
+      // The budget counts SETTLED attempts, not polls: measured 2026-10-30, four PENDING polls
+      // per beat burned the whole budget while the market was simply slow, and two hulls were
+      // blocked SALE_STOPPED:CALL_LIMIT with their cargo still aboard.
       if (status === "SOLD") {
+        calls += 1;
         settled = { status: "SOLD", isk: num(answer && answer.isk) };
         break;
       }
       if (status === "NOT_SOLD") {
+        calls += 1;
         settled = { status: "NOT_SOLD", reason: String((answer && answer.reason) || "") };
         break;
       }
