@@ -8,6 +8,7 @@ const {
   listAgents,
   listMissionTemplateIDsForAgent,
 } = require(path.join(__dirname, "./agentAuthority"));
+const dungeonAuthority = require(path.join(__dirname, "../dungeon/dungeonAuthority"));
 const {
   isDisabledMissionIdentifier,
   isDisabledMissionSourceURL,
@@ -730,14 +731,51 @@ function supportedDungeonIDsForAgent(agentRecord) {
 
 function filterUnsupportedLevelOneAgentMissions(agentRecord, missionIDs) {
   const supportedDungeonIDs = supportedDungeonIDsForAgent(agentRecord);
-  if (!supportedDungeonIDs) {
-    return missionIDs;
+  const filtered = supportedDungeonIDs
+    ? missionIDs.filter((missionID) => {
+      const record = getMissionByID(missionID);
+      const dungeonID = toInt(record && record.killMission && record.killMission.dungeonID, 0);
+      return supportedDungeonIDs.has(dungeonID);
+    })
+    : missionIDs;
+  // A mission whose dungeon carries nothing the site materializer can build (no rooms, no mining rocks,
+  // no encounters, no declared ore) can never be completed: the pocket stays empty and the client never
+  // shows the Complete button. Never hand one out, whatever the agent kind is.
+  return filtered.filter((missionID) => isMissionContentMaterializable(getMissionByID(missionID)));
+}
+
+// Mirrors what services/dungeon/dungeonUniverseSiteService can actually materialize for a mission site:
+// authored rooms, mining rocks with an objective quantity, encounters that can spawn, or declared ore
+// (which the mission-context derivation turns into rocks). Transport missions have no dungeon at all.
+function isMissionContentMaterializable(missionRecord) {
+  const dungeonID = toInt(missionRecord && missionRecord.killMission && missionRecord.killMission.dungeonID, 0);
+  if (dungeonID <= 0) {
+    return true;
   }
-  return missionIDs.filter((missionID) => {
-    const record = getMissionByID(missionID);
-    const dungeonID = toInt(record && record.killMission && record.killMission.dungeonID, 0);
-    return supportedDungeonIDs.has(dungeonID);
-  });
+  const template = dungeonAuthority.getClientDungeonTemplate(dungeonID) ||
+    dungeonAuthority.getTemplateByID(`client-dungeon:${dungeonID}`);
+  if (!template) {
+    return false;
+  }
+  if (Array.isArray(template.rooms) && template.rooms.length > 0) {
+    return true;
+  }
+  const populationHints = template.populationHints && typeof template.populationHints === "object"
+    ? template.populationHints
+    : {};
+  if (Array.isArray(populationHints.miningRocks) && populationHints.miningRocks.length > 0) {
+    return true;
+  }
+  const encounters = Array.isArray(populationHints.encounters) && populationHints.encounters.length > 0
+    ? populationHints.encounters
+    : (populationHints.encounter && typeof populationHints.encounter === "object" ? [populationHints.encounter] : []);
+  if (encounters.length > 0) {
+    return true;
+  }
+  const oreTypeIDs = template.resourceComposition && Array.isArray(template.resourceComposition.oreTypeIDs)
+    ? template.resourceComposition.oreTypeIDs.filter((value) => toInt(value, 0) > 0)
+    : [];
+  return oreTypeIDs.length > 0;
 }
 
 function uniqueMissionIDs(missionIDs) {
@@ -912,6 +950,7 @@ module.exports = {
   isAgentSpecificMissionIDForAgent,
   isExactConfiguredGoldenMissionRecord,
   isGeneratedScrapedMissionRecord,
+  isMissionContentMaterializable,
   isMissionOfferAllowedForAgent,
   isOrdinarySecurityAgent,
   isPermanentlyDisabledMissionID,
