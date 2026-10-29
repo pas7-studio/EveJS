@@ -552,6 +552,15 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = 
       currentEdge = { warID: war.warID, campaignID: campaign.campaignID,
         sourceSystemID: campaign.sourceSystemID, targetSystemID: campaign.targetSystemID,
         attackerFactionID: war.attackerFactionID, defenderFactionID: war.defenderFactionID };
+      // FW-082: one border that cannot pass its own proofs must not abort the batch.
+      // Measured 16:1xZ: the planner tried `war:500001-500020` across 30045338/30045343,
+      // its declaration proof failed (500020 had no hull on its side), and the thrown
+      // refusal discarded EVERY other border in the same tick - including the fully
+      // mustered 30003829/30003836 front. FW-037 already isolates a starved border this
+      // way; the state machine now gets the same treatment. The state is rewound to the
+      // last committed snapshot so a half-applied border leaves no debris.
+      const beforeEdge = current;
+      try {
       // FW-027: two borders of the same pair can name the SAME target system
       // (e.g. a hub that touches both sides). The core refuses a second live
       // campaign on one target, and one bad edge must not discard the borders
@@ -640,14 +649,36 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = 
       if (!warIDs.includes(war.warID)) warIDs.push(war.warID);
       campaignIDs.push(campaign.campaignID);
       if (!realReservation) fundings.push(opening.funding);
+      } catch (error) {
+        current = beforeEdge;
+        skipped.push({
+          edge: { sourceSystemID: campaign.sourceSystemID, targetSystemID: campaign.targetSystemID,
+            attackerFactionID: war.attackerFactionID, defenderFactionID: war.defenderFactionID },
+          campaignID: campaign.campaignID, warID: war.warID,
+          reason: "BORDER_REFUSED:" + String((error && error.reason) ||
+            (error && error.message) || "UNKNOWN"),
+        });
+      }
     }
     // OPENED must mean "something was really opened". Measured: a batch where
     // every border was skipped for funding still answered OPENED with zero
     // campaigns, so the runtime published a success event with empty lists and the
     // real refusal disappeared for an hour. Nothing opened = a refusal, with the
     // per-border reasons attached.
-    if (!campaignIDs.length)
-      return refuse("NO_FUNDED_FRONT", { state: current, applied, fundings, skipped });
+    if (!campaignIDs.length) {
+      // FW-082: with a SINGLE border, the refusal it hit IS the answer - reporting
+      // NO_FUNDED_FRONT would hide the real cause (a failed proof, not a failed
+      // reservation). With several borders the per-border reasons travel in `skipped`
+      // and the batch reason stays the summary.
+      const firstSkip = String((skipped[0] && skipped[0].reason) || "");
+      // Only a FAILED PROOF is surfaced this way; a supply refusal keeps the summary
+      // reason, which the caller already renders with its per-border detail.
+      const only = Array.isArray(plan.openings) && plan.openings.length === 1 &&
+        firstSkip.startsWith("BORDER_REFUSED:")
+        ? firstSkip.replace(/^BORDER_REFUSED:/, "") : "";
+      return refuse(only || "NO_FUNDED_FRONT",
+        { state: current, applied, fundings, skipped });
+    }
     return { status: "OPENED", state: current, warIDs, campaignIDs, applied, fundings, skipped };
   } catch (error) {
     return refuse(error.reason || String((error && error.message) || error),
