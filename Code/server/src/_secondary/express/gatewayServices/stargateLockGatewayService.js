@@ -1,18 +1,26 @@
 "use strict";
-// eve_public.stargate.lock.api.admin.{Apply,Delete,GetAll}: real stargate restrictions.
+// eve_public.stargate.lock.api.*: real stargate restrictions.
 //
 // space/coopStargateLocks owns the persisted locks and space/runtime.startStargateJump
 // refuses a jump through a locked gate, so this is enforcement, not decoration. The
 // admin calls below are what the client's own admin UI sends.
 //
-// The public eve_public.stargate.lock.api.GetRequest is deliberately NOT handled: its
-// response is a single `gate` and the request carries no fields at all, so answering it
-// would mean guessing which gate the player is standing at (the gateway never sees the
-// scene). The jump path knows the gate exactly, and refuses there; see docs/CLIENT_GAPS.md.
+// The public reads are answered from the same table, and the client tells us which system it
+// is asking about: `stargate/client/gateLockMessenger.pyj` pairs the answer with its own
+// `session.solarsystemid2`, and the request itself carries no field at all.
+//   - GetRestrictedSystems -> every solar system with a live lock (the client uses it to mark
+//     restricted systems on the map);
+//   - Get -> the lock of the character's own system, but ONLY when that system has exactly one
+//     live lock: the response carries a single gate, so a system with several locked gates
+//     cannot be described and is refused with NOT_FOUND (which the client reads as "no lock")
+//     instead of inventing one of them. When the character's system is unknown to the gateway
+//     the same NOT_FOUND is the honest answer - the gateway never sees the scene.
 const path = require("path");
 const protobuf = require("protobufjs");
 
-const { encodePayload } = require("./gatewayServiceHelpers");
+const { encodePayload, getActiveCharacterID } = require("./gatewayServiceHelpers");
+
+const sessionRegistry = require(path.join(__dirname, "../../../services/chat/sessionRegistry"));
 
 const LOCK_PROTO_ROOT = protobuf.Root.fromJSON(
 {
@@ -147,6 +155,29 @@ const LOCK_PROTO_ROOT = protobuf.Root.fromJSON(
                           }
                         }
                       }
+                    },
+                    "GetRequest": {},
+                    "GetResponse": {
+                      "fields": {
+                        "gate": {
+                          "type": "eve_public.stargate.Identifier",
+                          "id": 1
+                        },
+                        "expiry": {
+                          "type": "google.protobuf.Timestamp",
+                          "id": 2
+                        }
+                      }
+                    },
+                    "GetRestrictedSystemsRequest": {},
+                    "GetRestrictedSystemsResponse": {
+                      "fields": {
+                        "solarsystems": {
+                          "rule": "repeated",
+                          "type": "eve_public.solarsystem.Identifier",
+                          "id": 1
+                        }
+                      }
                     }
                   }
                 }
@@ -161,11 +192,14 @@ const LOCK_PROTO_ROOT = protobuf.Root.fromJSON(
 );
 
 const ADMIN_PATH = "eve_public.stargate.lock.api.admin";
+const PUBLIC_PATH = "eve_public.stargate.lock.api";
 
 const HANDLED_REQUEST_TYPES = Object.freeze([
   "eve_public.stargate.lock.api.admin.ApplyRequest",
   "eve_public.stargate.lock.api.admin.DeleteRequest",
   "eve_public.stargate.lock.api.admin.GetAllRequest",
+  "eve_public.stargate.lock.api.GetRequest",
+  "eve_public.stargate.lock.api.GetRestrictedSystemsRequest",
 ]);
 
 function positive(value) {
@@ -203,7 +237,33 @@ function createStargateLockGatewayService(context = {}) {
     deleteRequest: LOCK_PROTO_ROOT.lookupType(`${ADMIN_PATH}.DeleteRequest`),
     getAllRequest: LOCK_PROTO_ROOT.lookupType(`${ADMIN_PATH}.GetAllRequest`),
     getAllResponse: LOCK_PROTO_ROOT.lookupType(`${ADMIN_PATH}.GetAllResponse`),
+    getResponse: LOCK_PROTO_ROOT.lookupType(`${PUBLIC_PATH}.GetResponse`),
+    getRestrictedSystemsResponse: LOCK_PROTO_ROOT.lookupType(
+      `${PUBLIC_PATH}.GetRestrictedSystemsResponse`,
+    ),
   };
+
+  // The system the requesting character is actually in. The client's own Get handler pairs the
+  // answer with `session.solarsystemid2`, so the system has to come from the live session, not
+  // from the (empty) request message. No session, no system: the caller then answers NOT_FOUND.
+  function sessionSystemID(characterID) {
+    const id = positive(characterID);
+    if (!id) return 0;
+    let session = null;
+    try {
+      session = typeof sessionRegistry.findSessionByCharacterID === "function"
+        ? sessionRegistry.findSessionByCharacterID(id)
+        : null;
+    } catch (_error) {
+      session = null;
+    }
+    return positive(session && (session.solarsystemid2 || session.solarsystemid));
+  }
+
+  // Injectable so a test can state which system the character is in without a live session.
+  const readSystemID = typeof context.sessionSystemID === "function"
+    ? context.sessionSystemID
+    : sessionSystemID;
 
   function decode(type, requestEnvelope) {
     return type.decode(
@@ -277,6 +337,48 @@ function createStargateLockGatewayService(context = {}) {
       }
 
       // Only GetAll reaches here: anything else must fall through to the next service.
+      if (requestTypeName === "eve_public.stargate.lock.api.GetRestrictedSystemsRequest") {
+        return {
+          statusCode: 200,
+          statusMessage: "",
+          responseTypeName: `${PUBLIC_PATH}.GetRestrictedSystemsResponse`,
+          responsePayloadBuffer: encodePayload(types.getRestrictedSystemsResponse, {
+            solarsystems: locks.lockedSystemIDs().map((systemID) => ({ sequential: systemID })),
+          }),
+        };
+      }
+
+      if (requestTypeName === "eve_public.stargate.lock.api.GetRequest") {
+        const systemID = readSystemID(getActiveCharacterID(requestEnvelope));
+        const inSystem = systemID
+          ? locks.list().filter((lock) => lock.systemID === systemID)
+          : [];
+        // The response carries exactly one gate. One live lock in the character's system is
+        // unambiguous; several are not representable, and none (or an unknown system) has no
+        // lock to report. All three of the latter cases answer NOT_FOUND, which the client's
+        // own messenger reads as "no lock".
+        if (inSystem.length === 0) {
+          return error(404, systemID
+            ? "that solar system has no stargate lock"
+            : "the character's current solar system is unknown to the gateway",
+          `${PUBLIC_PATH}.GetResponse`);
+        }
+        if (inSystem.length > 1) {
+          return error(404, "that solar system has several locked gates and this response carries one",
+            `${PUBLIC_PATH}.GetResponse`);
+        }
+        const lock = inSystem[0];
+        return {
+          statusCode: 200,
+          statusMessage: "",
+          responseTypeName: `${PUBLIC_PATH}.GetResponse`,
+          responsePayloadBuffer: encodePayload(types.getResponse, {
+            gate: { sequential: lock.gateID },
+            expiry: timestampOf(lock.expiresAtMs),
+          }),
+        };
+      }
+
       if (requestTypeName !== "eve_public.stargate.lock.api.admin.GetAllRequest") {
         return null;
       }
