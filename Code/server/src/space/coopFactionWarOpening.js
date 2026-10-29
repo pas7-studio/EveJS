@@ -44,11 +44,30 @@ function stallMs() {
 // In memory on purpose - it is a pacing guard, not world state.
 const recentlyExpired = new Map();
 
+// FW-064 (validation): a border that keeps opening and expiring without ever mustering
+// is not a war, it is a loop. Measured overnight on the work stack: `30045343` reopened
+// and expired four times (`:r2`, `:r3`, `:r4`), each cycle reserving real escrow and
+// refunding it 45 minutes later, because the defender simply never fielded a hull there.
+// The cooldown therefore grows with the number of campaigns that target already expired:
+// one failure = base window, two = double, four caps at 8x. A target that finally
+// produces an assault proof resets it, because `campaigns` counts only EXPIRED records.
+function targetCooldownMs({ state, targetSystemID, baseMs = stallMs() } = {}) {
+  const target = num(targetSystemID);
+  const base = Math.max(1, num(baseMs) || 1);
+  if (!pos(target) || !state || !state.campaigns) return base;
+  const expired = Object.values(state.campaigns)
+    .filter((campaign) => campaign && num(campaign.targetSystemID) === target &&
+      String(campaign.state) === "EXPIRED").length;
+  if (!expired) return base;
+  return base * Math.min(8, Math.pow(2, Math.min(3, expired - 1)));
+}
+
 function coolingDown(targetSystemID, nowMs, ttlMs = stallMs(), state = null) {
   const target = num(targetSystemID);
+  const window = targetCooldownMs({ state, targetSystemID: target, baseMs: ttlMs });
   const at = num(recentlyExpired.get(target));
   if (at) {
-    if (num(nowMs) - at < num(ttlMs)) return true;
+    if (num(nowMs) - at < window) return true;
     recentlyExpired.delete(target);
   }
   // The map above dies with the process, so the durable record is consulted too: a
@@ -58,7 +77,7 @@ function coolingDown(targetSystemID, nowMs, ttlMs = stallMs(), state = null) {
     if (!campaign || num(campaign.targetSystemID) !== target) continue;
     if (campaign.state !== "EXPIRED") continue;
     const expiredAt = num(campaign.expiredAt);
-    if (expiredAt && num(nowMs) - expiredAt < num(ttlMs)) return true;
+    if (expiredAt && num(nowMs) - expiredAt < window) return true;
   }
   return false;
 }
@@ -728,7 +747,7 @@ function createWarOpening({
 module.exports = {
   nextCampaignID,
   gateBetween, collectPresence, territoriesForFronts, paperFunding, presenceSummary,
-  expireUnfundedCampaigns,
+  expireUnfundedCampaigns, targetCooldownMs,
   fundingRequired, supplyFor,
   activeWarFor, liveCampaignFor, buildProofs, planWars, applyOpenings, applyOpening,
   expireStalledCampaigns, stallMs, coolingDown,
