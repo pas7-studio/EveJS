@@ -188,6 +188,83 @@ function assembleFromRows(table, rows = {}) {
 }
 
 /**
+ * Apply ONE stored row to the nested table object, in place. Per-row counterpart
+ * to assembleFromRows: applying every row of a table through this function, in any
+ * order, yields exactly assembleFromRows(table, rows). That equivalence is what
+ * lets the atomic rows bridge refresh the ONE row it committed instead of
+ * reloading the whole table from SQLite and deep-reconciling it (measured
+ * 2026-10-30 on the live play server: loadTableObject + reconcileObject +
+ * rebuildFlushBaselineFromDisk were ~45 % of the process on every transaction).
+ *
+ * `value === undefined` means the row is gone from disk.
+ * `merge(existing, value)` preserves the cache row's object identity (the
+ * GameStore hands the same object to every reader); without it the row is
+ * replaced wholesale, which is what characterState needs in order to re-normalize
+ * a committed wallet.
+ * A bare wrapper-group key is ADDITIVE only: its stored row is the empty skeleton
+ * `{}` (or a legacy whole-group blob), and assembleFromRows merges it UNDER the
+ * per-entity rows, so it must never delete an entity.
+ */
+function applyRowToObject(table, object, rowKey, value, merge) {
+  if (!object || typeof object !== "object") {
+    return object;
+  }
+  const key = String(rowKey);
+  const sepIndex = key.indexOf(ROW_KEY_SEP);
+  if (sepIndex >= 0) {
+    const group = key.slice(0, sepIndex);
+    const entityKey = key.slice(sepIndex + 1);
+    const groupValue = object[group];
+    if (value === undefined) {
+      if (
+        groupValue &&
+        typeof groupValue === "object" &&
+        Object.prototype.hasOwnProperty.call(groupValue, entityKey)
+      ) {
+        delete groupValue[entityKey];
+      }
+      return object;
+    }
+    if (!groupValue || typeof groupValue !== "object" || Array.isArray(groupValue)) {
+      object[group] = {};
+    }
+    const target = object[group];
+    target[entityKey] =
+      typeof merge === "function" &&
+      Object.prototype.hasOwnProperty.call(target, entityKey)
+        ? merge(target[entityKey], value)
+        : value;
+    return object;
+  }
+  if (value === undefined) {
+    delete object[key];
+    return object;
+  }
+  const groups = rowGroupsFor(table);
+  if (groups && groups.includes(key)) {
+    const incoming =
+      value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const existing = object[key];
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      object[key] = { ...incoming };
+      return object;
+    }
+    for (const groupKey of Object.keys(incoming)) {
+      if (!Object.prototype.hasOwnProperty.call(existing, groupKey)) {
+        existing[groupKey] = incoming[groupKey];
+      }
+    }
+    return object;
+  }
+  object[key] =
+    typeof merge === "function" &&
+    Object.prototype.hasOwnProperty.call(object, key)
+      ? merge(object[key], value)
+      : value;
+  return object;
+}
+
+/**
  * Resolve the value of a SINGLE stored row directly from a nested table object,
  * without exploding the whole table. This is the per-row counterpart to
  * explodeToRows used by the gameStore dirty-row flush fast path, and it MUST
@@ -767,6 +844,7 @@ module.exports = {
   loadTableObject,
   explodeToRows,
   assembleFromRows,
+  applyRowToObject,
   rowValueForKey,
   rowGroupsFor,
   ROW_KEY_SEP,

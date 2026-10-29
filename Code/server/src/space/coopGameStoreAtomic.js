@@ -40,7 +40,11 @@ function createSqliteAdapter(getDb){
     throw Error(mining?"ALIFE07_SQLITE_DURABILITY_NOT_FULL":
       hauling?"ALIFE10_SQLITE_DURABILITY_NOT_FULL":
       "NATIVE_SQLITE_DURABILITY_NOT_FULL");
-  const scope=new Set(tables),changed=new Map();
+  // The exact serialized rows this transaction wrote, in order. The GameStore
+  // adapter needs them to refresh its in-memory cache row by row instead of
+  // reloading whole tables after commit (FW-098).
+  const scope=new Set(tables),changed=new Map(),writes=new Map();
+  const noteWrite=(t,k,json)=>{if(!writes.has(t))writes.set(t,[]);writes.get(t).push([k,json]);};
   const tbl=t=>{if(!scope.has(t))throw Error("UNDECLARED_NATIVE_TABLE");return '"'+t+'"';};
   let begun=false;inside=true;
   try{
@@ -50,9 +54,9 @@ function createSqliteAdapter(getDb){
     scan(t){const table=tbl(t);return db.prepare('SELECT key,json FROM '+table).all().map(r=>({key:r.key,value:JSON.parse(r.json)}));},
     put(t,k,value){const table=tbl(t);assertRowKey(k);const json=serialize(value,t,k);
      db.prepare('INSERT INTO '+table+'(key,json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET json=excluded.json').run(k,json);
-     if(!changed.has(t))changed.set(t,new Set());changed.get(t).add(k);},
+     if(!changed.has(t))changed.set(t,new Set());changed.get(t).add(k);noteWrite(t,k,json);},
     del(t,k){const table=tbl(t);assertRowKey(k);db.prepare('DELETE FROM '+table+' WHERE key=?').run(k);
-     if(!changed.has(t))changed.set(t,new Set());changed.get(t).add(k);}
+     if(!changed.has(t))changed.set(t,new Set());changed.get(t).add(k);noteWrite(t,k,null);}
    });
    const result=mutation(tx);
    if(result&&typeof result.then==="function")throw Error("ASYNC_NATIVE_ATOMIC_MUTATION_FORBIDDEN");
@@ -61,7 +65,8 @@ function createSqliteAdapter(getDb){
     uncertain.coopCommitOutcomeUnknown=true;uncertain.cause=cause;throw uncertain;
    }
    begun=false;
-   return {result,changed:Object.fromEntries([...changed].map(([t,keys])=>[t,[...keys]]))};
+   return {result,changed:Object.fromEntries([...changed].map(([t,keys])=>[t,[...keys]])),
+     writes:Object.fromEntries([...writes].map(([t,rows])=>[t,rows]))};
   }catch(e){if(begun){try{db.exec("ROLLBACK")}catch{}}throw e;}
   finally{inside=false;}
  }
@@ -80,7 +85,8 @@ function reconcileObject(target,source){
 }
 function createGameStoreAdapter({sqliteStore,ensureSqliteReady,ensureCached,flushTableSync,
  cache,dirty,flushTimers,inFlightFlushes,transientPaths,dirtyRowKeys,fullDirty,
- rebuildFlushBaselineFromDisk,invalidateNativeItems,invalidateNativeAccounts,fatal}={}){
+ rebuildFlushBaselineFromDisk,advanceFlushBaseline,invalidateNativeItems,
+ invalidateNativeAccounts,fatal}={}){
  if(!sqliteStore||typeof sqliteStore.coopAtomicNativeRows?.claimTransactor!=="function"||
     typeof sqliteStore.loadTableObject!=="function"||typeof ensureSqliteReady!=="function"||
     typeof ensureCached!=="function"||typeof flushTableSync!=="function"||
@@ -133,7 +139,7 @@ function createGameStoreAdapter({sqliteStore,ensureSqliteReady,ensureCached,flus
    if(accountsTouched&&(typeof invalidateNativeAccounts!=="function"||
      invalidateNativeAccounts("probe",tables)!==true))
      throw Error("NATIVE_ACCOUNT_CACHE_INVALIDATOR_UNAVAILABLE");
-   const result=sqliteWriter.transact(tables,cargoWitness?
+   const outcome=sqliteWriter.transact(tables,cargoWitness?
      tx=>{
       const guarded=isolation.guardMutation(tx,cargoWitness,cargoContract);
       const returned=mutation(guarded);
@@ -141,22 +147,65 @@ function createGameStoreAdapter({sqliteStore,ensureSqliteReady,ensureCached,flus
       return returned;
      }:mutation);
    committed=true;
+   // FW-098 (measured 2026-10-30 on the live play server with a CPU profile:
+   // transact 36.5 %, reconcileObject 14.7 %, loadTableObject 14.3 %): after every
+   // commit the cache used to be refreshed by re-reading the WHOLE table from
+   // SQLite (loadTableObject parses every row), deep-reconciling it, and then
+   // re-reading it a second time to rebuild the flush baseline. The writer now
+   // reports the exact rows it wrote, so only those rows are applied - to the
+   // cache through the store's own row-shape owner, and to the flush baseline
+   // through the same `advanceFlushBaseline` the asynchronous flush acknowledgement
+   // path already uses.
+   const writeSets=outcome&&outcome.writes&&typeof outcome.writes==="object"?outcome.writes:null;
+   const applyRowToObject=typeof sqliteStore.applyRowToObject==="function"?sqliteStore.applyRowToObject:null;
+   const advanceBaseline=typeof advanceFlushBaseline==="function"?advanceFlushBaseline:null;
    for(const t of tables){
-    const persisted=sqliteStore.loadTableObject(t),current=cache[t];
-    const snapshot=cargoWitness&&t==="npcCargo"?
-      isolation.rehydrate({persisted,live:current,paths:transientPaths[t],
-        witness:cargoWitness}):persisted;
-    if(!current||typeof current!=="object"||!snapshot||typeof snapshot!=="object")
-      throw Error("NATIVE_CACHE_SNAPSHOT_INVALID:"+t);
-    // characterState caches a normalized record by raw child object identity.
-    // Replacing changed child rows (while preserving the table reference) forces
-    // getCharacterRecord() to re-normalize actual committed wallet balances.
-    // Other tables retain their existing deep in-place reconciliation.
-    if(t==="characters"){
-      for(const k of Object.keys(current))if(!hasOwn(snapshot,k))delete current[k];
-      for(const [k,v] of Object.entries(snapshot))current[k]=v;
-    }else reconcileObject(current,snapshot);
-    rebuildFlushBaselineFromDisk(t);
+    const current=cache[t];
+    if(!current||typeof current!=="object")throw Error("NATIVE_CACHE_SNAPSHOT_INVALID:"+t);
+    // A table the transaction declared but never wrote has no entry at all; that
+    // is "no writes", not "unknown". Only a writer that cannot report its write
+    // set at all (writeSets === null) falls back to the historical reload.
+    const rows=writeSets?Array.isArray(writeSets[t])?writeSets[t]:[]:null;
+    // A cargo-bearing mixed transaction changes the durable shape of npcCargo
+    // (transient rows must be put back), so that table keeps the full path.
+    const witnessTable=Boolean(cargoWitness)&&t==="npcCargo";
+    // A bare row key may be a wrapper-group skeleton (sqliteStore.ROW_GROUPS), and
+    // merging one wrongly would erase every entity of that group, so the row path
+    // is only taken when the store can answer "is this a group table".
+    const groupAware=typeof sqliteStore.rowGroupsFor==="function";
+    const rowLevel=Boolean(rows&&rows.length&&applyRowToObject&&advanceBaseline&&
+      !witnessTable&&(groupAware||rows.every(([key])=>String(key).includes(SEP))));
+    if(rowLevel){
+      const upserts=[],deletes=[];
+      for(const [key,json] of rows){
+        if(json===null||json===undefined){
+          applyRowToObject(t,current,key,undefined);deletes.push(key);continue;
+        }
+        const value=JSON.parse(json);
+        // characterState caches a normalized record by raw child object identity.
+        // Replacing the changed row (while preserving the table reference) forces
+        // getCharacterRecord() to re-normalize actual committed wallet balances.
+        // Every other table keeps its existing object identity in the cache.
+        applyRowToObject(t,current,key,value,t==="characters"?undefined:reconcileObject);
+        upserts.push([key,JSON.stringify(value)]);
+      }
+      advanceBaseline(t,upserts,deletes);
+    }else if(rows&&rows.length===0&&!witnessTable){
+      // Declared but untouched by this transaction: the quiescence check above
+      // proved cache and disk already agree, so there is nothing to reload.
+    }else{
+      const persisted=sqliteStore.loadTableObject(t);
+      const snapshot=cargoWitness&&t==="npcCargo"?
+        isolation.rehydrate({persisted,live:current,paths:transientPaths[t],
+          witness:cargoWitness}):persisted;
+      if(!snapshot||typeof snapshot!=="object")
+        throw Error("NATIVE_CACHE_SNAPSHOT_INVALID:"+t);
+      if(t==="characters"){
+        for(const k of Object.keys(current))if(!hasOwn(snapshot,k))delete current[k];
+        for(const [k,v] of Object.entries(snapshot))current[k]=v;
+      }else reconcileObject(current,snapshot);
+      rebuildFlushBaselineFromDisk(t);
+    }
     delete dirtyRowKeys[t];fullDirty.delete(t);dirty.delete(t);
    }
    if(tables.includes("items")&&invalidateNativeItems("commit")!==true)
@@ -165,7 +214,7 @@ function createGameStoreAdapter({sqliteStore,ensureSqliteReady,ensureCached,flus
    // outcome. Poison and exit, never retry a possibly completed settlement.
    if(accountsTouched&&invalidateNativeAccounts("commit",tables)!==true)
      throw Error("NATIVE_ACCOUNT_CACHE_INVALIDATION_FAILED");
-   return result.result;
+   return outcome.result;
   }catch(e){
    if(committed||e?.coopCommitOutcomeUnknown===true){poisoned=true;fatal(e);
     throw Error("NATIVE_GAMESTORE_COMMITTED_BUT_CACHE_UNSAFE:"+String(e.message||e));}
