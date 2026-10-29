@@ -206,7 +206,15 @@ function createWarTreasury({gameStore,verifyCorporation,authorizeRefund,
      // the campaign to OCCUPIED no further kill of THIS campaign can happen, so its
      // bounty escrow can never be spent - measured after the capture of 30003837, where
      // two HELD rows (25 000 ISK each) sat behind a campaign that was already over.
-     if(!(war.state==="ENDED"||["CANCELLED","EXPIRED","OCCUPIED"].includes(String(campaign?.state||""))))
+     // FW-085: a reservation whose campaign was NEVER created (an opening aborted
+     // before START_CAMPAIGN) can never be spent by anybody. Measured: with the
+     // both-sides rule a funded side's 25 000 ISK stayed HELD while the border was
+     // refused, and the retry uses a new campaign id, so the orphan was invisible to the
+     // reuse path and the money was simply gone. The escape hatch is explicit: it needs
+     // an `unfunded:` proof, so no normal refund can use it.
+     const abortedOpening=!campaign&&/^unfunded:/.test(String(command.proofID||""));
+     if(!abortedOpening&&!(war.state==="ENDED"||
+      ["CANCELLED","EXPIRED","OCCUPIED"].includes(String(campaign?.state||""))))
       return {status:"BLOCKED",reason:"WAR_TREASURY_STILL_IN_USE"};
      let valid=false;
      try{valid=authorizeRefund({...r,proofID:command.proofID,war,campaign},tx)===true}catch{}

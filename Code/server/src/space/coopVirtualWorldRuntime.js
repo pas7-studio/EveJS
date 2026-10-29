@@ -548,6 +548,28 @@ function reconcileBountyCredits(){
  }
  return out;
 }
+// FW-085: give back escrow that was reserved for a border that was then refused, so a
+// funded side is never left holding HELD ISK for a campaign that does not exist.
+function warBountyRelease({campaignID,reservationID,corporationID}={}){
+ try{
+  if(!reservationID||!corporationID)return {status:"BLOCKED",reason:"INVALID_RELEASE"};
+  const treasury=warTreasuryStore();
+  const refunded=treasury.execute({type:"REFUND",
+   eventID:"fw:release:"+String(campaignID||"unknown")+":"+String(reservationID),
+   reservationID:String(reservationID),corporationID:Number(corporationID),
+   proofID:"unfunded:"+String(campaignID||"unknown")});
+  try{
+   require("./coopRuntimeProbe").observe("living-native-war-bounty-released",null,null,{
+    status:String(refunded&&refunded.status||"UNKNOWN"),
+    reason:String(refunded&&refunded.reason||""),campaignID:String(campaignID||""),
+    reservationID:String(reservationID),corporationID:Number(corporationID),
+    evidence:"ESCROW_RETURNED_FOR_A_BORDER_THAT_NEVER_OPENED"});
+  }catch(_error){/* probe is best effort */}
+  return refunded;
+ }catch(error){
+  return {status:"BLOCKED",reason:String(error&&error.message||error).slice(0,120)};
+ }
+}
 // One real reservation per campaign side, taken before START_CAMPAIGN.
 //
 // FW-046: this used to RETURN on the first side it could fund, so a war had a
@@ -930,6 +952,7 @@ function advanceNativeWarOpening(){
    readWarState,
    writeWarState:state=>store.write(state),
    reserveBounty:warBountyReserve,
+   releaseBounty:warBountyRelease,
    navyCapability:({attackerFactionID,defenderFactionID})=>{
     try{
      const capability=warNavyCapability();
@@ -5270,4 +5293,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={nativeGateTransferAdapter,identityRegistryAdapter,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,reconcileBountyCredits,diagnoseWarPayout,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={nativeGateTransferAdapter,identityRegistryAdapter,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,reconcileBountyCredits,warBountyRelease,diagnoseWarPayout,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};

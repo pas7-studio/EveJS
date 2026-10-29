@@ -525,7 +525,7 @@ function nextCampaignID(state, warID, targetSystemID) {
   return base + ":r" + (highest + 1);
 }
 
-function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = process.env } = {}) {
+function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, releaseBounty, env = process.env } = {}) {
   if (!plan || plan.status !== "READY") return refuse("PLAN_NOT_READY");
   const at = num(nowMs) > 0 ? num(nowMs) : Date.now();
   let current = state;
@@ -625,11 +625,31 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = 
           // The factions live on the war, not on the campaign record.
           const missing = [war.attackerFactionID, war.defenderFactionID]
             .filter((factionID) => !fundedSides.has(Number(factionID)));
+          // FW-085: the funded side already reserved real ISK for a campaign that will
+          // never exist. Give it back now, or it stays HELD with nothing to spend it on
+          // (the next attempt uses a different campaign id, so the orphan reuse path
+          // never sees it).
+          const released = [];
+          if (typeof releaseBounty === "function") {
+            for (const side of reserved.sides || []) {
+              let outcome = null;
+              try {
+                outcome = releaseBounty({ campaignID: campaign.campaignID,
+                  reservationID: String(side && side.reservationID || ""),
+                  corporationID: Number(side && side.corporationID) ||
+                    Number(reserved.corporationID) || 0 });
+              } catch (error) {
+                outcome = { status: "BLOCKED", reason: String(error && error.message || error) };
+              }
+              released.push(String((outcome && outcome.status) || "UNKNOWN"));
+            }
+          }
           skipped.push({
             edge: { sourceSystemID: campaign.sourceSystemID, targetSystemID: campaign.targetSystemID },
             campaignID: campaign.campaignID,
             warID: war.warID,
             reason: "SUPPLY_UNFUNDED_SIDE:" + missing.join("+"),
+            released,
           });
           continue;
         }
@@ -694,10 +714,10 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, env = 
 
 // Single-opening convenience used by the assault tests and by callers that only
 // care about the first front.
-function applyOpening({ state, plan, nowMs, reserveBounty, persistState } = {}) {
+function applyOpening({ state, plan, nowMs, reserveBounty, persistState, releaseBounty } = {}) {
   if (!plan || plan.status !== "READY" || !Array.isArray(plan.openings) || plan.openings.length !== 1)
     return refuse("PLAN_NOT_READY");
-  const result = applyOpenings({ state, plan, nowMs, reserveBounty, persistState });
+  const result = applyOpenings({ state, plan, nowMs, reserveBounty, persistState, releaseBounty });
   if (result.status !== "OPENED") return result;
   return Object.assign({}, result, {
     warID: result.warIDs[0],
@@ -710,6 +730,9 @@ function createWarOpening({
   readLinks, getNativeEntity, getFactionForCorporation,
   getStargatesForSystem, getGate, readWarState, writeWarState,
   reserveBounty = null,
+  // FW-085: the counterpart that gives a funded side its escrow back when the border
+  // is refused because the OTHER side cannot fund it.
+  releaseBounty = null,
   // FW-027: a real war fleet is presence too. A formation of real armed native
   // hulls that the fleet roster proves in a system holds that system exactly the
   // same way a linked pilot does - the ships really exist, are really there, and
@@ -799,7 +822,7 @@ function createWarOpening({
         return { status: "NO_OPENING", reason: plan.reason || "PLAN_REFUSED", plan,
           expiredCampaignIDs };
       const opened = applyOpenings({ state, plan, nowMs: num(now()),
-        reserveBounty, persistState: writeWarState });
+        reserveBounty, releaseBounty, persistState: writeWarState });
       if (opened.status !== "OPENED") return opened;
       writeWarState(opened.state);
       return {
