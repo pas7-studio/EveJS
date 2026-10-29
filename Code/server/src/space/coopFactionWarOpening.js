@@ -636,6 +636,7 @@ function applyOpenings({ state, plan, nowMs, reserveBounty, persistState, releas
               try {
                 outcome = releaseBounty({ campaignID: campaign.campaignID,
                   reservationID: String(side && side.reservationID || ""),
+                  factionID: Number(side && side.factionID) || 0,
                   corporationID: Number(side && side.corporationID) ||
                     Number(reserved.corporationID) || 0 });
               } catch (error) {

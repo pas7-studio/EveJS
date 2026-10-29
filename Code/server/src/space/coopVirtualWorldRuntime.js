@@ -550,12 +550,15 @@ function reconcileBountyCredits(){
 }
 // FW-085: give back escrow that was reserved for a border that was then refused, so a
 // funded side is never left holding HELD ISK for a campaign that does not exist.
-function warBountyRelease({campaignID,reservationID,corporationID}={}){
+function warBountyRelease({campaignID,reservationID,corporationID,factionID=0}={}){
  try{
   if(!reservationID||!corporationID)return {status:"BLOCKED",reason:"INVALID_RELEASE"};
   const treasury=warTreasuryStore();
+  // The event id must stay inside the treasury's 96-character key budget, so it names the
+  // campaign and the side, never the whole reservation id (measured: the long form was
+  // refused with INVALID_TREASURY_COMMAND).
   const refunded=treasury.execute({type:"REFUND",
-   eventID:"fw:release:"+String(campaignID||"unknown")+":"+String(reservationID),
+   eventID:"fw:release:"+String(campaignID||"unknown")+":"+String(Number(factionID)||0),
    reservationID:String(reservationID),corporationID:Number(corporationID),
    proofID:"unfunded:"+String(campaignID||"unknown")});
   try{
