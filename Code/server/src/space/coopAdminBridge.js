@@ -127,6 +127,80 @@ function executeRequest(request) {
   if (action === "release_identity") return releaseIdentity(request);
   if (action === "assign_identity") return assignIdentity(request);
   // Read-only war diagnostics: never reserves, orders or writes anything.
+  if (action === "scene_slim_diagnose") {
+    // Read-only: what the overview panel is actually fed, for the live scene of one character (or
+    // of one system when nobody is in space). Every row is built by the same destiny encoder the
+    // client unmarshals, so "hasGroup: false" here is exactly the ball that arrives without a slim
+    // item in michelle.
+    const characterID = Number(request.characterID) || 0;
+    const systemID = Number(request.systemID) || 0;
+    try {
+      const runtime = require("./runtime");
+      const destiny = require("./destiny");
+      const session = characterID > 0 ? liveSessionFor(characterID) : null;
+      let scene = null;
+      if (session && typeof runtime.getSceneForSession === "function") {
+        scene = runtime.getSceneForSession(session) || null;
+      }
+      if (!scene && systemID > 0 && runtime.scenes instanceof Map) {
+        scene = runtime.scenes.get(systemID) || null;
+      }
+      if (!scene) {
+        return { ok: false, error: "no scene for character " + characterID + " or system " + systemID };
+      }
+      const dynamic = scene.dynamicEntities instanceof Map
+        ? Array.from(scene.dynamicEntities.values())
+        : [];
+      const statics = scene.staticEntitiesByID instanceof Map
+        ? Array.from(scene.staticEntitiesByID.values())
+        : (Array.isArray(scene.staticEntities) ? scene.staticEntities : []);
+      const inspect = (entity) => {
+        const dict = destiny.buildSlimItemDict(entity);
+        const entries = dict && Array.isArray(dict.entries) ? dict.entries : [];
+        const map = Object.fromEntries(entries.map((row) => [row[0], row[1]]));
+        return {
+          kind: String(entity && entity.kind || ""),
+          itemID: Number(entity && entity.itemID) || 0,
+          typeID: Number(map.typeID) || 0,
+          groupID: map.groupID === undefined ? null : Number(map.groupID) || 0,
+          categoryID: map.categoryID === undefined ? null : Number(map.categoryID) || 0,
+          hasGroup: Object.prototype.hasOwnProperty.call(map, "groupID"),
+          name: String(map.name || "").slice(0, 40),
+          ownerID: Number(map.ownerID) || 0,
+          corpID: Number(map.corpID) || 0,
+          warFactionID: Number(map.warFactionID) || 0,
+          charID: Number(map.charID) || 0,
+        };
+      };
+      const sample = (rows) => {
+        const out = [];
+        for (const entity of rows) {
+          if (out.length >= 40) break;
+          out.push(inspect(entity));
+        }
+        return out;
+      };
+      const all = [...dynamic, ...statics];
+      const missing = all.filter((entity) => {
+        const dict = destiny.buildSlimItemDict(entity);
+        const entries = dict && Array.isArray(dict.entries) ? dict.entries : [];
+        return !entries.some((row) => row && row[0] === "groupID");
+      }).length;
+      return {
+        ok: true,
+        characterID,
+        sessionSystemID: Number(session && (session.solarsystemid2 || session.solarsystemid)) || 0,
+        systemID: Number(scene.systemID) || 0,
+        dynamicCount: dynamic.length,
+        staticCount: statics.length,
+        missingGroupID: missing,
+        ships: sample(dynamic.filter((entity) => String(entity && entity.kind) === "ship")),
+        cells: sample(statics),
+      };
+    } catch (error) {
+      return { ok: false, error: "scene slim diagnose failed: " + String(error && error.message || error) };
+    }
+  }
   if (action === "inspect_npc") {
     // Read-only: what a native hull really carries right now.
     const entityID = Number(request.entityID) || 0;
