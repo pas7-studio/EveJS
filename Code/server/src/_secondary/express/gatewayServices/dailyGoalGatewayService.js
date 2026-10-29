@@ -285,7 +285,7 @@ function timestampOf(ms) {
   return { seconds, nanos: Math.round((Number(ms) % 1000) * 1e6) };
 }
 
-function buildAttributesPayload(definition, dayStart, corporationID) {
+function buildAttributesPayload(definition, dayStart, corporationID, rewardSkillPoints) {
   const configuration = {};
   if (definition.kind === "kill_npc") configuration.kill_npc = {};
   else if (definition.kind === "mine_ore") configuration.mine_ore = {};
@@ -306,7 +306,7 @@ function buildAttributesPayload(definition, dayStart, corporationID) {
         // and uuid.UUID(bytes=...) raises on an empty one, which would drop the card.
         asset: { uuid: uuidStringToBuffer(definition.goalID) },
         period: 1, // PAYMENT_PERIOD_COMPLETION
-        unit: { sp: { amount: definition.rewardSkillPoints } },
+        unit: { sp: { amount: rewardSkillPoints } },
       },
     ],
     target: definition.target,
@@ -318,7 +318,16 @@ function buildAttributesPayload(definition, dayStart, corporationID) {
 
 function buildGoalPayload(entry, corporationID, nowMs) {
   const dayStart = Math.floor(nowMs / DAY_MS) * DAY_MS;
-  const attributes = buildAttributesPayload(entry.definition, dayStart, corporationID);
+  // The card must promise exactly what redeem pays: the module computes the reward
+  // from the real progress (bigger hulls, more points, more SP).
+  const rewardSkillPoints = Number(entry.rewardSkillPoints) ||
+    Number(entry.definition.rewardSkillPoints);
+  const attributes = buildAttributesPayload(
+    entry.definition,
+    dayStart,
+    corporationID,
+    rewardSkillPoints,
+  );
   return {
     id: { uuid: uuidStringToBuffer(entry.definition.goalID) },
     goal: attributes,
@@ -326,7 +335,7 @@ function buildGoalPayload(entry, corporationID, nowMs) {
     // A completed but unredeemed goal carries its earning so the client offers
     // "Redeem"; before that there is nothing earned yet, which is the truth.
     earnings: entry.completed && !entry.claimedAt
-      ? [{ unit: { sp: { amount: entry.definition.rewardSkillPoints } }, omega_required: false }]
+      ? [{ unit: { sp: { amount: rewardSkillPoints } }, omega_required: false }]
       : [],
     paid_completion: false,
   };

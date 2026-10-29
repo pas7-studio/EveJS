@@ -8,8 +8,9 @@
 //   mine_ore            -> the real character mining ledger
 //                          (services/mining/miningLedgerState, written by the native
 //                          mining cycle for a player ship)
-//   kill_npc            -> the real killmail ledger, victim must be an NPC and the
-//                          final blow must be the character (finalCharacterID)
+//   kill_npc            -> the real killmail ledger, weighted by the victim's hull
+//                          class; a target you damaged but somebody else finished pays
+//                          the share of damage you really did (never a full kill)
 //   space_jump          -> real accepted stargate jumps, counted by the one-line hook
 //                          in space/runtime.startStargateJump
 //   complete_daily_goal -> goals this character actually redeemed today
@@ -47,6 +48,52 @@ const MESSAGES = Object.freeze({
   noHelp: 36, // an empty message in the client's own data
 });
 
+// Combat weight by hull class. A battleship is a day's work, a frigate is not, so the
+// kill goal counts points instead of hulls and the reward follows the points. Group
+// ids are the SDE ship groups (25 frigate, 420/566 destroyer, 26 cruiser, 419
+// battlecruiser, 27 battleship, ...); an unknown hull falls back to its mass, so a new
+// NPC ship can never be worth zero and never be worth a battleship by accident.
+const HULL_GROUP_WEIGHTS = Object.freeze({
+  25: 1, // Frigate
+  324: 1, // Shuttle
+  830: 1, // Corvette
+  420: 2, // Destroyer
+  566: 2, // Destroyer (NPC legacy group)
+  26: 3, // Cruiser
+  358: 3, // Heavy Assault Cruiser
+  963: 3, // Strategic Cruiser
+  419: 4, // Battlecruiser
+  540: 4, // Command Ship
+  463: 4, // Mining Barge
+  543: 4, // Exhumer
+  28: 3, // Industrial
+  380: 3, // Deep Space Transport
+  27: 6, // Battleship
+  898: 6, // Black Ops
+  485: 10, // Dreadnought
+  547: 9, // Carrier
+  883: 8, // Capital Industrial
+  1538: 8, // Force Auxiliary
+  659: 11, // Supercarrier
+  30: 14, // Titan
+});
+const MASS_FALLBACK_BASE = 1.2e6;
+const MIN_HULL_WEIGHT = 1;
+const MAX_HULL_WEIGHT = 14;
+// A target you damaged but did not finish can never be worth a whole kill.
+const PARTIAL_CREDIT_CAP = 0.9;
+
+// SP per point / unit. Deliberately generous: the co-op server runs accelerated, and a
+// daily goal that pays a few hundred SP is not worth flying for.
+const REWARD_RULES = Object.freeze({
+  mine_ore: { perUnit: 4, minimum: 12000, maximum: 60000 },
+  // 3 000 SP per combat point: finishing the goal (10 points) is 30 000 SP, and a day
+  // of battleships (6 points each) pays well above it without becoming a farm.
+  kill_npc: { perPoint: 3000, minimum: 20000, maximum: 90000 },
+  space_jump: { perUnit: 1500, minimum: 12000, maximum: 40000 },
+  complete_daily_goal: { flat: 40000 },
+});
+
 // category: 1 = CATEGORY_DAILY, 2 = CATEGORY_DAILY_BONUS
 // career:   0 = CAREER_UNSPECIFIED, 1 = EXPLORATION, 2 = INDUSTRIALIST,
 //           3 = ENFORCER, 4 = SOLDIER_OF_FORTUNE (eve_public.career.Path)
@@ -60,7 +107,7 @@ const DEFINITIONS = Object.freeze([
     category: 1,
     career: 2,
     target: 5000,
-    rewardSkillPoints: 2000,
+    rewardSkillPoints: 20000,
   }),
   Object.freeze({
     goalID: "1e0d0002-0000-4000-8000-000000000002",
@@ -70,8 +117,10 @@ const DEFINITIONS = Object.freeze([
     helpTextID: MESSAGES.noHelp,
     category: 1,
     career: 3,
-    target: 5,
-    rewardSkillPoints: 3000,
+    // Points, not hulls: a frigate is 1, a battleship 6, and a target you only damaged
+    // pays your share of it (see killCreditPoints).
+    target: 10,
+    rewardSkillPoints: 25000,
   }),
   Object.freeze({
     goalID: "1e0d0003-0000-4000-8000-000000000003",
@@ -82,7 +131,7 @@ const DEFINITIONS = Object.freeze([
     category: 1,
     career: 1,
     target: 10,
-    rewardSkillPoints: 2000,
+    rewardSkillPoints: 15000,
   }),
   Object.freeze({
     goalID: "1e0d0004-0000-4000-8000-000000000004",
@@ -93,7 +142,7 @@ const DEFINITIONS = Object.freeze([
     category: 2,
     career: 0,
     target: 2,
-    rewardSkillPoints: 5000,
+    rewardSkillPoints: 40000,
   }),
 ]);
 
@@ -150,10 +199,82 @@ function normalizeState(raw, nowMs) {
   };
 }
 
+function hullWeight(typeID, resolveType = null) {
+  const type = int(typeID);
+  if (type <= 0) {
+    return MIN_HULL_WEIGHT + 1;
+  }
+  let record = null;
+  try {
+    record = resolveType
+      ? resolveType(type)
+      : require(path.join(__dirname, "../services/inventory/itemTypeRegistry"))
+        .resolveItemByTypeID(type);
+  } catch (_error) {
+    record = null;
+  }
+  const groupWeight = HULL_GROUP_WEIGHTS[int(record && record.groupID)];
+  if (Number.isFinite(groupWeight)) {
+    return groupWeight;
+  }
+  const mass = Number(record && record.mass) || 0;
+  if (mass > 0) {
+    // Unknown hull: cube-root of its mass relative to a frigate, so a new NPC ship is
+    // never worth zero and never worth a capital by accident.
+    return clamp(Math.round((mass / MASS_FALLBACK_BASE) ** (1 / 3)),
+      MIN_HULL_WEIGHT, MAX_HULL_WEIGHT);
+  }
+  return MIN_HULL_WEIGHT + 1;
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+// Points for one killed hull, weighted by its class and, for a target somebody else
+// finished, by the share of the damage this character really did.
+function killCreditPoints(record, characterID, resolveType = null) {
+  const victimTypeID = int(record && record.victimShipTypeID);
+  const weight = hullWeight(victimTypeID, resolveType);
+  const isFinalBlow = int(record && record.finalCharacterID) === characterID;
+  if (isFinalBlow) {
+    return weight;
+  }
+  const damageTaken = Math.max(0, Number(record && record.victimDamageTaken) || 0);
+  let myDamage = 0;
+  for (const attacker of Array.isArray(record && record.attackers) ? record.attackers : []) {
+    if (int(attacker && attacker.characterID) === characterID) {
+      myDamage += Math.max(0, Number(attacker.damageDone) || 0);
+    }
+  }
+  if (myDamage <= 0) {
+    return 0;
+  }
+  const share = clamp(myDamage / Math.max(damageTaken, myDamage), 0, PARTIAL_CREDIT_CAP);
+  return weight * share;
+}
+
+function rewardSkillPoints(definition, progress) {
+  const rule = REWARD_RULES[definition.kind];
+  if (!rule) {
+    return definition.rewardSkillPoints;
+  }
+  if (Number.isFinite(rule.flat)) {
+    return rule.flat;
+  }
+  const perUnit = Number.isFinite(rule.perPoint) ? rule.perPoint : rule.perUnit;
+  // Before the target is reached the card must already promise the completion value,
+  // and above the target the reward keeps following what was really earned.
+  const counted = Math.max(Number(progress) || 0, Number(definition.target) || 0);
+  const earned = Math.round(counted * perUnit);
+  return clamp(earned, rule.minimum, rule.maximum);
+}
+
 function createDailyGoals({
   gameStore,
   characterState,
   miningLogsFor = null,
+  hullWeightFor = null,
   clock = () => Date.now(),
   env = process.env,
 } = {}) {
@@ -229,19 +350,28 @@ function createDailyGoals({
     return total;
   }
 
-  function npcKillsToday(characterID, nowMs) {
+  // Combat score for today: a kill is worth its hull class, and a target you damaged
+  // but somebody else finished is worth your share of the damage actually done.
+  function npcKillScoreToday(characterID, nowMs) {
     const { start, end } = dayBounds(nowMs);
     const table = readRow(TABLE_KILLMAILS, "/") || {};
     const records = table.records || {};
-    let total = 0;
+    let points = 0;
+    let kills = 0;
+    let assists = 0;
     for (const record of Object.values(records)) {
-      if (!record || int(record.finalCharacterID) !== characterID) continue;
+      if (!record) continue;
       // An NPC victim has no character id; a player ship is never "kill NPCs".
       if (int(record.victimCharacterID) > 0) continue;
       const at = filetimeToMs(record.killTime);
-      if (at >= start && at < end) total += 1;
+      if (at < start || at >= end) continue;
+      const credit = killCreditPoints(record, characterID, hullWeightFor);
+      if (credit <= 0) continue;
+      points += credit;
+      if (int(record.finalCharacterID) === characterID) kills += 1;
+      else assists += 1;
     }
-    return total;
+    return { points, kills, assists };
   }
 
   function claimsToday(state, nowMs, excludeGoalID) {
@@ -256,7 +386,9 @@ function createDailyGoals({
 
   function measuredProgress(definition, characterID, state, nowMs) {
     if (definition.kind === "mine_ore") return minedUnitsToday(characterID, nowMs);
-    if (definition.kind === "kill_npc") return npcKillsToday(characterID, nowMs);
+    if (definition.kind === "kill_npc") {
+      return npcKillScoreToday(characterID, nowMs).points;
+    }
     if (definition.kind === "space_jump") return state.jumps;
     if (definition.kind === "complete_daily_goal") {
       return claimsToday(state, nowMs, definition.goalID);
@@ -278,12 +410,15 @@ function createDailyGoals({
     return {
       status: "OBSERVED",
       goals: DEFINITIONS.map((definition) => {
-        const progress = progressFor(definition, id, state, nowMs);
+        // The wire carries an integer, so round once and let the reward follow the
+        // same number: the card the client shows always equals what redeem pays.
+        const progress = Math.round(progressFor(definition, id, state, nowMs));
         const claimedAt = int(state.claims[definition.goalID]);
         return {
           definition,
           progress,
           target: definition.target,
+          rewardSkillPoints: rewardSkillPoints(definition, progress),
           completed: progress >= definition.target,
           claimedAt,
           claimable: progress >= definition.target && claimedAt === 0,
@@ -365,10 +500,11 @@ function createDailyGoals({
     if (!definition) return { status: "UNKNOWN_GOAL" };
     const state = stateOf(id, nowMs);
     if (int(state.claims[goalID]) > 0) return { status: "ALREADY_CLAIMED" };
-    const progress = progressFor(definition, id, state, nowMs);
+    const progress = Math.round(progressFor(definition, id, state, nowMs));
     if (progress < definition.target) {
       return { status: "NOT_COMPLETED", progress, target: definition.target };
     }
+    const skillPoints = rewardSkillPoints(definition, progress);
     // Claim first, pay second: a paid goal that was not recorded could be paid
     // twice, a recorded goal that was not paid is recoverable.
     state.claims[goalID] = nowMs;
@@ -378,7 +514,7 @@ function createDailyGoals({
       return { status: "WRITE_FAILED" };
     }
     try {
-      grantSkillPoints(id, definition.rewardSkillPoints);
+      grantSkillPoints(id, skillPoints);
     } catch (error) {
       delete state.claims[goalID];
       try {
@@ -388,7 +524,7 @@ function createDailyGoals({
       }
       return { status: "REWARD_FAILED", reason: error && error.message };
     }
-    return { status: "REDEEMED", skillPoints: definition.rewardSkillPoints };
+    return { status: "REDEEMED", skillPoints };
   }
 
   return Object.freeze({
@@ -412,7 +548,12 @@ function shared() {
 
 module.exports = {
   DEFINITIONS,
+  HULL_GROUP_WEIGHTS,
   MESSAGES,
+  REWARD_RULES,
+  hullWeight,
+  killCreditPoints,
+  rewardSkillPoints,
   dayBounds,
   dayKey,
   emptyState,
