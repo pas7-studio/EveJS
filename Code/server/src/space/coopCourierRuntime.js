@@ -848,12 +848,19 @@ function createCourierDispatch(deps = {}) {
         return;
       }
       const progressed = hopReason !== String(flight.hopReason || "");
+      // A verified jump really moved the hull: record the destination system on the flight, otherwise the
+      // recovery path still thinks it is in the origin system and docks the courier back home (live run
+      // 2026-10-30 21:5x: "lost scene entity, docked back ... in system 30000142" after a verified jump
+      // to Perimeter).
+      const verifiedSystemID = Math.max(0, num(hop.verified && hop.verified.toSystemID));
       const pending = Object.assign({}, flight, {
         hop: hop.state || flight.hop,
         hopReason,
         entityID: num(flight.entityID) || num(flight.shipItemID),
         stepStartedAtMs: progressed ? now() : num(flight.stepStartedAtMs),
-      });
+      }, verifiedSystemID > 0 && verifiedSystemID !== num(flight.systemID)
+        ? { systemID: verifiedSystemID, missingSinceMs: 0 }
+        : {});
       if (flight.reposition) repositions.set(num(flight.characterID), pending);
       else flights.set(contractID, pending);
       if (progressed) log(`[CoopCourier] ${hopLabel} gate hop ${hopReason}`);
