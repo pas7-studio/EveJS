@@ -15,9 +15,11 @@
 // system is visited or when RECONCILE_INTERVAL_MS has passed, never on every tick.
 const RECONCILE_INTERVAL_MS = 10 * 60 * 1000;
 const MAX_SYSTEMS = 12;
+const MAX_DESTINATION_RETRIES = 3;
 
 let lastReconcileAtMs = 0;
 const reconciledSystemIDs = new Set();
+const pendingDestinationSystemIDs = new Map();
 let lastSummary = null;
 
 function enabled(env = process.env) {
@@ -126,6 +128,7 @@ function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = pr
     ...sample.nullsec,
     ...sample.wormhole,
     ...entranceJSystems,
+    ...pendingDestinationSystemIDs.keys(),
   ])].sort((left, right) => left - right);
   if (systemIDs.length === 0) return { status: "NO_SYSTEMS" };
   const pending = systemIDs.filter((id) => !reconciledSystemIDs.has(id));
@@ -190,6 +193,9 @@ function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = pr
         destinationSites = null;
       }
     }
+    // A destination that still has no instance is retried on the next pass (bounded), so a hole never
+    // leads into an empty system just because one seeding call missed.
+    settlePendingDestinations(destinations);
     return {
       status: "RECONCILED",
       systemIDs,
@@ -237,9 +243,41 @@ function materializeAwakeScenes(systemIDs) {
   return { spawned, anomalies };
 }
 
+function countInstancesForSystem(systemID) {
+  try {
+    const state = require("../services/dungeon/dungeonRuntimeState");
+    const snapshot = state.getStateSnapshot();
+    let count = 0;
+    for (const row of Object.values(snapshot.instancesByID || {})) {
+      if (Number(row && row.solarSystemID) === Number(systemID)) count += 1;
+    }
+    return count;
+  } catch (_error) {
+    return -1;
+  }
+}
+
+function settlePendingDestinations(systemIDs) {
+  for (const value of systemIDs || []) {
+    const systemID = Math.max(0, Number(value) || 0);
+    if (systemID <= 0) continue;
+    if (countInstancesForSystem(systemID) > 0) {
+      pendingDestinationSystemIDs.delete(systemID);
+      continue;
+    }
+    const attempts = (pendingDestinationSystemIDs.get(systemID) || 0) + 1;
+    if (attempts > MAX_DESTINATION_RETRIES) {
+      pendingDestinationSystemIDs.delete(systemID);
+      continue;
+    }
+    pendingDestinationSystemIDs.set(systemID, attempts);
+  }
+}
+
 function reset() {
   lastReconcileAtMs = 0;
   reconciledSystemIDs.clear();
+  pendingDestinationSystemIDs.clear();
   lastSummary = null;
 }
 
