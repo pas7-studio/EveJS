@@ -164,7 +164,14 @@ function plan(options = {}) {
   // class sample.
   const spawnSystemIDs = [];
   if (options.spawnWhenMissing !== false) {
-    const assignedTargets = new Set(entrances.map((entry) => entry.targetSystemID));
+    // Only an entrance whose known-space end really is inside the target counts as "already has one".
+    // A hole revealed in a neighbouring constellation system does not put a signature in front of the
+    // player, so that system still gets a native wandering pair of its own.
+    const assignedTargets = new Set(
+      entrances
+        .filter((entry) => toInt(entry.destinationSystemID, 0) === toInt(entry.targetSystemID, 0))
+        .map((entry) => entry.targetSystemID),
+    );
     for (const systemID of targets) {
       if (assignedTargets.has(systemID)) continue;
       if ((visibleCounts.get(systemID) || 0) >= maxPerSystem) continue;
