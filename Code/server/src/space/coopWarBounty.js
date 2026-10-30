@@ -160,7 +160,14 @@ function createWarBounty({gameStore, treasury, chest, readWarState, readLinks,
       if (typeof emit === "function") emit("living-native-war-bounty-wallet-backed", {
         status: String((reservation && "RESERVED") || "REFUSED"), factionID,
         campaignID: campaign, pilotID: pilot,
-        reserve: walletBacked && (walletBacked.status || walletBacked.reason) || "UNAVAILABLE",
+        // A refusal must carry its own reason. MEASURED 2026-10-30: 34 wallet-backed
+        // attempts all read reserve:"BLOCKED" and the actual predicate (funds? wallet row?
+        // proof?) was invisible, so the payout diagnosis was guesswork.
+        reserve: walletBacked
+          ? (String(walletBacked.status) === "BLOCKED"
+            ? "BLOCKED:" + String(walletBacked.reason || "UNKNOWN")
+            : String(walletBacked.status || walletBacked.reason || "UNAVAILABLE"))
+          : "UNAVAILABLE",
         evidence: "ESCROW_TAKEN_FROM_THE_FACTIONS_REAL_CORP_WALLET"});
     }
     if (!reservation) {
