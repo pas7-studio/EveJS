@@ -24,14 +24,30 @@ function result(state, extra) {
 function undock(ctx, flight) {
   const ready = preflight(ctx);
   if (ready.status !== "READY") return result("NOT_READY", { missing: ready.missing });
-  if (Number(ctx.character && ctx.character.stationID) !== Number(flight.originStationID)) {
+  const characterStationID = Number(ctx.character && ctx.character.stationID) || 0;
+  // A reposition is "go to the contract origin from wherever the courier really is", so it must undock
+  // from the CURRENT station. Refusing it unless the courier was already at the origin stranded a
+  // courier that a previous leg had docked elsewhere (live: undock REFUSED + FLIGHT_TIMEOUT).
+  const undockFrom = flight.reposition === true
+    ? characterStationID
+    : Number(flight.originStationID) || 0;
+  if (!(undockFrom > 0)) {
     return result("REFUSED", {
-      reason: "courier is not docked at the contract origin",
-      characterStationID: Number(ctx.character && ctx.character.stationID) || 0,
+      reason: flight.reposition === true
+        ? "courier is not docked"
+        : "courier is not docked at the contract origin",
+      characterStationID,
       originStationID: Number(flight.originStationID) || 0,
     });
   }
-  return motion.undockAgent(ctx, flight.originStationID);
+  if (flight.reposition !== true && characterStationID !== undockFrom) {
+    return result("REFUSED", {
+      reason: "courier is not docked at the contract origin",
+      characterStationID,
+      originStationID: Number(flight.originStationID) || 0,
+    });
+  }
+  return motion.undockAgent(ctx, undockFrom);
 }
 
 // One native warp to the destination station position. The station position is
