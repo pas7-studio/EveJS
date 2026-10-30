@@ -5628,20 +5628,40 @@ function startTicker(options = {}) {
     250,
     toInt(options.intervalMs, UNIVERSE_SLOT_TICK_INTERVAL_MS),
   );
+  // `awake` systems are the ones with a live scene, and a docked player has none: with an empty list the
+  // tick used to skip entirely, so sites never expired or rotated while the owner was docked - measured
+  // 281 instances past their expiresAtMs and still `active`, all of them swept only by hand. When nothing
+  // is awake, run a full sweep, rate limited so a 1 s tick cannot walk the whole universe every second.
+  const IDLE_FULL_SWEEP_INTERVAL_MS = 60_000;
+  let lastIdleSweepAtMs = 0;
   universeReconcileTicker = setInterval(() => {
     try {
       const systemIDs = typeof options.systemIDsProvider === "function"
         ? options.systemIDsProvider()
         : options.systemIDs;
+      const awakeSystemIDs = Array.isArray(systemIDs)
+        ? systemIDs.map((entry) => toInt(entry, 0)).filter((entry) => entry > 0)
+        : null;
+      const nowMs = Date.now();
+      const idleSweepDue =
+        awakeSystemIDs !== null &&
+        awakeSystemIDs.length <= 0 &&
+        nowMs - lastIdleSweepAtMs >= IDLE_FULL_SWEEP_INTERVAL_MS;
+      if (awakeSystemIDs !== null && awakeSystemIDs.length <= 0 && !idleSweepDue) {
+        return;
+      }
+      if (idleSweepDue) {
+        lastIdleSweepAtMs = nowMs;
+      }
       const summary = advanceUniversePersistentSites({
-        nowMs: Date.now(),
+        nowMs,
         lifecycleReason: "expired",
-        systemIDs: Array.isArray(systemIDs) ? systemIDs : undefined,
+        systemIDs: idleSweepDue ? undefined : (awakeSystemIDs || undefined),
       });
       if (summary.rotatedCount > 0) {
         log.info(
           `[DungeonUniverse] rotated ${summary.rotatedCount} persistent site slots ` +
-          `after ${summary.expiredCount} expiries`,
+          `after ${summary.expiredCount} expiries${idleSweepDue ? " (idle full sweep)" : ""}`,
         );
       }
     } catch (error) {

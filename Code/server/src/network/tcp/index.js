@@ -127,10 +127,21 @@ module.exports = function (serviceManager) {
   const seededCountsBeforeResume = dungeonUniverseRuntime.summarizeActiveUniverseSeededCounts();
   log.info("[Startup] Dungeon universe resume tick: reconciling expired/rotating persistent sites");
   const awakeDungeonSystemIDs = () => spaceRuntime.listAwakeSolarSystemIDs();
+  // Before the scene preload the awake list is empty and the resume tick used to skip entirely, leaving
+  // every site that expired while the server was down still active. With no awake systems the sweep runs
+  // unbounded instead (it is one pass, not a loop).
+  const startupAwakeSystemIDs = (() => {
+    try {
+      const list = awakeDungeonSystemIDs();
+      return Array.isArray(list) && list.length > 0 ? list : undefined;
+    } catch (_error) {
+      return undefined;
+    }
+  })();
   const immediateUniverseTick = dungeonUniverseRuntime.advanceUniversePersistentSites({
     nowMs: Date.now(),
     lifecycleReason: "startup-resume",
-    systemIDs: awakeDungeonSystemIDs(),
+    systemIDs: startupAwakeSystemIDs,
   });
   const universeResumeElapsedMs = Date.now() - universeResumeStartedAtMs;
   const seededCountsAfterResume = dungeonUniverseRuntime.summarizeActiveUniverseSeededCounts();
