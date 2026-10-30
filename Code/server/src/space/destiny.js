@@ -1103,7 +1103,12 @@ function buildSlimItemDict(entity) {
   const slimNameID = buildSlimNameIDValue(entity && entity.nameID);
 
   if (slimName && !slimNameID) {
-    entries.push(["name", slimName]);
+    // The client's overview renders this with `Label` / `ExtractLocalizedTags`, which requires a
+    // unicode object. A byte-string name (the marshal default) raises
+    // `TypeError: must be unicode, not str` inside `OverviewWindow._DoBallsAdded`, the whole update
+    // tasklet dies, and every tab stays empty even though the ships are in space. PyWStringUTF8 is
+    // what the client expects for every display string.
+    entries.push(["name", { type: "wstring", value: String(slimName) }]);
   }
   if (slimNameID) {
     entries.push(["nameID", slimNameID]);

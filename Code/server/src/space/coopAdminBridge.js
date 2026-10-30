@@ -165,7 +165,7 @@ function executeRequest(request) {
           groupID: map.groupID === undefined ? null : Number(map.groupID) || 0,
           categoryID: map.categoryID === undefined ? null : Number(map.categoryID) || 0,
           hasGroup: Object.prototype.hasOwnProperty.call(map, "groupID"),
-          name: String(map.name || "").slice(0, 40),
+          name: String((map.name && typeof map.name === "object" ? map.name.value : map.name) || "").slice(0, 40),
           ownerID: Number(map.ownerID) || 0,
           corpID: Number(map.corpID) || 0,
           warFactionID: Number(map.warFactionID) || 0,
