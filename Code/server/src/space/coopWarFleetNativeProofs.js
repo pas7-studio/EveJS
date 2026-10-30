@@ -92,18 +92,28 @@ function createWarFleetNativeProofs({sceneForSystem,getController,getNativeEntit
   if(Number(details.currentEntityID)===Number(details.entityID))return false;
   let rows=[];
   try{rows=assignments()||[]}catch{return false}
+  // One pilot may appear in several authorities at once (an order lease AND the identity
+  // link both name the same hull), so uniqueness is counted in HULLS, not in rows. Two
+  // different hulls for one pilot is still ambiguous and still refused.
   const mine=rows.filter(r=>r&&r.pilotID===details.pilotID&&pos(r.entityID));
-  if(mine.length!==1)return false;
-  const now=mine[0];
-  if(Number(now.entityID)!==Number(details.currentEntityID))return false;
-  if(!pos(now.systemID))return false;
-  let ship=null;
+  const hulls=[...new Set(mine.map(r=>Number(r.entityID)))];
+  if(hulls.length!==1)return false;
+  const currentID=hulls[0];
+  if(currentID!==Number(details.currentEntityID))return false;
+  // The successor must be a real hull NOW. A live scene ship is the strongest form; a
+  // durable native record with its own controller is accepted as well, because a headless
+  // front can hold the record before the scene is rebuilt after a restart.
   try{
-   const scene=sceneForSystem(Number(now.systemID));
-   ship=scene&&typeof scene.getEntityByID==="function"
-    ?scene.getEntityByID(Number(now.entityID)):null;
+   const now=mine.find(r=>Number(r.entityID)===currentID)||{};
+   const scene=pos(now.systemID)?sceneForSystem(Number(now.systemID)):null;
+   const ship=scene&&typeof scene.getEntityByID==="function"
+    ?scene.getEntityByID(currentID):null;
+   if(ship&&ship.kind==="ship"&&Number(ship.itemID)===currentID)return true;
+   const record=getNativeEntity(currentID);
+   const controller=getController(currentID);
+   return Boolean(record&&Number(record.entityID)===currentID&&
+    controller&&Number(controller.entityID)===currentID);
   }catch{return false}
-  return Boolean(ship&&ship.kind==="ship"&&Number(ship.itemID)===Number(now.entityID));
  }
  return Object.freeze({verifyNativeShip,verifyCampaign,verifyRelease,verifyReplacement});
 }
