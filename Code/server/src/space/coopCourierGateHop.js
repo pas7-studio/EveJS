@@ -10,6 +10,8 @@ const motion = require("./coopNativeAgentMotion" + EXT);
 
 // Stock EveJS requires <= 2500 m SURFACE separation for a gate jump.
 const GATE_RANGE_M = 2500;
+// Land comfortably inside the native jump limit, not exactly on it.
+const GATE_MARGIN_M = 750;
 const MAX_HOPS = 4;
 const JUMP_VERIFY_MS = 60000;
 const REWARP_MS = 60000;
@@ -102,10 +104,15 @@ function advance(options) {
     if (!entity) return { status: "PENDING", reason: "SHIP_NOT_IN_SCENE", state };
     const gate = getGate(hop.fromGateID);
     if (!gate || !vector(gate.position)) return { status: "FAILED", reason: "GATE_POSITION_MISSING" };
-    if (surfaceGap(entity, gate) <= GATE_RANGE_M) {
-      return { status: "PENDING", reason: "AT_REAL_GATE", state: Object.assign({}, state, { phase: "jump" }) };
+    // The native jump refuses with TOO_FAR_FROM_STARGATE above STARGATE_JUMP_RANGE_METERS. Waiting for
+    // exactly that limit is a race: the hull keeps moving between this observation and the jump call, and
+    // a live run failed there. Approach to a margin below it and never jump while still in warp.
+    if (String(entity.mode || "").toUpperCase().includes("WARP")) {
+      return { status: "PENDING", reason: "WARPING_TO_GATE", state };
     }
-    if (!(num(state.lastWarpAtMs) > 0) || at - num(state.lastWarpAtMs) > REWARP_MS) {
+    if (surfaceGap(entity, gate) <= GATE_RANGE_M - GATE_MARGIN_M) {
+      return { status: "PENDING", reason: "AT_REAL_GATE", state: Object.assign({}, state, { phase: "jump" }) };
+    }    if (!(num(state.lastWarpAtMs) > 0) || at - num(state.lastWarpAtMs) > REWARP_MS) {
       const warped = motion.warpAgent(ctx, {
         entityID: shipItemID,
         systemID: hop.fromSystemID,
@@ -137,6 +144,14 @@ function advance(options) {
       const reason = String(outcome && outcome.errorMsg || "JUMP_REFUSED");
       if (reason === "STARGATE_JUMP_IN_PROGRESS") {
         return { status: "PENDING", reason, state: Object.assign({}, state, { phase: "verify-jump", issuedAtMs: at }) };
+      }
+      if (reason === "TOO_FAR_FROM_STARGATE") {
+        // Re-approach instead of failing the whole flight: the hull drifted past the native limit.
+        return {
+          status: "PENDING",
+          reason: "REAPPROACH_GATE",
+          state: Object.assign({}, state, { phase: "warp-gate", lastWarpAtMs: 0, issuedAtMs: 0 }),
+        };
       }
       return { status: "FAILED", reason: "JUMP_" + reason };
     }
