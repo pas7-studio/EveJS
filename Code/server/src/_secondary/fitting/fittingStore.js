@@ -141,10 +141,13 @@ function buildFitDataPayload(fitData = []) {
 
 function buildFittingPayload(record) {
   return buildKeyVal([
-    ["description", normalizeText(record && record.description, "")],
+    // The fitting browser renders these through the same Label/unicode path as the overview: a byte
+    // string name raises UnicodeDecodeError (live: hullAndHardwareTypeBrowser.LoadFittingsAndShips,
+    // charmap 0x8f at position 35) and the whole list stays empty.
+    ["description", { type: "wstring", value: normalizeText(record && record.description, "") }],
     ["fitData", buildFitDataPayload(record && record.fitData)],
     ["fittingID", toInt(record && record.fittingID, 0)],
-    ["name", normalizeText(record && record.name, "")],
+    ["name", { type: "wstring", value: normalizeText(record && record.name, "") }],
     ["ownerID", toInt(record && record.ownerID, 0)],
     ["savedDate", buildFiletimeLong(record && record.savedDate)],
     ["shipTypeID", toInt(record && record.shipTypeID, 0)],
