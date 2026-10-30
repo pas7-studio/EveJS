@@ -8,10 +8,12 @@
 // while 1193 active J-space -> known-space pairs existed for the whole map and 58 of them landed in
 // The Forge. The three pairs that did land in Jita were already collapsed.
 //
-// This module plans and then opens ONE real entrance for each world system that has one: the system
-// itself first, then its constellation, then its region. Opening means the runtime's own
-// `revealOppositeEndpoint` (the same call a transit uses), so mass, lifetime, collapse and jump rules
-// stay exactly native - this only stops an existing entrance from being permanently unscannable.
+// This module plans and then opens ONE real entrance for each world system that has one, and only in
+// that system (`maxScope: "direct"`): a hole in some other system of the region is not something the
+// player standing in Jita can scan, and opening one per neighbouring system on every tick would spray
+// the region with holes. Opening means the runtime's own `revealOppositeEndpoint` (the same call a
+// transit uses), so mass, lifetime, collapse and jump rules stay exactly native - this only stops an
+// existing entrance from being permanently unscannable.
 const MAX_PER_SYSTEM = 1;
 
 function isWormholeSystemID(systemID) {
@@ -58,7 +60,7 @@ function plan(options = {}) {
 
   const nowMs = Math.max(0, toInt(options.nowMs, Date.now()));
   const maxPerSystem = Math.max(1, toInt(options.maxPerSystem, MAX_PER_SYSTEM));
-  const maxScope = String(options.maxScope || "region").toLowerCase();
+  const maxScope = String(options.maxScope || "direct").toLowerCase();
   const world = options.world || require("./worldData");
 
   let pairs = [];
