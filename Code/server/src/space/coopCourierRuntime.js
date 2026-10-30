@@ -54,6 +54,16 @@ const LIVE_POLICY = Object.freeze({ sameSystemOnly: true, requireZeroCollateral:
 // Stock station docking range.
 const DOCKING_RANGE_M = 2500;
 
+// Telemetry: the mission-verification plan requires courier events with an explicit status in
+// coop-events.jsonl, not only console lines. Never throws.
+function courierEvent(eventName, extra = {}) {
+  try {
+    require("./coopRuntimeProbe").observe(eventName, null, null, extra);
+  } catch (_error) {
+    /* telemetry must never break a flight */
+  }
+}
+
 function num(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
@@ -837,6 +847,16 @@ function createCourierDispatch(deps = {}) {
         if (flight.reposition) repositions.set(num(flight.characterID), moved);
         else flights.set(contractID, moved);
         log(`[CoopCourier] ${hopLabel} native gate hop verified ${num(flight.systemID)} -> ${num(moved.systemID)}, warp -> arrive`);
+        if (!flight.reposition) {
+          courierEvent("courier-gate-hop", {
+            contractID: num(contractID),
+            characterID: num(flight.characterID),
+            status: "JUMP_VERIFIED",
+            fromSystemID: num(flight.systemID),
+            toSystemID: num(moved.systemID),
+            gateHopReason: hopReason,
+          });
+        }
         return;
       }
       if (hop.status === "FAILED") {
@@ -875,6 +895,15 @@ function createCourierDispatch(deps = {}) {
           : `[CoopCourier] contract ${contractID} package not handed over: ${handedOver.detail}`,
       );
       if (!handedOver.ok) noteIncident(contractID, "handover-failed", handedOver.detail);
+      if (handedOver.ok) {
+        courierEvent("courier-delivered", {
+          contractID: num(contractID),
+          characterID: num(flight.characterID),
+          status: "HANDED_OVER",
+          destinationStationID: num(flight.destinationStationID),
+          systemID: num(flight.systemID),
+        });
+      }
     }
     const token = flightCore.stepToken(flight);
     const next = flightCore.advanceFlight(flight, observed.status, now(), token);
@@ -894,6 +923,14 @@ function createCourierDispatch(deps = {}) {
       if (flight.step === "undock" && !flight.reposition) {
         noteDeparture(contractID);
         notify("departing", contracts.getContractRecord(contractID), identity);
+        courierEvent("courier-accepted", {
+          contractID: num(contractID),
+          characterID: num(flight.characterID),
+          status: "DEPARTED",
+          originStationID: num(flight.originStationID),
+          destinationStationID: num(flight.destinationStationID),
+          systemID: num(flight.systemID),
+        });
       }
     }
     // A leg that failed must not sit in memory and block the resume scan: the
