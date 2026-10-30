@@ -68,6 +68,8 @@ function sampleBands(nowMs) {
       wormhole.push({ systemID, rank: hashToUnit(`wh:${systemID}:${day}`) });
       continue;
     }
+    // Special space (Pochven, 32xxxxxx) has no player stargate: seeding sites there would be invisible.
+    if (systemID >= 31000000) continue;
     const security = Number(row && (row.securityStatus ?? row.security));
     if (Number.isFinite(security) && security < 0) {
       nullsec.push({ systemID, rank: hashToUnit(`ns:${systemID}:${day}`) });
