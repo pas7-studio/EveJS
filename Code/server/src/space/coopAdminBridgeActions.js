@@ -37,7 +37,7 @@ const EVENTS = process.env.EVEJS_COOP_EVENTS_FILE || "/var/lib/evejs/coop-events
 // Stations are static: read them once per process instead of parsing the whole
 // station table for a single name.
 
-const ALLOWED_ACTIONS = new Set(["chat_command", "give_item", "remove_item", "board_ship", "fit_ship", "move_item", "fit_slots", "give_fit", "restore_last_loss", "batch", "deploy_structure", "spawn_native_npc", "war_diagnose", "war_combat_diagnose", "war_funding_diagnose", "war_payout_diagnose", "war_mercenary_settle", "war_mercenary_state", "inspect_npc", "scene_slim_diagnose", "grant_evermarks", "npc_pair_diagnose", "raid_diagnose", "war_state", "mining_fleet_diagnose", "arrival_diagnose", "trip_diagnose", "militia_state", "militia_enlist", "spawn_war_fleet", "release_identity", "assign_identity", "war_fleet_state", "fleet_reconstitute"]);
+const ALLOWED_ACTIONS = new Set(["chat_command", "create_courier_contract", "give_item", "remove_item", "board_ship", "fit_ship", "move_item", "fit_slots", "give_fit", "restore_last_loss", "batch", "deploy_structure", "spawn_native_npc", "war_diagnose", "war_combat_diagnose", "war_funding_diagnose", "war_payout_diagnose", "war_mercenary_settle", "war_mercenary_state", "inspect_npc", "scene_slim_diagnose", "grant_evermarks", "npc_pair_diagnose", "raid_diagnose", "war_state", "mining_fleet_diagnose", "arrival_diagnose", "trip_diagnose", "militia_state", "militia_enlist", "spawn_war_fleet", "release_identity", "assign_identity", "war_fleet_state", "fleet_reconstitute"]);
 
 const MAX_REQUESTS_PER_DRAIN = 8;
 
@@ -131,8 +131,65 @@ function executeChatCommand(request) {
 // the same primitive /giveitem uses, minus the session requirement, so it works
 // while the character is offline.
 
-function giveItem(request) {
+// Creates a genuine native courier contract through the same contract runtime the client uses, so the
+// co-op courier dispatch can be exercised without a second click path. Escrow, plastic wrap, reward
+// escrow and wallet movement are all the native ones - this only supplies the request the client would.
+function createCourierContract(request) {
   const characterID = Number(request.characterID) || 0;
+  const fromStationID = Number(request.fromStationID) || 0;
+  const toStationID = Number(request.toStationID) || 0;
+  const itemID = Number(request.itemID) || 0;
+  const quantity = Math.max(1, Number(request.quantity) || 1);
+  if (!(characterID > 0) || !(fromStationID > 0) || !(toStationID > 0) || !(itemID > 0)) {
+    return { ok: false, error: "characterID, fromStationID, toStationID and itemID are required" };
+  }
+  const character = readRow("characters", characterID);
+  if (!character) return { ok: false, error: "character " + characterID + " not found" };
+  try {
+    const contracts = require("../services/contracts/contractRuntimeState");
+    const session = {
+      charid: characterID,
+      characterID,
+      corpid: Number(character.corporationID) || 0,
+      corporationID: Number(character.corporationID) || 0,
+      allianceid: Number(character.allianceID) || 0,
+      userid: Number(character.userID) || Number(character.accountID) || 0,
+      stationid: fromStationID,
+      solarsystemid2: Number(request.systemID) || 0,
+    };
+    const result = contracts.createContract({
+      contractType: 3,
+      isPrivate: false,
+      minutesExpire: 1440,
+      numDays: Math.max(1, Number(request.numDays) || 3),
+      startStationID: fromStationID,
+      destinationID: toStationID,
+      price: 0,
+      reward: Math.max(0, Number(request.reward) || 0),
+      collateral: Math.max(0, Number(request.collateral) || 0),
+      title: String(request.title || "co-op courier proof"),
+      description: String(request.description || ""),
+      itemList: [[itemID, quantity]],
+      startStationDivision: 4,
+      requestItemTypeList: [],
+      forCorp: false,
+      multiContract: false,
+    }, session, {});
+    const contractIDs = Array.isArray(result && result.contractIDs) ? result.contractIDs : [];
+    return {
+      ok: Boolean(result && result.success !== false),
+      contractIDs,
+      result: JSON.stringify(result || null).slice(0, 400),
+    };
+  } catch (error) {
+    const payload = error && error.machoErrorResponse
+      ? JSON.stringify(error.machoErrorResponse).slice(0, 400)
+      : null;
+    return { ok: false, error: String(error && error.message || error), payload };
+  }
+}
+
+function giveItem(request) {  const characterID = Number(request.characterID) || 0;
   const typeID = Number(request.typeID) || 0;
   const quantity = Math.max(1, Number(request.quantity) || 1);
   if (!(typeID > 0)) return { ok: false, error: "typeID is required" };
@@ -1564,4 +1621,4 @@ function assignIdentity(request) {
 }
 
 
-module.exports = {fs, siblingSuffix, REQUESTS, RESULTS, EVENTS, ALLOWED_ACTIONS, MAX_REQUESTS_PER_DRAIN, readJsonLines, writeJsonLines, appendJsonLine, emitEvent, readRow, readItemRows, liveSessionFor, executeChatCommand, giveItem, removeItem, boardShip, moveItem, fitShip, fitSlots, giveFit, restoreLastLoss, deployStructure, resolveWarPatrolLoadout, spawnNativeNpc, militiaEnlist, warFleetAuthorities, freeHullLinks, listFreeHullsFor, spawnWarFleet, warFleetState, fleetReconstitute, releaseIdentity, assignIdentity};
+module.exports = {fs, siblingSuffix, REQUESTS, RESULTS, EVENTS, ALLOWED_ACTIONS, MAX_REQUESTS_PER_DRAIN, readJsonLines, writeJsonLines, appendJsonLine, emitEvent, readRow, readItemRows, liveSessionFor, executeChatCommand, createCourierContract, giveItem, removeItem, boardShip, moveItem, fitShip, fitSlots, giveFit, restoreLastLoss, deployStructure, resolveWarPatrolLoadout, spawnNativeNpc, militiaEnlist, warFleetAuthorities, freeHullLinks, listFreeHullsFor, spawnWarFleet, warFleetState, fleetReconstitute, releaseIdentity, assignIdentity};
