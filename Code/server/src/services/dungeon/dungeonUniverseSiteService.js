@@ -6109,6 +6109,13 @@ function markDestroyedObjectiveTargets(matchingInstances, destroyedEntity, optio
     }
     const template = dungeonAuthority.getTemplateByID(instance.templateID);
     const populationHints = resolvePopulationHints(instance, template);
+    // Ore is the objective here: killing (or losing) the site's defenders must not
+    // satisfy it. Without this, the destroyed-target path completed mining missions
+    // whose NPCs had merely been pruned, and the player could hand in a mission
+    // without mining anything.
+    if (missionMiningObjective.declaresMiningObjective(populationHints)) {
+      continue;
+    }
     if (!destroyedEntityMatchesObjectiveTarget(instance, destroyedEntity, populationHints)) {
       continue;
     }

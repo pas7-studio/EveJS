@@ -61,8 +61,18 @@ function deriveMiningObjectiveFromResources(template) {
   };
 }
 
+// A site whose hints declare an ore objective is finished by mining, never by
+// clearing its defenders. The destroyed-target path used to satisfy the objective
+// when a site's NPCs disappeared (including when a restart pruned them), so a
+// mining mission could be handed in without a single cycle of ore.
+function declaresMiningObjective(hints) {
+  const quantity = Number(hints && hints.objectiveQuantity);
+  return Number.isFinite(quantity) && quantity > 0;
+}
+
 module.exports = {
   DERIVED_ROCK_COUNT_PER_ORE,
   DERIVED_ROCK_QUANTITY,
+  declaresMiningObjective,
   deriveMiningObjectiveFromResources,
 };
