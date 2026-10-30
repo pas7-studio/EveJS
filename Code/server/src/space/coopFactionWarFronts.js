@@ -22,7 +22,18 @@ function ownerOf(territories, systemID) {
 }
 
 // One border edge per real reciprocal gate pair between two owners.
-function borderEdges({ territories = {}, getStargatesForSystem, getGate } = {}) {
+// FW-112: a front must never run out.
+//
+// MEASURED on the play stack 2026-10-30 after the first real capture: 30003837 became
+// OCCUPIED by 500004, and the frontier answered NO_FRONT 137 times in one hour with an EMPTY
+// skip list - the five registered systems simply had no adjacent pair owned by two different
+// factions any more, so the war machine had nothing left to fight over and would have stayed
+// silent for ever. A faction that has taken its whole border must be able to push into the
+// next system, and the SDE already says who owns it. fallbackOwner fills ONLY the owner of a
+// neighbouring system nobody has registered yet; a registered controller always wins, and an
+// edge built this way is marked expanded so it can never be mistaken for an old border.
+function borderEdges({ territories = {}, getStargatesForSystem, getGate,
+ fallbackOwner = null } = {}) {
   if (typeof getStargatesForSystem !== "function") return [];
   const edges = new Map();
   for (const key of Object.keys(territories || {})) {
@@ -38,7 +49,18 @@ function borderEdges({ territories = {}, getStargatesForSystem, getGate } = {}) 
       if (back && (num(back.destinationID) !== gateID || num(back.solarSystemID) !== num(gate.destinationSolarSystemID || back.solarSystemID))) continue;
       const other = num(gate && gate.destinationSolarSystemID) || num(back && back.solarSystemID);
       if (!positive(other) || other === systemID) continue;
-      const otherOwner = ownerOf(territories, other);
+      const registeredOwner = ownerOf(territories, other);
+      let otherOwner = registeredOwner;
+      if (!otherOwner && typeof fallbackOwner === "function") {
+       try {
+        const raw = fallbackOwner(other);
+        const candidate = Number(typeof raw === "object" && raw
+         ? (raw.factionID !== undefined ? raw.factionID : raw.militaryControllerFactionID)
+         : raw);
+        if (Number.isSafeInteger(candidate) && candidate > 0)
+         otherOwner = String(candidate);
+       } catch (_error) { otherOwner = null; }
+      }
       if (!otherOwner || otherOwner === owner) continue;
       const [a, b] = systemID < other ? [systemID, other] : [other, systemID];
       const key2 = a + ":" + b;
@@ -50,6 +72,7 @@ function borderEdges({ territories = {}, getStargatesForSystem, getGate } = {}) 
         toOwner: otherOwner,
         gateID: gateID,
         reciprocalGateID: destinationGateID,
+        expanded: !registeredOwner,
       });
     }
   }

@@ -1053,6 +1053,15 @@ function advanceNativeWarOpening(){
    getFactionForCorporation:id=>factions.getFactionIDForCorporation(id),
    getStargatesForSystem:id=>worldData.getStargatesForSystem(id),
    getGate:id=>worldData.getStargateByID(id),
+   // FW-112: the SDE faction owner of a system nobody has taken yet. Used ONLY when no
+   // border between two registered territories exists any more, so a faction that holds
+   // its whole frontier pushes into the next system instead of freezing the whole world.
+   ownerOfSystem:systemID=>{
+    try{
+     const row=worldData.getSolarSystemByID(Number(systemID));
+     return Number(row&&row.factionID)||0;
+    }catch(_error){return 0}
+   },
    readWarState,
    writeWarState:state=>store.write(state),
    reserveBounty:warBountyReserve,

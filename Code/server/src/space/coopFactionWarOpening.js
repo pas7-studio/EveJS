@@ -403,7 +403,7 @@ function edgeMarketRank(edge, marketAccess) {
 
 function planWars({
   state, presence, getStargatesForSystem, getGate,
-  nowMs, minShips = 1, balanceISK = 0, maxOpenings = 4,
+  nowMs, minShips = 1, balanceISK = 0, maxOpenings = 4, ownerOfSystem = null,
   navyCapability = null, marketAccess = null,
 } = {}) {
   if (!state || typeof state !== "object") return refuse("NO_WAR_STATE");
@@ -413,9 +413,22 @@ function planWars({
   if (!Object.keys(territories).length)
     return refuse("NO_TERRITORY_FROM_PRESENCE", { territories, observedCount, registeredCount, summary });
   if (typeof getStargatesForSystem !== "function") return refuse("NO_GATE_AUTHORITY", { territories });
-  const built = buildFronts({ territories, getStargatesForSystem, getGate });
+  let built = buildFronts({ territories, getStargatesForSystem, getGate });
+  // FW-112: no border between two REGISTERED territories is not the end of the war.
+  // MEASURED on the play stack 2026-10-30: after the first capture the frontier answered
+  // NO_FRONT 137 times in one hour with an empty skip list, because every owned system now
+  // touched only friends. A faction that holds its whole border pushes into the next system,
+  // and the SDE owner of that system is the defender. The navy gate below still decides
+  // whether both sides can really shoot, so this can never invent a fightable war.
+  let expansion = false;
+  if (!built.length && typeof ownerOfSystem === "function") {
+    built = buildFronts({ territories, getStargatesForSystem, getGate,
+      fallbackOwner: ownerOfSystem });
+    expansion = built.length > 0;
+  }
   if (!built.length)
-    return refuse("NO_FRONT", { territories, observedCount, registeredCount, summary });
+    return refuse("NO_FRONT", { territories, observedCount, registeredCount, summary,
+      expansionAttempted: typeof ownerOfSystem === "function" });
   const fronts = built;
   // FW-092: rank by EDGE, not by front. A single faction pair really holds several
   // borders at once, so ranking the whole front would keep the historical
@@ -582,8 +595,8 @@ function planWars({
   if (!openings.length)
     return refuse("NO_OPENABLE_FRONT", { territories, fronts, skipped, observedCount, registeredCount, summary,
       marketAccessible });
-  return { status: "READY", openings, territories, fronts, skipped, summary, observedCount, registeredCount,
-    marketAccessible };
+  return { status: "READY", openings, territories, fronts, skipped, summary, observedCount,
+    registeredCount, marketAccessible, expansion };
 }
 
 // Applies every planned opening through the authoritative core, reusing an
@@ -828,6 +841,9 @@ function createWarOpening({
   navyCapability = null,
   // FW-092: whether a contested system can sell what its kills produce.
   marketAccess = null,
+  // FW-112: the SDE owner of a system no campaign has decided yet, so a war that has
+  // captured its whole border can expand instead of freezing the frontier for ever.
+  ownerOfSystem = null,
   minShips = 1, balanceISK = 0, maxOpenings = 4,
   now = () => Date.now(), maxLinks = MAX_LINKS,
 } = {}) {
@@ -904,6 +920,7 @@ function createWarOpening({
         nowMs: num(now()), minShips, balanceISK, maxOpenings,
         navyCapability: typeof navyCapability === "function" ? navyCapability : null,
         marketAccess: typeof marketAccess === "function" ? marketAccess : null,
+        ownerOfSystem: typeof ownerOfSystem === "function" ? ownerOfSystem : null,
       });
       if (plan.status !== "READY")
         return { status: "NO_OPENING", reason: plan.reason || "PLAN_REFUSED", plan,
