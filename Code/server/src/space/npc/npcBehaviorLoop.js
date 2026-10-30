@@ -1429,6 +1429,9 @@ function isFriendlyCombatTarget(entity, target) {
     return targetClass === "concord";
   }
   if (sourceClass === "npc" && targetClass === "player" && process.env.EVEJS_COOP_FACTION_WAR_COMBAT === "1") { try { const coopMilitia = require("../coopMilitiaWarPlayer").npcPlayerVerdict(entity, target); if (coopMilitia.status === "ENEMY_MILITIA") return false; if (coopMilitia.status !== "NOT_WAR_SHIP") return true; } catch (_coopError) { console.warn("[CoopMilitiaWarPlayer]", _coopError.message); } }
+  // High-sec safety: a living-world NPC never opens fire on a player hull at security >= 0.45 unless the
+  // player shot it first or is an enemy militia hull. Without this a pirate killed a Venture in Jita.
+  if (sourceClass === "npc" && targetClass === "player") { try { if (require("../coopHighSecNpcSafety").blocksAggression(entity, target)) return true; } catch (_coopSafetyError) { console.warn("[CoopHighSecNpcSafety]", _coopSafetyError.message); } }
   if (sourceClass === "npc") {
     return targetClass === "npc";
   }
