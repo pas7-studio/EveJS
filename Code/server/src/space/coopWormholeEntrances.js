@@ -61,16 +61,14 @@ function plan(options = {}) {
   const maxScope = String(options.maxScope || "region").toLowerCase();
   const world = options.world || require("./worldData");
 
-  let state = null;
-  try {
-    state = require("../services/exploration/wormholes/wormholeRuntimeState");
-  } catch (error) {
-    return { status: "UNAVAILABLE", reason: String(error && error.message || error).slice(0, 160), entrances: [] };
-  }
-
   let pairs = [];
   try {
-    pairs = Object.values(state.getStateSnapshot().pairsByID || {});
+    if (Array.isArray(options.pairs)) {
+      pairs = options.pairs;
+    } else {
+      const state = require("../services/exploration/wormholes/wormholeRuntimeState");
+      pairs = Object.values(state.getStateSnapshot().pairsByID || {});
+    }
   } catch (error) {
     return { status: "FAILED", reason: String(error && error.message || error).slice(0, 160), entrances: [] };
   }
