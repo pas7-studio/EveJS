@@ -133,7 +133,9 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
       answer=registry.execute({type:"RELEASE",
        eventID:"wr:stale:"+row.campaignID+":"+row.entityID+":"+row.currentEntityID,
        entityID:row.entityID,pilotID:row.pilotID,fleetID:row.fleetID,
-       proofID:"native-release:"+row.campaignID+":"+row.entityID});
+       currentEntityID:row.currentEntityID,
+       proofID:"native-replaced:"+row.campaignID+":"+row.entityID+":"+
+        row.currentEntityID});
      }catch(_error){answer={status:"NATIVE_RELEASE_UNCERTAIN"};}
      released.push({entityID:row.entityID,pilotID:row.pilotID,
       currentEntityID:row.currentEntityID,

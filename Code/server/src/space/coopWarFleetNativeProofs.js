@@ -77,6 +77,34 @@ function createWarFleetNativeProofs({sceneForSystem,getController,getNativeEntit
   return !c.manualOrder&&!c.currentTargetID&&!v.ship.pendingWarp&&
    !v.ship.warpState&&!v.ship.isWarping&&m!=="WARP";
  }
- return Object.freeze({verifyNativeShip,verifyCampaign,verifyRelease});
+ // FW-110: custody follows the pilot's PROVEN physical ship.
+ //
+ // MEASURED on the play stack 2026-10-30: a restart re-materialized the front fleet with new
+ // entity ids while the registry kept the old ones, so 6 pilots were permanently PILOT_IN_USE
+ // and 4 rows pointed at pilots with no link at all. `verifyRelease` cannot decide that case:
+ // the old hull is neither present in a scene nor destroyed with a wreck, and absence is
+ // deliberately not a destruction witness. This is NOT a destruction claim - it is the much
+ // stronger statement that the same pilot provably flies exactly ONE other real ship right
+ // now, so custody of the old hull cannot be theirs. Anything ambiguous stays refused.
+ function verifyReplacement(details){
+  if(!pos(details?.entityID)||!named(details?.pilotID)||!pos(details?.currentEntityID))
+   return false;
+  if(Number(details.currentEntityID)===Number(details.entityID))return false;
+  let rows=[];
+  try{rows=assignments()||[]}catch{return false}
+  const mine=rows.filter(r=>r&&r.pilotID===details.pilotID&&pos(r.entityID));
+  if(mine.length!==1)return false;
+  const now=mine[0];
+  if(Number(now.entityID)!==Number(details.currentEntityID))return false;
+  if(!pos(now.systemID))return false;
+  let ship=null;
+  try{
+   const scene=sceneForSystem(Number(now.systemID));
+   ship=scene&&typeof scene.getEntityByID==="function"
+    ?scene.getEntityByID(Number(now.entityID)):null;
+  }catch{return false}
+  return Boolean(ship&&ship.kind==="ship"&&Number(ship.itemID)===Number(now.entityID));
+ }
+ return Object.freeze({verifyNativeShip,verifyCampaign,verifyRelease,verifyReplacement});
 }
 module.exports={createWarFleetNativeProofs};

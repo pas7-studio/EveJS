@@ -66,7 +66,7 @@ function validate(s){
  return s;
 }
 function createWarFleetRegistry({gameStore,verifyNativeShip,verifyCampaign,
- verifyRelease,verifyDemobOrderIdle=()=>false,
+ verifyRelease,verifyReplacement=null,verifyDemobOrderIdle=()=>false,
  clock=()=>Date.now(),env=process.env}={}){
  if(typeof gameStore?.coopAtomicNativeRows?.transact!=="function"||
   [verifyNativeShip,verifyCampaign,verifyRelease,verifyDemobOrderIdle,clock]
@@ -182,9 +182,25 @@ function createWarFleetRegistry({gameStore,verifyNativeShip,verifyCampaign,
      if(!priorShip||!valid(command.proofID)||command.pilotID!==priorShip.pilotID||
       command.fleetID!==priorShip.fleetID)return {status:"BLOCKED",reason:"SHIP_NOT_IN_FLEET"};
      let ok=false;try{ok=verifyRelease({...priorShip,proofID:command.proofID})===true}catch{}
-     if(!ok)return {status:"BLOCKED",reason:"NATIVE_RELEASE_UNVERIFIED"};
+     // FW-110: a hull the pilot provably no longer flies may leave custody even though it is
+     // neither present nor destroyed - the pilot has exactly one other REAL ship, which is
+     // stronger evidence than absence. The proof string is exact, so a caller cannot ask for
+     // a replacement it did not name.
+     let replaced=false;
+     if(!ok&&typeof verifyReplacement==="function"&&pos(command.currentEntityID)){
+      const want="native-replaced:"+priorShip.campaignID+":"+priorShip.entityID+":"+
+       Number(command.currentEntityID);
+      if(command.proofID===want){
+       try{
+        replaced=verifyReplacement({...priorShip,currentEntityID:Number(command.currentEntityID),
+         proofID:command.proofID})===true;
+       }catch{replaced=false}
+      }
+     }
+     if(!ok&&!replaced)return {status:"BLOCKED",reason:"NATIVE_RELEASE_UNVERIFIED"};
      delete s.ships[id];
-     receipt={type:"RELEASE",entityID:priorShip.entityID,fleetID:priorShip.fleetID};
+     receipt={type:"RELEASE",entityID:priorShip.entityID,fleetID:priorShip.fleetID,
+      ...(replaced?{custodyReplaced:true,currentEntityID:Number(command.currentEntityID)}:{})};
     }
     const at=clock();
     if(!pos(at))throw Error("FW_FLEET_CLOCK_INVALID");
