@@ -26,6 +26,28 @@ function enabled(env = process.env) {
   return String(env.EVEJS_COOP_UNIVERSE_SITES || "1") !== "0";
 }
 
+// Deterministic RNG for the site allocator. The engine's random allocator falls back to Math.random,
+// so every reconcile produced different definitions and REPLACED the live instances: materialised
+// asteroid and NPC content was destroyed, and a client that had locked a rock got TARGET_NOT_FOUND
+// from the mining laser (live 2026-10-30 19:47). Seeding by UTC day keeps the layout identical for
+// the whole day and still rotates it daily.
+function createSeededRng(seed) {
+  let state = (Number(seed) >>> 0) || 0x9e3779b9;
+  return function nextRandom() {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function siteAllocationRng(nowMs, salt = "coop-universe-sites") {
+  const day = Math.floor(Math.max(0, Number(nowMs) || 0) / 86400000);
+  const mix = (hashToUnit(`${salt}:${day}`) * 4294967296) >>> 0;
+  return createSeededRng(mix);
+}
+
 // A rotating, deterministic sample of the systems the world does not naturally visit, so a player who
 // flies into null-sec or wormhole space meets sites there too (the engine materialises an instance the
 // moment a scene is built, so seeding ahead of time is exactly right).
@@ -155,6 +177,7 @@ function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = pr
       nowMs,
       progressLabel: "coop world systems",
       logProgress: false,
+      rng: siteAllocationRng(nowMs),
     });
     lastReconcileAtMs = nowMs;
     for (const id of systemIDs) reconciledSystemIDs.add(id);
@@ -184,6 +207,7 @@ function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = pr
           nowMs,
           progressLabel: "coop wormhole destinations",
           logProgress: false,
+          rng: siteAllocationRng(nowMs, "coop-wormhole-destinations"),
         });
         const destinationMaterialized = materializeAwakeScenes(destinations);
         destinationSites = {
