@@ -2523,7 +2523,7 @@ function start(){
   // through the same persistent-site seeder (rate limited: new system or every 10 minutes).
   if(process.env.EVEJS_COOP_UNIVERSE_SITES!=="0"&&visitedSystems.size)runPhase("universe-sites",()=>{
    const result=require("./coopUniverseSites").reconcile({visitedSystems,nowMs:Date.now()});
-   if(result.status==="RECONCILED")console.log(`[CoopUniverseSites] systems=${result.systemIDs.length} desired=${result.desired} created=${result.created} spawned=${result.materialized} anomalies=${JSON.stringify(result.anomalies)}`);
+   if(result.status==="RECONCILED")console.log(`[CoopUniverseSites] systems=${result.systemIDs.length} desired=${result.desired} created=${result.created} spawned=${result.materialized} anomalies=${JSON.stringify(result.anomalies)} wormholes=${result.wormholes?result.wormholes.openedCount:"-"} ${JSON.stringify(result.wormholes&&result.wormholes.skipped||{})}`);
    else if(result.status==="FAILED")console.warn(`[CoopUniverseSites] ${result.reason}`);
   });
   if(process.env.EVEJS_COOP_ADMIN_BRIDGE==="1")runPhase("admin-bridge",()=>{

@@ -30,6 +30,11 @@ function enabled(env = process.env) {
 const SAMPLE_PER_BAND = 12;
 let sampleCache = { day: 0, nullsec: [], wormhole: [] };
 
+function isWormholeSystemID(systemID) {
+  const numeric = Number(systemID) || 0;
+  return numeric >= 31000000 && numeric <= 31999999;
+}
+
 function hashToUnit(value) {
   let hash = 2166136261;
   const text = String(value);
@@ -54,8 +59,10 @@ function sampleBands(nowMs) {
   for (const row of rows) {
     const systemID = Number(row && (row.solarSystemID || row.itemID)) || 0;
     if (systemID <= 0) continue;
-    const wormholeClassID = Number(row && (row.wormholeClassID || row.wormholeClassId)) || 0;
-    if (wormholeClassID > 0) {
+    // J-space is identified by its id range (31xxxxxx), not by a column: `worldData` carries the
+    // SDE solar-system rows, which only have `security`/`securityClass`. J-space systems report
+    // security -1, so without this check they would be sampled as null-sec.
+    if (isWormholeSystemID(systemID)) {
       wormhole.push({ systemID, rank: hashToUnit(`wh:${systemID}:${day}`) });
       continue;
     }
@@ -71,6 +78,22 @@ function sampleBands(nowMs) {
   return sampleCache;
 }
 
+function liveSceneSystemIDs() {
+  const ids = [];
+  try {
+    const runtime = require("./runtime");
+    if (runtime && runtime.scenes instanceof Map) {
+      for (const key of runtime.scenes.keys()) {
+        const numeric = Number(key);
+        if (Number.isSafeInteger(numeric) && numeric > 0) ids.push(numeric);
+      }
+    }
+  } catch (_error) {
+    /* no scene registry yet: the world visited set is still enough */
+  }
+  return ids;
+}
+
 function systemIDsOf(visitedSystems) {
   const ids = [];
   for (const value of visitedSystems || []) {
@@ -82,11 +105,28 @@ function systemIDsOf(visitedSystems) {
 
 function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = process.env } = {}) {
   if (!enabled(env)) return { status: "DISABLED" };
-  const visited = systemIDsOf(visitedSystems);
-  const sample = sampleBands(nowMs);
-  const systemIDs = [...new Set([...visited, ...sample.nullsec, ...sample.wormhole])]
+  const world = [...new Set([...systemIDsOf(visitedSystems), ...liveSceneSystemIDs()])]
     .sort((left, right) => left - right)
-    .slice(0, MAX_SYSTEMS + SAMPLE_PER_BAND * 2);
+    .slice(0, MAX_SYSTEMS);
+  const sample = sampleBands(nowMs);
+  // Plan the known-space wormhole entrances BEFORE seeding, so the J-space systems those entrances
+  // lead into get their sites in the same pass. Without that a player could scan a hole and land in a
+  // completely empty system.
+  let entrancePlan = { status: "SKIPPED", entrances: [] };
+  try {
+    entrancePlan = require("./coopWormholeEntrances").plan({ systemIDs: world, nowMs });
+  } catch (_error) {
+    entrancePlan = { status: "SKIPPED", entrances: [] };
+  }
+  const entranceJSystems = entrancePlan.entrances
+    .map((entry) => Math.max(0, Number(entry.sourceSystemID) || 0))
+    .filter((systemID) => systemID > 0);
+  const systemIDs = [...new Set([
+    ...world,
+    ...sample.nullsec,
+    ...sample.wormhole,
+    ...entranceJSystems,
+  ])].sort((left, right) => left - right);
   if (systemIDs.length === 0) return { status: "NO_SYSTEMS" };
   const pending = systemIDs.filter((id) => !reconciledSystemIDs.has(id));
   const dueByTime = nowMs - lastReconcileAtMs >= RECONCILE_INTERVAL_MS;
@@ -118,6 +158,38 @@ function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = pr
     // materialises on scene creation. Re-run it for the awake scenes of these systems (addStaticEntity
     // is idempotent, so nothing is spawned twice), then count what the scanner would list.
     const materialized = materializeAwakeScenes(systemIDs);
+    // Known space never scanned the K162 side of any wormhole, so J-space was unreachable. Open the
+    // planned entrances (or a real wandering pair where none exists).
+    let wormholes = null;
+    try {
+      wormholes = require("./coopWormholeEntrances").apply(entrancePlan, { nowMs });
+    } catch (_error) {
+      wormholes = null;
+    }
+    // A newly opened hole may lead into a system that had no sites yet: seed that destination in the
+    // same pass, otherwise the player scans a wormhole and lands in an empty system.
+    let destinationSites = null;
+    const destinations = (wormholes && Array.isArray(wormholes.destinationSystemIDs)
+      ? wormholes.destinationSystemIDs
+      : []).filter((systemID) => !systemIDs.includes(systemID));
+    if (destinations.length > 0) {
+      try {
+        const destinationSummary = runtime.reconcileUniversePersistentSites({
+          systemIDs: destinations,
+          nowMs,
+          progressLabel: "coop wormhole destinations",
+          logProgress: false,
+        });
+        const destinationMaterialized = materializeAwakeScenes(destinations);
+        destinationSites = {
+          systems: destinations.length,
+          created: Number(destinationSummary && destinationSummary.createdInstances) || 0,
+          anomalies: destinationMaterialized.anomalies,
+        };
+      } catch (_error) {
+        destinationSites = null;
+      }
+    }
     return {
       status: "RECONCILED",
       systemIDs,
@@ -125,6 +197,8 @@ function reconcile({ visitedSystems, nowMs = Date.now(), force = false, env = pr
       desired: Number(summary && summary.desiredSiteCount) || 0,
       materialized: materialized.spawned,
       anomalies: materialized.anomalies,
+      wormholes,
+      destinationSites,
     };
   } catch (error) {
     return { status: "FAILED", reason: String(error && error.message || error).slice(0, 160) };
@@ -173,6 +247,8 @@ module.exports = {
   MAX_SYSTEMS,
   SAMPLE_PER_BAND,
   sampleBands,
+  isWormholeSystemID,
+  liveSceneSystemIDs,
   RECONCILE_INTERVAL_MS,
   enabled,
   materializeAwakeScenes,
