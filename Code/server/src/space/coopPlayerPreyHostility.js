@@ -25,6 +25,14 @@ function allowsPlayerPrey(source, target, options = {}) {
   if (!enabled(env)) return false;
   const attackerID = pos(source && source.itemID);
   const targetID = pos(target && target.itemID);
+  const note = (verdict, detail) => {
+    if (options.probe === false) return;
+    try {
+      require("./coopRuntimeProbe").observe("coop-player-prey-decision", null, null, {
+        attackerID, targetID, verdict, ...detail,
+      });
+    } catch (_error) { /* a probe must never change the decision */ }
+  };
   if (!attackerID || !targetID || attackerID === targetID) return false;
   // Only a real player hull is eligible: an NPC never becomes a "player" through this rule.
   if (target.nativeNpc === true) return false;
@@ -35,16 +43,22 @@ function allowsPlayerPrey(source, target, options = {}) {
     const registry = options.registry || require("./npc/npcRegistry");
     controller = registry.getControllerByEntityID(attackerID) || null;
   } catch (_error) {
+    note(false, {reason: "NO_CONTROLLER_LOOKUP"});
     return false;
   }
-  if (!controller) return false;
+  if (!controller) {
+    note(false, {reason: "NOT_AN_NPC"});
+    return false;
+  }
 
   // High-sec safety is a verdict, not a suggestion: if it still protects this hull, the answer stays
   // "friendly" and the stock loop keeps the player safe.
+  let highSecBlocked = false;
   try {
     const safety = options.safety || require("./coopHighSecNpcSafety");
-    if (safety.blocksAggression(source, target, { env })) return false;
+    highSecBlocked = safety.blocksAggression(source, target, { env }) === true;
   } catch (_error) {
+    note(false, {reason: "SAFETY_UNAVAILABLE"});
     return false;
   }
 
@@ -56,7 +70,10 @@ function allowsPlayerPrey(source, target, options = {}) {
   const aggressedAt = Number(controller.lastAggressedAtMs) || 0;
   const retaliating = pos(controller.lastAggressorID) === targetID && aggressedAt > 0 &&
     nowMs >= aggressedAt && nowMs - aggressedAt <= RETALIATION_MS;
-  return ordered || retaliating;
+  const hostile = !highSecBlocked && (ordered || retaliating);
+  note(hostile, {ordered, retaliating, highSecBlocked,
+    aggressorID: pos(controller.lastAggressorID), aggressedAgeMs: aggressedAt ? nowMs - aggressedAt : 0});
+  return hostile;
 }
 
 module.exports = { allowsPlayerPrey, enabled, playerCharacterIDOf, RETALIATION_MS };

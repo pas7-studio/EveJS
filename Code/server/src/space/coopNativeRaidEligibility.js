@@ -23,7 +23,15 @@ function isAuthorizedStockMiningRaid({
  if(sourceLinks.length!==1||sourceLinks[0].role!=="pirate")return false;
  if(target.nativeNpc!==true){
   // A player hull is a ship with a live session, never an NPC with a label.
-  return playerPreyEnabled(env)&&Number(target.session?.characterID)>0;
+  const playerCharacterID=Number(target.session?.characterID)||0;
+  const allowed=playerPreyEnabled(env)&&playerCharacterID>0;
+  // A refusal here is invisible in the world (no order, no log), so it is reported.
+  try{
+   require("./coopRuntimeProbe").observe("coop-player-prey-eligibility",playerCharacterID||null,
+    null,{attackerID:sourceID,targetID,playerCharacterID,
+     flag:playerPreyEnabled(env),allowed});
+  }catch(_probeError){/* a probe never changes the verdict */}
+  return allowed;
  }
  // Fleet membership comes ONLY from the current upstream EveJS mining
  // service. A persisted co-op 'miner' label does not grant permission.
