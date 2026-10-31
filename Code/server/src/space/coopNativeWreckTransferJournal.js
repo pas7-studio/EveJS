@@ -76,8 +76,18 @@ function seedFromJson(filePath, db) {
   db.prepare("INSERT OR REPLACE INTO journal (id, doc) VALUES (1, ?)").run(JSON.stringify(document));
 }
 
-// read() must never write: seeding a legacy JSON file from here could commit over an intent another
-// process wrote between the read and the seed. Migration happens inside update()'s transaction only.
+function legacyDocument(filePath) {
+  // A journal written by the previous implementation (same path, same shape, no .sqlite yet) must
+  // stay visible to readers at the upgrade boundary. This only parses - it never writes, so it cannot
+  // commit over an intent another process wrote. update() adopts the file inside its transaction.
+  try {
+    return parseDocument(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") return null;
+    throw new Error("WRECK_TRANSFER_GUARD_UNREADABLE");
+  }
+}
+
 function read(filePath) {
   let db;
   try {
@@ -85,7 +95,9 @@ function read(filePath) {
   } catch (error) {
     throw new Error("WRECK_TRANSFER_GUARD_UNREADABLE");
   }
-  return loadRow(db) || empty();
+  const current = loadRow(db);
+  if (current) return current;
+  return legacyDocument(filePath) || empty();
 }
 
 function update(filePath, mutator) {
@@ -120,7 +132,7 @@ function update(filePath, mutator) {
       db.prepare("INSERT OR REPLACE INTO journal (id, doc) VALUES (1, ?)")
         .run(JSON.stringify(next));
       db.exec("COMMIT");
-      mirror(filePath, next);
+      mirror(filePath, loadRow(db) || next);
       return { ok: true, document: next };
     } catch (error) {
       try { db.exec("ROLLBACK"); } catch (_rollbackError) { /* already rolled back */ }
