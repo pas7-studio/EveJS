@@ -468,9 +468,10 @@ function createCourierDispatch(deps = {}) {
       shipItemID: shipID,
       originStationID: inSpace ? target : stationID,
       destinationStationID: target,
-      step: "undock",
+      // A ship already in space cannot undock again: the leg starts at the warp.
+      step: inSpace ? "warp" : "undock",
       stepStartedAtMs: now(),
-      entityID: 0,
+      entityID: inSpace ? shipID : 0,
       reposition: true,
       systemID: num(systemID),
       identity,
@@ -492,6 +493,33 @@ function createCourierDispatch(deps = {}) {
       if (!identity) continue;
       const pkg = itemRow(num(record.plasticWrapItemID));
       if (!pkg || num(pkg.ownerID) !== pilotID) continue;
+      // The hull is the physical truth after a restart: a gate jump moves the scene entity but the
+      // character row can still name the origin system. Resuming from the contract's start system
+      // docked a courier that had really jumped to Perimeter back into Jita (live 2026-10-31,
+      // contract 980000004).
+      const hull = identity.ship || {};
+      const hullSystemID = num(hull.spaceState && hull.spaceState.systemID);
+      const realSystemID = hullSystemID || num(identity.character.solarSystemID) || num(record.startSolarSystemID);
+      const hullInSpace = !(num(hull.locationID) > 0) && !(num(identity.character.stationID) > 0);
+      if (hullInSpace) {
+        const plannedInSpace = flightCore.createFlight({ contract: record, identity, nowMs: now() });
+        if (plannedInSpace.status !== "FLIGHT_PLANNED") {
+          log(`[CoopCourier] contract ${contractID} resume ${plannedInSpace.status} ${plannedInSpace.reason || ""}`.trim());
+          continue;
+        }
+        flights.set(contractID, Object.assign({}, plannedInSpace, {
+          step: "warp",
+          stepStartedAtMs: now(),
+          entityID: num(hull.itemID) || num(plannedInSpace.shipItemID),
+          systemID: realSystemID,
+          destinationSystemID: num(record.endSolarSystemID),
+          identity,
+        }));
+        attempted.add(contractID);
+        log(`[CoopCourier] contract ${contractID} resumed in space in system ${realSystemID} by ${pilotID}, flying to ${num(record.endStationID)}`);
+        noteIncident(contractID, "resume-in-space", "ship already in space in " + realSystemID);
+        continue;
+      }
       if (num(identity.character.stationID) !== num(record.startStationID)) {
         // The character row can lag behind the real hull after a recovery. The
         // hull is the physical truth: if it sits in the origin station hangar,
@@ -501,7 +529,7 @@ function createCourierDispatch(deps = {}) {
           num(hull.locationID) === num(record.startStationID) && num(hull.flagID) === 4;
         if (!hullDockedAtOrigin) {
           if (!repositions.has(pilotID)) {
-            const move = planReposition(identity, num(record.startStationID), record.startSolarSystemID);
+            const move = planReposition(identity, num(record.startStationID), realSystemID);
             if (move) {
               repositions.set(pilotID, move);
               log(`[CoopCourier] courier ${pilotID} returning to origin ${move.destinationStationID} for contract ${contractID}`);
