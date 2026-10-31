@@ -138,6 +138,16 @@ const NPC_HARDWARE_CATALOG = Object.freeze({
       14451,
       41104,
       41119,
+      // FW-141: the co-op war doctrine flies the real SDE lasers and real frequency
+      // crystals; this family listed only the NPC-entity variants, so a Sansha war hull
+      // would have answered NPC_NATIVE_HARDWARE_CHARGE_POLICY_VIOLATION and never mustered
+      // - the same omission FW-133 fixed for the Angel and Serpentis families.
+      453,  // Small Focused Pulse Laser I
+      458,  // Heavy Pulse Laser I
+      462,  // Mega Pulse Laser I
+      454,  // Small Focused Beam Laser I
+      459,  // Heavy Beam Laser I
+      463,  // Mega Beam Laser I
     ]),
     chargeTypeIDs: Object.freeze([
       20863,
@@ -145,6 +155,14 @@ const NPC_HARDWARE_CATALOG = Object.freeze({
       20895,
       17680,
       17686,
+      246,  // Multifrequency S
+      254,  // Multifrequency M
+      262,  // Multifrequency L
+      239,  // Radio S
+      247,  // Radio M
+      255,  // Radio L
+      242,  // Standard S
+      250,  // Standard M
     ]),
     utilityTypeIDs: Object.freeze([
       527,

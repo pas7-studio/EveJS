@@ -74,6 +74,13 @@ const M = Object.freeze({
   autoCannon200: 486,         // 200mm AutoCannon I         (high)
   autoCannon220: 490,         // 220mm Vulcan AutoCannon I  (high, medium charge)
   autoCannon425: 491,         // 425mm AutoCannon I         (high, medium charge)
+  // FW-141: Sansha's Nation flies lasers, and the build carries the real ones.
+  smallPulseLaser1: 453,      // Small Focused Pulse Laser I (high, small crystal)
+  heavyPulseLaser1: 458,      // Heavy Pulse Laser I         (high, medium crystal)
+  megaPulseLaser1: 462,       // Mega Pulse Laser I          (high, large crystal)
+  smallBeamLaser1: 454,       // Small Focused Beam Laser I  (high, small crystal)
+  heavyBeamLaser1: 459,       // Heavy Beam Laser I          (high, medium crystal)
+  megaBeamLaser1: 463,        // Mega Beam Laser I           (high, large crystal)
 });
 
 // One doctrine = one real hull class + one real fitting. `chargePattern` picks a
@@ -284,6 +291,63 @@ const DOCTRINES = Object.freeze({
       weapons: [{ typeID: M.heavyNeutronBlaster1, quantity: 2 }],
       utility: [{ typeID: M.sensorDampener2, quantity: 2 }],
       chargePattern: "^Antimatter Charge M$", ammoDepth: 40,
+    },
+  }),
+  // FW-141 (measured 2026-10-31T17:40Z): Sansha's Nation answered NO_NAVY - the faction had
+  // no doctrine at all, so its war could never be fought and had to be retired. The build
+  // carries real Sansha parity profiles (pulse and beam, frigate to battleship) and real
+  // frequency crystals, so the nation now fields the same seven roles as the others: a
+  // pulse brawler line, a beam sniper, tracking disruption for ewar and remote armour for
+  // logistics - exactly the shape the native Sansha NPCs already fly.
+  500019: Object.freeze({ // Sansha's Nation - pulse/beam lasers, tracking disruption
+    tackle: {
+      role: "tackle", hullClass: "frigate",
+      profileID: "parity_sansha_pulse_frigate",
+      weapons: [{ typeID: M.smallPulseLaser1, quantity: 2 }],
+      utility: [{ typeID: M.warpDisruptor2, quantity: 1 }],
+      chargePattern: "^Multifrequency S$", ammoDepth: 60,
+    },
+    "anti-tackle": {
+      role: "anti-tackle", hullClass: "destroyer",
+      profileID: "parity_sansha_beam_destroyer",
+      weapons: [{ typeID: M.smallBeamLaser1, quantity: 4 }],
+      utility: [{ typeID: M.stasisWeb2, quantity: 1 }],
+      chargePattern: "^Radio S$", ammoDepth: 60,
+    },
+    brawler: {
+      role: "brawler", hullClass: "cruiser",
+      profileID: "parity_sansha_pulse_cruiser",
+      weapons: [{ typeID: M.heavyPulseLaser1, quantity: 4 }],
+      utility: [{ typeID: M.stasisWeb2, quantity: 1 }],
+      chargePattern: "^Multifrequency M$", ammoDepth: 60,
+    },
+    ewar: {
+      role: "ewar", hullClass: "cruiser",
+      profileID: "parity_sansha_pulse_cruiser",
+      weapons: [{ typeID: M.heavyPulseLaser1, quantity: 2 }],
+      utility: [{ typeID: M.trackingDisruptor2, quantity: 2 }],
+      chargePattern: "^Multifrequency M$", ammoDepth: 40,
+    },
+    logistics: {
+      role: "logistics", hullClass: "cruiser",
+      profileID: "parity_sansha_pulse_cruiser",
+      weapons: [{ typeID: M.heavyPulseLaser1, quantity: 1 }],
+      utility: [{ typeID: M.remoteArmor1, quantity: 2 }],
+      chargePattern: "^Multifrequency M$", ammoDepth: 40,
+    },
+    sniper: {
+      role: "sniper", hullClass: "battleship",
+      profileID: "parity_sansha_beam_battleship",
+      weapons: [{ typeID: M.megaBeamLaser1, quantity: 4 }],
+      utility: [{ typeID: M.sensorDampener2, quantity: 1 }],
+      chargePattern: "^Radio L$", ammoDepth: 40,
+    },
+    heavy: {
+      role: "heavy", hullClass: "battleship",
+      profileID: "parity_sansha_pulse_battleship",
+      weapons: [{ typeID: M.megaPulseLaser1, quantity: 4 }],
+      utility: [{ typeID: M.warpDisruptor2, quantity: 1 }],
+      chargePattern: "^Multifrequency L$", ammoDepth: 60,
     },
   }),
 });
