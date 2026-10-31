@@ -1,4 +1,4 @@
-const path = require("path");
+﻿const path = require("path");
 
 const spaceRuntime = require(path.join(__dirname, "../runtime"));
 const {
@@ -30,6 +30,60 @@ const {
 
 const DESTRUCTION_EFFECT_EXPLOSION = 3;
 const wreckTransferGuard = require(path.join(__dirname, "../coopNativeWreckTransferGuard"));
+
+function inventoryModule() {
+  return require(path.join(__dirname, "../../services/inventory/itemStore"));
+}
+
+function listDestinationRows(characterID, locationID, flagID) {
+  const rows = inventoryModule().listContainerItems(characterID, locationID, flagID) || [];
+  return rows
+    .filter((row) => row && Number(row.ownerID) === Number(characterID))
+    .map((row) => ({ itemID: row.itemID, quantity: row.quantity, typeID: row.typeID }));
+}
+
+function recoverNativeWreckTransfers() {
+  return wreckTransferGuard.recover({
+    getWreckItem: (wreckItemID) => nativeNpcStore.getNativeWreckItem(wreckItemID),
+    listDestination: (record) => listDestinationRows(record.characterID,
+      record.destinationLocationID, record.destinationFlagID)
+      .filter((row) => Number(row.typeID) === Number(record.typeID)),
+    undoItems: (record, items) => {
+      const inventory = inventoryModule();
+      for (const item of items) {
+        const current = inventory.findItemById(item.itemID);
+        if (!current) continue;
+        if (Number(item.previous) === 0) {
+          inventory.removeInventoryItem(item.itemID);
+          continue;
+        }
+        const target = Number(item.previous);
+        inventory.updateInventoryItem(item.itemID, (existing) => ({
+          ...existing,
+          quantity: target,
+          stacksize: Number(existing.singleton) === 1 ? 1 : target,
+        }));
+      }
+      return true;
+    },
+    restoreWreckItem: (record) => {
+      const existing = nativeNpcStore.getNativeWreckItem(record.wreckItemID);
+      if (existing) return true;
+      const wreck = nativeNpcStore.getNativeWreck(record.wreckID);
+      const result = nativeNpcStore.upsertNativeWreckItem({
+        wreckItemID: record.wreckItemID,
+        wreckID: record.wreckID,
+        typeID: record.typeID,
+        quantity: record.quantityBefore,
+        singleton: record.singleton === true,
+        itemName: "Recovered Wreck Item",
+        ownerID: Number((wreck && wreck.ownerID) || 500001),
+        volume: 0.01,
+      }, { transient: false });
+      return Boolean(result && result.success === true);
+    },
+  });
+}
 
 function removeGrantedItem(itemID) {
   const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
@@ -315,7 +369,17 @@ function buildWreckItemLikeRow(wreckItemRecord) {
   };
 }
 
+let transferRecoveryDone = false;
+
 function transferNativeWreckItemToCharacterLocation(options = {}) {
+  if (!transferRecoveryDone) {
+    transferRecoveryDone = true;
+    try {
+      recoverNativeWreckTransfers();
+    } catch (_error) {
+      transferRecoveryDone = false;
+    }
+  }
   const characterID = toPositiveInt(options.characterID, 0);
   const wreckID = toPositiveInt(options.wreckID, 0);
   const wreckItemID = toPositiveInt(options.wreckItemID, 0);
@@ -373,9 +437,12 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     wreckItemID,
     destinationLocationID,
     destinationFlagID,
+    typeID: toPositiveInt(wreckItemRecord.typeID, 0),
     quantityBefore: availableQuantity,
     quantity: requestedQuantity,
     singleton,
+    destinationBefore: listDestinationRows(characterID, destinationLocationID, destinationFlagID)
+      .map((row) => ({ itemID: row.itemID, quantity: row.quantity })),
   });
   if (transferReservation.ok !== true) {
     return { success: false, errorMsg: "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
@@ -400,6 +467,10 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
   if (!grantResult.success) {
     wreckTransferGuard.finish(transferReservation.id);
     return grantResult;
+  }
+  const grantFlush = require(path.join(__dirname, "../../gameStore")).flushTableSync("items");
+  if (!grantFlush || grantFlush.success !== true) {
+    return abandonWreckTransfer(transferReservation, grantResult, "WRECK_GRANT_NOT_DURABLE");
   }
 
   const previousData = buildWreckItemLikeRow(wreckItemRecord);
@@ -442,6 +513,10 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     };
   }
 
+  const sourceFlush = require(path.join(__dirname, "../../gameStore")).flushTableSync("npcWreckItems");
+  if (!sourceFlush || sourceFlush.success !== true) {
+    return { success: false, errorMsg: "WRECK_SOURCE_NOT_DURABLE" };
+  }
   wreckTransferGuard.finish(transferReservation.id);
   if (process.env.EVEJS_COOP_NATIVE_LOOT_EVIDENCE === "1") { try { require("../coopNativeLootPickupEvidence").note({scene:spaceRuntime.ensureScene(wreckRecord.systemID),wreck:wreckRecord,characterID,wreckItemID,destinationLocationID,sourceBefore:wreckItemRecord,sourceAfter:nativeNpcStore.getNativeWreckItem(wreckItemID),availableQuantity,requestedQuantity,grantResult}); } catch (_coopError) { console.warn("[CoopNativeLoot]",_coopError.message); } }
   refreshNativeWreckRuntimeEntity(wreckRecord.systemID, wreckRecord.wreckID, { broadcast: true });
@@ -762,5 +837,7 @@ module.exports = {
   spawnNativeWreck,
   destroyNativeWreck,
   transferNativeWreckItemToCharacterLocation,
+  recoverNativeWreckTransfers,
   destroyNativeNpcEntityWithWreck,
 };
+
