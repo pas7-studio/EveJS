@@ -47,7 +47,8 @@ const MAX_POLLS_PER_BEAT = 4;
 // pilot is inside the market cooldown. Measured 2026-10-30: a loaded hull was blocked
 // SALE_NOT_SOLD:NATIVE_NPC_BUSY and stopped carrying 20 255 units for good.
 const SALE_RETRYABLE = new Set(["NOT_AT_NATIVE_STATION", "SALE_TIMEOUT", "MARKET_UNAVAILABLE",
-  "COOLDOWN", "NO_ELIGIBLE_STACK", "BOOK_UNREADABLE"]);
+  "UNRESOLVED_MARKET_JOURNAL",
+  "COOLDOWN", "NO_ELIGIBLE_STACK", "BOOK_UNREADABLE", "MARKET_PREFLIGHT_STALE"]);
 
 function num(x) { return Number.isFinite(Number(x)) ? Number(x) : 0; }
 const phase2 = (value) => String(value || PHASE.TO_ORIGIN);
@@ -614,6 +615,11 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       const whyText = String(settled.reason || "");
       const retryable = SALE_RETRYABLE.has(whyText) || /_BUSY$/.test(whyText) ||
         /IN_FLIGHT$/.test(whyText);
+      // An empty hold means the trip is over: measured 2026-10-31 a hull blocked here for good
+      // after its cargo had already left.
+      if (String(settled.reason || "") === "NO_REAL_NATIVE_CARGO") {
+        return finish(PHASE.DONE, "SOLD_VERIFIED_BY_HOLD", { soldAt: now, sellCalls: calls, isk });
+      }
       if (!retryable) {
         return finish(PHASE.BLOCKED, "SALE_NOT_SOLD:" + why, { sellCalls: calls, isk });
       }
@@ -686,7 +692,27 @@ async function tickAll(authorities = {}, env = process.env) {
           if (timer && typeof timer.unref === "function") timer.unref();
         }),
       ]);
-      results.push({ haulerID, ...(answer || { status: "NO_ANSWER" }) });
+      const outcome = answer || { status: "NO_ANSWER" };
+      // A hull that times out must not look busy for ever: measured 2026-10-31 two hulls sat in
+      // SELL for 21 minutes with nothing written, because every beat hit the per-hull budget.
+      if (String(outcome.status) === "HULL_TIMEOUT") {
+        const current = read(haulerID, env);
+        if (current) {
+          const timeouts = num(current.timeouts) + 1;
+          const next = timeouts >= 3
+            ? { ...current, phase: PHASE.BLOCKED, timeouts, blockedAt: Date.now(),
+                lastReason: "HULL_TIMEOUT_THREE_TIMES" }
+            : { ...current, timeouts, lastReason: "HULL_TIMEOUT" };
+          write(next, env);
+          note(authorities.observe, "living-distribution-run", next,
+            { reason: next.lastReason });
+          outcome.timeouts = timeouts;
+        }
+      } else if (num((read(haulerID, env) || {}).timeouts) > 0) {
+        const current = read(haulerID, env);
+        write({ ...current, timeouts: 0 }, env);
+      }
+      results.push({ haulerID, ...outcome });
     } catch (error) {
       results.push({ haulerID, status: "THREW",
         reason: String((error && error.message) || error).slice(0, 90) });

@@ -353,6 +353,11 @@ function distributionRunAuthorities(options = {}) {
               faction: "independent", role: "hauler", durable: false}, systemID, haulerID);
           }
         } catch (_identityError) { /* the sale reports its own refusal below */ }
+        // A crashed partial fill leaves a journal behind and every later sale is refused
+        // UNRESOLVED_MARKET_JOURNAL until somebody reconciles it. The world can read the
+        // market's own row and settle it: that is the proof, not a re-send.
+        try { require("./coopVirtualWorldRuntime").reconcileMarketJournalsAtBoot(true); }
+        catch (_error) { /* reported by the sale itself */ }
         try {
           return require("./coopVirtualWorldRuntime").sellOnArrival({systemID, stationID,
             haulerID, types: [], scene: sceneFor(systemID)});
