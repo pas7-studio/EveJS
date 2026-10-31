@@ -325,6 +325,92 @@ function distributionRunAuthorities(options = {}) {
           .find((entry) => Number(entry.entityID) === Number(haulerID));
         return row ? String(row.phase) : null;
       },
+      // Buying a blueprint is the only way the corporation can grow new products: it owned
+      // four, the seeded world sells 2 772, and the native trader already matches seeded asks.
+      buyBlueprint: async ({haulerID, stationID, systemID}) => {
+        try {
+          const inventory = require("../services/inventory/itemTypeRegistry");
+          const items = require("../services/inventory/itemStore");
+          const manufacture = require("./coopNpcManufacture");
+          const worldData = require("./worldData");
+          const Better = require("better-sqlite3");
+          const db = new Better(process.env.EVEJS_MARKET_DB || "/var/lib/evejs/market/market.sqlite",
+            {readonly: true, fileMustExist: true});
+          const ownedRows = items.listOwnedItems(Number(process.env.EVEJS_COOP_FACTORY_CORP_ID || 1000129),
+            {locationID: undefined});
+          const rows = Array.isArray(ownedRows) ? ownedRows : (ownedRows && ownedRows.data) || [];
+          const owned = [...new Set(rows.filter((row) => Number(row.quantity) === -1)
+            .map((row) => Number(row.typeID)).filter(Boolean))];
+          const stock = db.prepare("select type_id, station_id, price, quantity from seed_stock " +
+            "where station_id=? and quantity>0").all(Number(stationID));
+          const asks = [];
+          const productOf = {};
+          for (const row of stock) {
+            const typeID = Number(row.type_id);
+            const meta = inventory.resolveItemByTypeID(typeID) || {};
+            if (Number(meta.categoryID) !== 9) continue;
+            let plan = null;
+            try { plan = manufacture.recipe(typeID, 1); } catch (_error) { plan = null; }
+            if (plan && plan.status === "READY") productOf[typeID] = Number(plan.productTypeID);
+            asks.push({typeID, name: String(meta.name || typeID), stationID: Number(row.station_id),
+              price: Number(row.price) || 0, quantity: Number(row.quantity) || 0});
+          }
+          // Can it be BUILT here? A blueprint is useless at a station that holds none of its
+          // materials (measured: 2.8 M Tritanium at 60000682, chipset blueprint at 60014935).
+          const runsAtStation = {};
+          for (const typeID of Object.keys(productOf)) {
+            let plan = null;
+            try { plan = manufacture.recipe(Number(typeID), 1); } catch (_error) { plan = null; }
+            if (!plan || plan.status !== "READY") continue;
+            let runs = Infinity;
+            for (const material of plan.materials || []) {
+              const held = rows.filter((row) => Number(row.typeID) === Number(material.typeID) &&
+                Number(row.locationID) === Number(stationID))
+                .reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+              runs = Math.min(runs, Math.floor(held / Math.max(1, Number(material.quantity))));
+            }
+            if (Number.isFinite(runs)) runsAtStation[Number(typeID)] = Math.max(0, runs);
+          }
+          // Demand is where the PRODUCT can be sold, not where the blueprint is bought: measured
+          // 2026-10-31 the chooser found nothing because it asked New Caldari (83 LP bids) while
+          // the goods sell in Jita one gate away.
+          const demandSystems = [Number(systemID)];
+          try {
+            const scene = sceneFor(Number(systemID));
+            for (const entity of (scene && Array.isArray(scene.staticEntities)
+              ? scene.staticEntities : [])) {
+              if (String(entity.kind) !== "stargate") continue;
+              const gate = worldData.getStargateByID(entity.itemID);
+              const destination = Number(gate && gate.destinationSolarSystemID) || 0;
+              if (destination && !demandSystems.includes(destination)) demandSystems.push(destination);
+            }
+          } catch (_error) { /* the hull system alone is still a real answer */ }
+          const demand = {};
+          const placeholders = demandSystems.map(() => "?").join(",");
+          for (const row of db.prepare("select type_id, sum(quantity) as volume, max(price) as price " +
+            "from seed_buy_orders where solar_system_id in (" + placeholders + ") and quantity>0 " +
+            "group by type_id").all(...demandSystems)) {
+            const typeID = Number(row.type_id);
+            const current = demand[typeID] || {volume: 0, price: 0};
+            demand[typeID] = {volume: current.volume + (Number(row.volume) || 0),
+              price: Math.max(current.price, Number(row.price) || 0)};
+          }
+          db.close();
+          const chosen = require("./coopBlueprintPurchase").choose({asks, owned, demand, productOf,
+            runsAtStation,
+            budget: Number(process.env.EVEJS_COOP_BLUEPRINT_BUDGET || 5000000),
+            priceCap: Number(process.env.EVEJS_COOP_BLUEPRINT_PRICE_CAP || 500000)});
+          if (chosen.status !== "BUY") return chosen;
+          const owner = require("./coopVirtualWorldRuntime");
+          const bought = typeof owner.buyFromStationStock === "function"
+            ? await owner.buyFromStationStock({systemID, stationID, typeID: chosen.blueprint.typeID,
+              haulerID, scene: sceneFor(systemID)}) : {status: "NO_BUYER"};
+          return {chosen: chosen.blueprint, bought};
+        } catch (error) {
+          return {status: "BUY_THREW", reason: String((error && error.message) || error).slice(0, 90),
+            stack: String((error && error.stack) || "").split("\n").slice(1, 4).join(" | ").slice(0, 200)};
+        }
+      },
       sell: ({haulerID, stationID, systemID}) => {
         // The arrival sale only trades through a hull that is NAMED as a hauler. Measured
         // 2026-10-30: the hull was linked here with an empty role and every sale answered
@@ -486,73 +572,6 @@ function distributionAuthorities(options = {}) {
       if (recovered && recovered.status === "NEEDS_OPERATOR_REPAIR")
         return {status: "CROSSING_REPAIR_REQUIRED"};
       transfer = prepared.transfer.bind(prepared);
-      // Buying a blueprint is the only way the corporation can grow new products: it owned
-      // four, the seeded world sells 2 772, and the native trader already matches seeded asks.
-      buyBlueprint: async ({haulerID, stationID, systemID}) => {
-        try {
-          const inventory = require("../services/inventory/itemTypeRegistry");
-          const items = require("../services/inventory/itemStore");
-          const manufacture = require("./coopNpcManufacture");
-          const worldData = require("./worldData");
-          const Better = require("better-sqlite3");
-          const db = new Better(process.env.EVEJS_MARKET_DB || "/var/lib/evejs/market/market.sqlite",
-            {readonly: true, fileMustExist: true});
-          const ownedRows = items.listOwnedItems(Number(process.env.EVEJS_COOP_FACTORY_CORP_ID || 1000129),
-            {locationID: undefined});
-          const rows = Array.isArray(ownedRows) ? ownedRows : (ownedRows && ownedRows.data) || [];
-          const owned = [...new Set(rows.filter((row) => Number(row.quantity) === -1)
-            .map((row) => Number(row.typeID)).filter(Boolean))];
-          const stock = db.prepare("select type_id, station_id, price, quantity from seed_stock " +
-            "where station_id=? and quantity>0").all(Number(stationID));
-          const asks = [];
-          const productOf = {};
-          for (const row of stock) {
-            const typeID = Number(row.type_id);
-            const meta = inventory.resolveItemByTypeID(typeID) || {};
-            if (Number(meta.categoryID) !== 9) continue;
-            let plan = null;
-            try { plan = manufacture.recipe(typeID, 1); } catch (_error) { plan = null; }
-            if (plan && plan.status === "READY") productOf[typeID] = Number(plan.productTypeID);
-            asks.push({typeID, name: String(meta.name || typeID), stationID: Number(row.station_id),
-              price: Number(row.price) || 0, quantity: Number(row.quantity) || 0});
-          }
-          // Can it be BUILT here? A blueprint is useless at a station that holds none of its
-          // materials (measured: 2.8 M Tritanium at 60000682, chipset blueprint at 60014935).
-          const runsAtStation = {};
-          for (const typeID of Object.keys(productOf)) {
-            let plan = null;
-            try { plan = manufacture.recipe(Number(typeID), 1); } catch (_error) { plan = null; }
-            if (!plan || plan.status !== "READY") continue;
-            let runs = Infinity;
-            for (const material of plan.materials || []) {
-              const held = rows.filter((row) => Number(row.typeID) === Number(material.typeID) &&
-                Number(row.locationID) === Number(stationID))
-                .reduce((sum, row) => sum + Number(row.quantity || 0), 0);
-              runs = Math.min(runs, Math.floor(held / Math.max(1, Number(material.quantity))));
-            }
-            if (Number.isFinite(runs)) runsAtStation[Number(typeID)] = Math.max(0, runs);
-          }
-          const demand = {};
-          for (const row of db.prepare("select type_id, sum(quantity) as volume, max(price) as price " +
-            "from seed_buy_orders where solar_system_id=? and quantity>0 group by type_id")
-            .all(Number(systemID))) {
-            demand[Number(row.type_id)] = {volume: Number(row.volume) || 0, price: Number(row.price) || 0};
-          }
-          db.close();
-          const chosen = require("./coopBlueprintPurchase").choose({asks, owned, demand, productOf,
-            runsAtStation,
-            budget: Number(process.env.EVEJS_COOP_BLUEPRINT_BUDGET || 5000000),
-            priceCap: Number(process.env.EVEJS_COOP_BLUEPRINT_PRICE_CAP || 500000)});
-          if (chosen.status !== "BUY") return chosen;
-          const owner = require("./coopVirtualWorldRuntime");
-          const bought = typeof owner.buyFromStationStock === "function"
-            ? await owner.buyFromStationStock({systemID, stationID, typeID: chosen.blueprint.typeID,
-              haulerID, scene: sceneFor(systemID)}) : {status: "NO_BUYER"};
-          return {chosen: chosen.blueprint, bought};
-        } catch (error) {
-          return {status: "BUY_THREW", reason: String((error && error.message) || error).slice(0, 90)};
-        }
-      },
       // The same durable record answers both questions: who the hull is, and where it is.
       sharedIdentity = registry;
     }

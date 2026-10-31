@@ -286,7 +286,7 @@ async function tick(haulerID, authorities = {}, env = process.env) {
                 ? Number(authorities.hullSystemOf(id)) || 0 : 0});
           } catch (_error) { bought = null; }
           if (bought) note(observe, "living-distribution-blueprint", state || {haulerID: id},
-            {reason: String(bought.status || (bought.bought && bought.bought.status) || "")});
+            {reason: String(bought.status || (bought.bought && (bought.bought.status + ":" + String(bought.bought.reason || ""))) || bought.reason || "").slice(0, 120)});
         }
       }
       // A second cycle that finds nothing worth shipping is the honest end of the run:
@@ -441,7 +441,7 @@ async function tick(haulerID, authorities = {}, env = process.env) {
           systemID: state.fromSystemID});
       } catch (_error) { bought = null; }
       if (bought) note(observe, "living-distribution-blueprint", state,
-        {reason: String(bought.status || (bought.bought && bought.bought.status) || "")});
+        {reason: String(bought.status || (bought.bought && (bought.bought.status + ":" + String(bought.bought.reason || ""))) || bought.reason || "").slice(0, 120)});
     }
     let answer = null;
     // The demand of THIS stop only: the types that really sit at this station.

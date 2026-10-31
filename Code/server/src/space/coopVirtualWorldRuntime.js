@@ -5241,7 +5241,8 @@ async function buyFromStationStock({systemID,stationID,typeID,haulerID,scene=nul
     haulerID:Number(haulerID),status:String(answer&&answer.status||"UNKNOWN"),
     price:Number(answer&&answer.price||0),quantity:Number(answer&&answer.quantity||0)});}catch(_error){}
   return answer||{status:"NO_ANSWER"};
- }catch(error){return {status:"BUY_THREW",reason:String(error?.message||error).slice(0,90)};}
+ }catch(error){return {status:"BUY_THREW",reason:String(error&&error.message||error).slice(0,80),
+  stack:String(error&&error.stack||"").split("\n").slice(1,3).join(" | ").slice(0,160)};}
 }
 function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
  if(process.env.EVEJS_COOP_NPC_MARKET_SELL_ON_ARRIVAL!=="1")return {status:"DISABLED"};
