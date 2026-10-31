@@ -208,7 +208,7 @@ function pending() {
   try {
     return Object.values(read().entries).filter((entry) => entry.phase !== "SETTLED");
   } catch (error) {
-    return [];
+    throw new Error("WRECK_TRANSFER_GUARD_UNREADABLE");
   }
 }
 
@@ -254,7 +254,15 @@ function recover({ getWreckItem, listDestination, undoItems, restoreWreckItem } 
   }
   const resolved = [];
   const blocked = [];
-  const entries = pending();
+  let entries;
+  try {
+    entries = pending();
+  } catch (error) {
+    if (error && error.message === "WRECK_TRANSFER_GUARD_UNREADABLE") {
+      return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_UNREADABLE", resolved: [], blocked: [] };
+    }
+    throw error;
+  }
   for (const record of entries) {
     // A live pickup holds this lock. Recovery must never resolve an intent that another process is
     // still working on: that would undo a grant mid-flight and let a second caller take the item.
