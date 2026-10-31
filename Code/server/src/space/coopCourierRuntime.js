@@ -927,6 +927,11 @@ function createCourierDispatch(deps = {}) {
         return;
       }
       log(`[CoopCourier] contract ${contractID} flight ${action.status} ${action.step || ""}`.trim());
+      // A non-action status (NO_ACTION for an unknown step, or a failed leg) can never progress, so
+      // dropping it is the only honest outcome; a reposition had no way out and kept re-warping.
+      if (flight.reposition) repositions.delete(num(flight.characterID));
+      else flights.delete(contractID);
+      saveFlights();
       return;
     }
     const identity = identityFor(num(flight.characterID));
