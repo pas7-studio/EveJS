@@ -14,16 +14,21 @@
 //   * from wingman (cap >= 3) at least one EWAR;
 //   * from squad-lead (cap >= 5) at least one logistics;
 //   * from wing-lead (cap >= 8) at least one heavy line ship.
-const ROLES = Object.freeze(["tackle", "brawler", "sniper", "logistics", "ewar", "heavy"]);
+const ROLES = Object.freeze(["tackle", "anti-tackle", "brawler", "sniper", "logistics",
+  "ewar", "heavy"]);
 const REQUIREMENTS = Object.freeze([
   { minCap: 1, role: "tackle" },
+  // FW-116: from two hulls, one of them hunts the enemy's tackle instead of adding
+  // a second identical brawler.
+  { minCap: 2, role: "anti-tackle" },
   { minCap: 3, role: "ewar" },
   { minCap: 5, role: "logistics" },
   { minCap: 8, role: "heavy" },
 ]);
 
 // Deterministic fill order: the first slots are the ones a small gang needs.
-const FILL_ORDER = Object.freeze(["tackle", "brawler", "brawler", "ewar", "logistics", "heavy", "sniper"]);
+const FILL_ORDER = Object.freeze(["tackle", "anti-tackle", "brawler", "brawler", "ewar",
+  "logistics", "heavy", "sniper"]);
 
 const pos = (value) => Number.isSafeInteger(Number(value)) && Number(value) > 0;
 const refuse = (reason, extra) => Object.assign({ status: "REFUSED", reason }, extra || {});

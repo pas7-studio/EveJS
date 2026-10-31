@@ -35,7 +35,10 @@ const WEAPON_FAMILIES = Object.freeze([
   "laserTurret",
 ]);
 const WEAPON_FAMILY_SET = new Set(WEAPON_FAMILIES);
-const ROLES = Object.freeze(["tackle", "brawler", "sniper", "logistics", "ewar", "heavy"]);
+// FW-116: a destroyer role joins the six. It exists to kill the enemy's tackle, which is
+// the one job a frigate-sized gang could not do before.
+const ROLES = Object.freeze(["tackle", "anti-tackle", "brawler", "sniper", "logistics",
+  "ewar", "heavy"]);
 const SLOT_FAMILIES = new Set(["high", "med", "low"]);
 // Category 6 = a real player ship, category 11 = a real NPC entity hull. Every
 // navy/pirate combat profile in this build points at category 11 (measured:
@@ -78,6 +81,15 @@ const M = Object.freeze({
 // charge whose name matches wins, so a doctrine never carries invented ammo.
 const DOCTRINES = Object.freeze({
   500001: Object.freeze({ // Caldari State - shield / hybrid / missile navy
+    // FW-116: a destroyer that exists to kill the enemy's tackle. Real SDE hull and
+    // real small hybrid guns: high tracking, short range, one web to hold what it catches.
+    "anti-tackle": {
+      role: "anti-tackle", hullClass: "destroyer",
+      profileID: "parity_mission_caldari_state_45462_caldari_ca_destroyer",
+      weapons: [{ typeID: M.rail75, quantity: 4 }],
+      utility: [{ typeID: M.stasisWeb2, quantity: 1 }],
+      chargePattern: "^Antimatter Charge S$", ammoDepth: 60,
+    },
     tackle: {
       role: "tackle", hullClass: "frigate",
       profileID: "parity_mission_caldari_state_14359_caldari_navy_condor",
@@ -122,6 +134,14 @@ const DOCTRINES = Object.freeze({
     },
   }),
   500004: Object.freeze({ // Gallente Federation - armour / hybrid / dampeners
+    // FW-116: the Gallente answer to enemy tackle - a blaster destroyer with a web.
+    "anti-tackle": {
+      role: "anti-tackle", hullClass: "destroyer",
+      profileID: "parity_mission_gallente_federation_25127_federation_arcus",
+      weapons: [{ typeID: M.lightNeutronBlaster1, quantity: 4 }],
+      utility: [{ typeID: M.stasisWeb2, quantity: 1 }],
+      chargePattern: "^Antimatter Charge S$", ammoDepth: 60,
+    },
     tackle: {
       role: "tackle", hullClass: "frigate",
       profileID: "parity_mission_gallente_federation_14361_federation_navy_atron",
@@ -166,6 +186,30 @@ const DOCTRINES = Object.freeze({
     },
   }),
   500011: Object.freeze({ // Angel Cartel - projectile, fast
+    // FW-116: Angel anti-tackle (autocannon destroyer), plus the two roles the Cartel
+    // never had - a remote-armour support cruiser and a tracking-disruptor cruiser,
+    // which is exactly what an Angel gang brings to a fight.
+    "anti-tackle": {
+      role: "anti-tackle", hullClass: "destroyer",
+      profileID: "parity_angel_autocannon_destroyer",
+      weapons: [{ typeID: M.gatling125, quantity: 4 }],
+      utility: [{ typeID: M.stasisWeb2, quantity: 1 }],
+      chargePattern: "^EMP S$", ammoDepth: 60,
+    },
+    logistics: {
+      role: "logistics", hullClass: "cruiser",
+      profileID: "parity_angel_breaker",
+      weapons: [{ typeID: M.autoCannon220, quantity: 1 }],
+      utility: [{ typeID: M.remoteArmor1, quantity: 2 }],
+      chargePattern: "^EMP M$", ammoDepth: 40,
+    },
+    ewar: {
+      role: "ewar", hullClass: "cruiser",
+      profileID: "parity_angel_artillery_cruiser",
+      weapons: [{ typeID: M.autoCannon220, quantity: 2 }],
+      utility: [{ typeID: M.trackingDisruptor2, quantity: 2 }],
+      chargePattern: "^EMP M$", ammoDepth: 40,
+    },
     tackle: {
       role: "tackle", hullClass: "frigate",
       profileID: "parity_angel_autocannon_frigate",
@@ -189,6 +233,37 @@ const DOCTRINES = Object.freeze({
     },
   }),
   500020: Object.freeze({ // Serpentis - blasters, dampeners
+    // FW-116: Serpentis anti-tackle (rail destroyer), a remote-armour support cruiser, a
+    // blaster battleship and a rail battleship - the Cartel now has every role but the
+    // pure long-range sniper hull it never fielded.
+    "anti-tackle": {
+      role: "anti-tackle", hullClass: "destroyer",
+      profileID: "parity_serpentis_rail_destroyer",
+      weapons: [{ typeID: M.rail75, quantity: 4 }],
+      utility: [{ typeID: M.stasisWeb2, quantity: 1 }],
+      chargePattern: "^Antimatter Charge S$", ammoDepth: 60,
+    },
+    logistics: {
+      role: "logistics", hullClass: "cruiser",
+      profileID: "parity_serpentis_blaster_cruiser",
+      weapons: [{ typeID: M.heavyElectronBlaster1, quantity: 1 }],
+      utility: [{ typeID: M.remoteArmor1, quantity: 2 }],
+      chargePattern: "^Antimatter Charge M$", ammoDepth: 40,
+    },
+    heavy: {
+      role: "heavy", hullClass: "battleship",
+      profileID: "parity_serpentis_blaster_battleship",
+      weapons: [{ typeID: M.neutronBlasterCannon1, quantity: 4 }],
+      utility: [{ typeID: M.damageControl2, quantity: 1 }],
+      chargePattern: "^Antimatter Charge L$", ammoDepth: 40,
+    },
+    sniper: {
+      role: "sniper", hullClass: "battleship",
+      profileID: "parity_serpentis_rail_battleship",
+      weapons: [{ typeID: M.rail425, quantity: 4 }],
+      utility: [{ typeID: M.sensorDampener2, quantity: 1 }],
+      chargePattern: "^Thorium Charge L$", ammoDepth: 40,
+    },
     tackle: {
       role: "tackle", hullClass: "frigate",
       profileID: "parity_serpentis_blaster_frigate",
