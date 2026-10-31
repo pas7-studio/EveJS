@@ -342,9 +342,32 @@ function distributionRunAuthorities(options = {}) {
               } catch (_error) { return false; }
             },
           });
-          const links = (registry.snapshot() || {}).links || {};
-          const bound = Object.entries(links)
+          let links = (registry.snapshot() || {}).links || {};
+          let bound = Object.entries(links)
             .find(([, row]) => Number(row && row.entityID) === Number(haulerID));
+          // A pending trade journal blocks a PILOT, not a ship: the world refuses every sale of
+          // that identity until an operator settles it. Measured 2026-10-31 a hull sat blocked
+          // UNRESOLVED_MARKET_JOURNAL with real cargo aboard while the journal could not be
+          // proven (the market's order row says NOT_FILLED). The goods move under a clean
+          // identity; the old journal stays pending for the operator, untouched.
+          try {
+            const txDir = require("path").join(process.env.EVEJS_COOP_NPC_MARKET_ROOT ||
+              "/var/lib/evejs/coop-native-market", "tx");
+            if (bound && require("fs").existsSync(require("path").join(txDir, bound[0] + ".json"))) {
+              registry.release(bound[0], {expectedEntityID: Number(haulerID)});
+              links = (registry.snapshot() || {}).links || {};
+              let free = null;
+              for (let n = 1; n <= 9999; n += 1) {
+                const candidate = "coop-pilot-" + String(n).padStart(3, "0");
+                if (!links[candidate]) { free = candidate; break; }
+              }
+              if (free) {
+                registry.link({id: free, name: free, faction: "independent", role: "hauler",
+                  durable: false}, systemID, haulerID);
+                bound = [free, {pilotID: free, role: "hauler", entityID: haulerID, systemID}];
+              }
+            }
+          } catch (_error) { /* the sale reports its own refusal below */ }
           const role = bound ? String(bound[1].role || "") : "";
           if (!bound || !role || !["hauler", "miner", "trader"].includes(role)) {
             const pilotID = bound ? bound[0] : "coop-pilot-027";
