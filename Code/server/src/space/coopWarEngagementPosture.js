@@ -18,6 +18,37 @@
 // keeps every other override the hull already has, and is idempotent: the same
 // values are never re-applied.
 const enabled = env => env.EVEJS_COOP_WAR_ENGAGEMENT_POSTURE === "1";
+// FW-118: every hull used to orbit at the same distance, so a battleship sniper, an EWAR
+// cruiser and a tackle frigate all sat in the same 500 m ball. MEASURED 2026-10-31: the
+// posture phase applied one orbitDistanceMeters to every war ship in the system.
+//
+// A role now keeps its own range, in metres. These are engagement ranges, not damage: the
+// native behaviour loop orbits at this distance and leashes at the matching radius, so a
+// sniper really stands off, logistics really stays behind the line and tackle really closes.
+// An unknown role keeps the operator's configured posture exactly as before.
+const ROLE_POSTURE = Object.freeze({
+  tackle: Object.freeze({ orbitDistanceMeters: 2500, leashRangeMeters: 60000 }),
+  "anti-tackle": Object.freeze({ orbitDistanceMeters: 6000, leashRangeMeters: 60000 }),
+  brawler: Object.freeze({ orbitDistanceMeters: 5000, leashRangeMeters: 60000 }),
+  heavy: Object.freeze({ orbitDistanceMeters: 12000, leashRangeMeters: 90000 }),
+  ewar: Object.freeze({ orbitDistanceMeters: 45000, leashRangeMeters: 90000 }),
+  sniper: Object.freeze({ orbitDistanceMeters: 60000, leashRangeMeters: 120000 }),
+  logistics: Object.freeze({ orbitDistanceMeters: 70000, leashRangeMeters: 120000 }),
+});
+function postureForRole(role, defaults = {}) {
+  const base = {
+    leashRangeMeters: Number(defaults.leashRangeMeters) || 0,
+    orbitDistanceMeters: Math.max(100, Number(defaults.orbitDistanceMeters) || 500),
+    movementMode: String(defaults.movementMode || "orbit"),
+  };
+  const row = ROLE_POSTURE[String(role || "")];
+  if (!row) return base;
+  return {
+    leashRangeMeters: row.leashRangeMeters,
+    orbitDistanceMeters: row.orbitDistanceMeters,
+    movementMode: base.movementMode,
+  };
+}
 const pos = x => Number.isSafeInteger(x) && x > 0;
 
 function createWarEngagementPosture({
@@ -31,6 +62,8 @@ function createWarEngagementPosture({
   orbitDistanceMeters = 500,
   movementMode = "orbit",
   cooldownMs = 30000,
+  // FW-118: the role a hull flies. Absent or unreadable means the operator posture.
+  roleOfEntity = null,
 } = {}) {
   if (
     [readWarState, getController, setBehaviorOverrides].some(x => typeof x !== "function") ||
@@ -74,18 +107,24 @@ function createWarEngagementPosture({
         skips.push({ entityID: id, reason: "NO_NATIVE_CONTROLLER" });
         continue;
       }
+      let role = "";
+      if (typeof roleOfEntity === "function") {
+        try { role = String(roleOfEntity(id) || ""); } catch (_error) { role = ""; }
+      }
+      const posture = postureForRole(role, { leashRangeMeters, orbitDistanceMeters,
+        movementMode });
       const current = controller.behaviorOverrides || {};
-      if (current.leashRangeMeters === leashRangeMeters &&
-        current.orbitDistanceMeters === orbitDistanceMeters &&
-        current.movementMode === movementMode) continue;
+      if (current.leashRangeMeters === posture.leashRangeMeters &&
+        current.orbitDistanceMeters === posture.orbitDistanceMeters &&
+        current.movementMode === posture.movementMode) continue;
       nextAt.set(id, now + cooldownMs);
       let ack = null, threw = "";
       try {
         ack = setBehaviorOverrides(id, {
           ...current,
-          movementMode,
-          leashRangeMeters,
-          orbitDistanceMeters,
+          movementMode: posture.movementMode,
+          leashRangeMeters: posture.leashRangeMeters,
+          orbitDistanceMeters: posture.orbitDistanceMeters,
         });
       } catch (error) { threw = String(error?.message || error).slice(0, 120); }
       applied.push({
@@ -94,8 +133,9 @@ function createWarEngagementPosture({
         factionID: Number(ship.factionID),
         campaignID: String(ship.campaignID || ""),
         movementMode,
-        leashRangeMeters,
-        orbitDistanceMeters,
+        leashRangeMeters: posture.leashRangeMeters,
+        orbitDistanceMeters: posture.orbitDistanceMeters,
+        role,
         status: ack?.success === true ? "NATIVE_POSTURE_APPLIED"
           : String(threw || ack?.errorMsg || "REFUSED").slice(0, 120),
       });
@@ -105,4 +145,4 @@ function createWarEngagementPosture({
   return Object.freeze({ tick });
 }
 
-module.exports = { createWarEngagementPosture, enabled };
+module.exports = { createWarEngagementPosture, enabled, postureForRole, ROLE_POSTURE };

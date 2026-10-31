@@ -15,6 +15,18 @@ let backgroundTicks=0,headlessBootTimer=null,nativeOrderBridge=null,personalGoal
 // FW-009B: the durable merit ledger is the real source; it is read here so a
 // promotion earned by a confirmed kill immediately enlarges the command.
 let warMeritLedger=null;
+// FW-118: the role a hull flies, asked of the doctrine table. One authority for every
+// director that needs it, and an unknown hull is an empty role, never a guess.
+function warHullRole(entityID){
+ try{
+  const native=require("./npc/nativeNpcStore").getNativeEntity(Number(entityID));
+  const typeID=Number(native&&(native.shipTypeID||native.typeID))||0;
+  if(!typeID)return "";
+  if(!warDoctrineInstance)warDoctrineInstance=
+   require("./coopWarDoctrine").createWarDoctrine();
+  return String(warDoctrineInstance.roleForHullType(typeID)||"");
+ }catch(_error){return ""}
+}
 function warMeritRecords(){
  if(!warMeritLedger){
   try{
@@ -1833,16 +1845,7 @@ function advanceNativeWarCombat(){
    isTactical:id=>tacticsDirector?.activeIDs()?.has(id)===true,
    // FW-117: the role a hull flies, so a destroyer hunts enemy tackle and an EWAR ship
    // hunts enemy support instead of everyone shooting the nearest hull.
-   roleOfEntity:id=>{
-    try{
-     const native=require("./npc/nativeNpcStore").getNativeEntity(Number(id));
-     const typeID=Number(native&&(native.shipTypeID||native.typeID))||0;
-     if(!typeID)return "";
-     if(!warDoctrineInstance)warDoctrineInstance=
-      require("./coopWarDoctrine").createWarDoctrine();
-     return String(warDoctrineInstance.roleForHullType(typeID)||"");
-    }catch(_error){return ""}
-   }
+   roleOfEntity:warHullRole
   });
  }
  // FW-031: a war hull spawned at a belt anchor sits 150 km from home with a 90 km
@@ -1856,7 +1859,9 @@ function advanceNativeWarCombat(){
     registry:nativeWarFleetRegistry(),
     getController:id=>require("./npc/npcRegistry").getControllerByEntityID(id),
     setBehaviorOverrides:(id,overrides)=>
-     require("./npc/npcService").setBehaviorOverrides(id,overrides)
+     require("./npc/npcService").setBehaviorOverrides(id,overrides),
+    // FW-118: each role keeps its own engagement range instead of one 500 m ball.
+    roleOfEntity:warHullRole
    });
   const posture=warPosture.tick();
   if(posture.applied.length)require("./coopRuntimeProbe").observe(
