@@ -351,9 +351,12 @@ async function runOnce(options = {}) {
       jobInFlight: inFlight > 0,
     });
   }
+  const ready = candidates.filter((c) => c.recipeRejected !== true);
   // A ceiling nobody names looks like a healthy loop: measured 2026-10-30 the corporation could
   // build three products while the buyer system carried thousands of real bids it cannot answer.
   // When no job is possible, say what the corporation CANNOT make (at most once per half hour).
+  // NB: this must live AFTER `ready`; checking it before the declaration threw
+  // "Cannot access 'ready' before initialization" and stopped the manufacturer for hours.
   if (!ready.length && typeof options.demandGap === "function") {
     const last = Number(options.gapReportedAt || 0);
     if (Date.now() - (Number.isFinite(last) ? last : 0) > 30 * 60 * 1000) {
@@ -367,7 +370,6 @@ async function runOnce(options = {}) {
       }
     }
   }
-  const ready = candidates.filter((c) => c.recipeRejected !== true);
   note(options, "living-npc-manufacture-attempt", {systemID: options.systemID,
     blueprints: blueprints.length, candidates: candidates.length, ready: ready.length,
     rejected: candidates.filter((c) => c.recipeRejected === true)
