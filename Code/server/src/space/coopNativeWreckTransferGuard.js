@@ -9,7 +9,26 @@ const path = require("node:path");
 
 const FILE_ENV = "EVEJS_COOP_WRECK_TRANSFER_GUARD_FILE";
 const MAX_PENDING = 512;
+const EMPTY_LOCK_GRACE_MS = 5000;
 let counter = 0;
+
+function readOwner(wreckItemID) {
+  try {
+    const raw = fs.readFileSync(lockPath(wreckItemID), "utf8").trim();
+    const pid = Number(raw);
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : 0;
+  } catch (error) {
+    return 0;
+  }
+}
+
+function lockAgeMs(wreckItemID) {
+  try {
+    return Date.now() - fs.statSync(lockPath(wreckItemID)).mtimeMs;
+  } catch (error) {
+    return Infinity;
+  }
+}
 
 function filePath() {
   if (process.env[FILE_ENV]) return process.env[FILE_ENV];
@@ -43,25 +62,43 @@ function ownerAlive(pid) {
 }
 
 function acquire(wreckItemID) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let fd = null;
     try {
-      const fd = fs.openSync(lockPath(wreckItemID), "wx");
-      fs.writeFileSync(fd, String(process.pid));
-      fs.closeSync(fd);
-      trace("lock-acquired", { wreckItemID });
-      return true;
+      fd = fs.openSync(lockPath(wreckItemID), "wx");
     } catch (error) {
       if (!error || error.code !== "EEXIST") return false;
-      let owner = 0;
-      try { owner = Number(fs.readFileSync(lockPath(wreckItemID), "utf8")); } catch (_error) { owner = 0; }
-      if (owner === process.pid || ownerAlive(owner)) {
-        trace("lock-busy", { wreckItemID, owner });
+      const owner = readOwner(wreckItemID);
+      if (owner > 0) {
+        if (owner === process.pid || ownerAlive(owner)) {
+          trace("lock-busy", { wreckItemID, owner });
+          return false;
+        }
+        trace("lock-stale", { wreckItemID, owner });
+        release(wreckItemID);
+        continue;
+      }
+      // The file exists but carries no owner yet: either another process is between creating it and
+      // writing its pid, or it died in that window. Only age separates the two, so a young empty
+      // lock is treated as owned.
+      if (lockAgeMs(wreckItemID) < EMPTY_LOCK_GRACE_MS) {
+        trace("lock-publishing", { wreckItemID });
         return false;
       }
-      // The lock belongs to a process that is gone: reclaim it.
-      trace("lock-stale", { wreckItemID, owner });
+      trace("lock-empty-stale", { wreckItemID });
       release(wreckItemID);
+      continue;
     }
+    try {
+      fs.writeFileSync(fd, String(process.pid));
+      fs.closeSync(fd);
+    } catch (error) {
+      try { fs.closeSync(fd); } catch (_closeError) { /* nothing left to close */ }
+      release(wreckItemID);
+      return false;
+    }
+    trace("lock-acquired", { wreckItemID });
+    return true;
   }
   return false;
 }
@@ -155,7 +192,7 @@ function begin(fields = {}) {
     state.entries[String(record.id)] = record;
     write(state);
     trace("intent-written", { id: record.id, wreckItemID: record.wreckItemID });
-    return { ok: true, id: record.id };
+    return { ok: true, id: record.id, record };
   } catch (error) {
     release(record.wreckItemID);
     return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_UNAVAILABLE" };

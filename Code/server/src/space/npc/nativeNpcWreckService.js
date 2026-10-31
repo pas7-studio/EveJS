@@ -1,4 +1,4 @@
-﻿const path = require("path");
+const path = require("path");
 
 const spaceRuntime = require(path.join(__dirname, "../runtime"));
 const {
@@ -85,19 +85,56 @@ function recoverNativeWreckTransfers() {
   });
 }
 
-function removeGrantedItem(itemID) {
+// Undo exactly what this transaction added, measured against the destination snapshot the intent
+// recorded before the grant. Identity comes from the recorded item ids and quantities, never from
+// "subtract what was granted": a merge into an existing stack is restored to its previous quantity,
+// and a created item is removed. The function is idempotent, so a half-done undo can be resumed.
+function restoreDestinationToSnapshot(record, listDestinationRows) {
   const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
-  if (typeof inventory.removeInventoryItem !== "function") return false;
-  inventory.removeInventoryItem(itemID);
+  const before = new Map((record.destinationBefore || [])
+    .map((row) => [Number(row.itemID), Number(row.quantity)]));
+  const rows = (listDestinationRows() || [])
+    .filter((row) => Number(row.typeID) === Number(record.typeID));
+  for (const row of rows) {
+    const itemID = Number(row.itemID);
+    const had = before.has(itemID) ? before.get(itemID) : 0;
+    const now = Number(row.quantity);
+    if (now <= had) continue;
+    if (had === 0) {
+      const removed = inventory.removeInventoryItem(itemID);
+      if (!removed || removed.success !== true) return false;
+      continue;
+    }
+    const updated = inventory.updateInventoryItem(itemID, (existing) => ({
+      ...existing,
+      quantity: had,
+      stacksize: Number(existing.singleton) === 1 ? 1 : had,
+    }));
+    if (!updated || updated.success !== true) return false;
+  }
+  // Verify against the same authoritative snapshot: nothing may be above what it held before.
+  const after = (listDestinationRows() || [])
+    .filter((row) => Number(row.typeID) === Number(record.typeID));
+  for (const row of after) {
+    const had = before.has(Number(row.itemID)) ? before.get(Number(row.itemID)) : 0;
+    if (Number(row.quantity) > had) return false;
+  }
   return true;
 }
 
-function abandonWreckTransfer(reservation, grantResult, errorMsg) {
-  const changes = (grantResult && grantResult.data && grantResult.data.changes) || [];
-  const created = changes.filter((change) => change && change.created === true && change.item)
-    .map((change) => change.item.itemID);
-  for (const itemID of created) {
-    if (removeGrantedItem(itemID) !== true) return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
+function abandonWreckTransfer(reservation, errorMsg) {
+  const record = reservation && reservation.record;
+  if (!record) return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
+  const restored = restoreDestinationToSnapshot(record, () => listDestinationRows(
+    record.characterID, record.destinationLocationID, record.destinationFlagID));
+  if (!restored) {
+    // The inventory could not be proven back to its pre-grant state. Keep the intent pending (and
+    // the lock held) so recovery resolves it; never report a clean failure here.
+    return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
+  }
+  const flush = require(path.join(__dirname, "../../gameStore")).flushTableSync("items");
+  if (!flush || flush.success !== true) {
+    return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
   }
   wreckTransferGuard.finish(reservation.id);
   return { success: false, errorMsg };
@@ -439,6 +476,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
       return { success: false, errorMsg: "COOP_LOOT_QUARANTINED" };
     }
   }
+  if (process.env.EVEJS_COOP_PVE_BOSS_LOOT_FENCE === "1") { const claim = require("../coopPveBossLootClaim").begin({wreck:wreckRecord,wreckItem:wreckItemRecord,characterID,destinationLocationID,requestedQuantity}); if (claim.status !== "NOT_VERIFIED_BOSS_WRECK" && claim.status !== "BOSS_LOOT_CLAIMED") return {success:false,errorMsg:"COOP_BOSS_LOOT_CLAIM_BLOCKED"}; }
   const transferReservation = wreckTransferGuard.begin({
     characterID,
     wreckID,
@@ -463,12 +501,10 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     wreckTransferGuard.finish(transferReservation.id);
     return { success: false, errorMsg: "ITEM_NOT_FOUND" };
   }
-  if (process.env.EVEJS_COOP_NATIVE_LOOT_QUARANTINE === "1") { const guard = require("../coopNativeLootQuarantine").check({wreckID,wreckItemID}); if (guard.status !== "ALLOW") { wreckTransferGuard.finish(transferReservation.id); return {success:false,errorMsg:"COOP_LOOT_QUARANTINED"}; } }
   const itemType = resolveItemByTypeID(wreckItemRecord.typeID) || {
     typeID: wreckItemRecord.typeID,
     name: wreckItemRecord.itemName,
   };
-  if (process.env.EVEJS_COOP_PVE_BOSS_LOOT_FENCE === "1") { const claim = require("../coopPveBossLootClaim").begin({wreck:wreckRecord,wreckItem:wreckItemRecord,characterID,destinationLocationID,requestedQuantity}); if (claim.status !== "NOT_VERIFIED_BOSS_WRECK" && claim.status !== "BOSS_LOOT_CLAIMED") return {success:false,errorMsg:"COOP_BOSS_LOOT_CLAIM_BLOCKED"}; }
   const grantResult = grantItemToCharacterLocation(
     characterID,
     destinationLocationID,
@@ -486,7 +522,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
   }
   const grantFlush = require(path.join(__dirname, "../../gameStore")).flushTableSync("items");
   if (!grantFlush || grantFlush.success !== true) {
-    return abandonWreckTransfer(transferReservation, grantResult, "WRECK_GRANT_NOT_DURABLE");
+    return abandonWreckTransfer(transferReservation, "WRECK_GRANT_NOT_DURABLE");
   }
 
   const previousData = buildWreckItemLikeRow(wreckItemRecord);
@@ -499,7 +535,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
       removal = null;
     }
     if (!removal || removal.success !== true) {
-      return abandonWreckTransfer(transferReservation, grantResult, "WRECK_SOURCE_NOT_REMOVED");
+      return abandonWreckTransfer(transferReservation, "WRECK_SOURCE_NOT_REMOVED");
     }
     sourceChange = {
       removed: true,
@@ -520,7 +556,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
       updateResult = { success: false, errorMsg: "WRECK_SOURCE_UPDATE_THREW" };
     }
     if (!updateResult.success) {
-      return abandonWreckTransfer(transferReservation, grantResult, "WRECK_SOURCE_NOT_DECREMENTED");
+      return abandonWreckTransfer(transferReservation, "WRECK_SOURCE_NOT_DECREMENTED");
     }
     sourceChange = {
       removed: false,
