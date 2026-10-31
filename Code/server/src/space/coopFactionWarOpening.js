@@ -375,8 +375,16 @@ function buildProofs({ plan, presence, territories, getStargatesForSystem, getGa
     // EXPANSION border, the defender must really own the target system in the SDE. A
     // defender that owns the ground but has no hull there yet is exactly the war the
     // garrison then has to defend.
+    // FW-114: the attacker must either have hulls on its own side of the border OR really
+    // control that side. MEASURED 2026-10-31: 500020 holds 30000144 with one hull in the whole
+    // world while 23 ships of another faction sit there, so every expansion border of that
+    // faction answered NATIVE_WAR_AUTHORITY_MISSING for ever and the frontier stayed at one
+    // live campaign. START_CAMPAIGN already requires the source to be the attacker's own
+    // controlled territory, and the garrison is the mechanism that puts hulls there, so
+    // control is the honest authority - the navy gate still decides whether it can shoot.
     declaration: ({ attackerFactionID, defenderFactionID }) =>
-      countIn(sourceSystemID, attackerFactionID) >= minShips &&
+      (countIn(sourceSystemID, attackerFactionID) >= minShips ||
+       territories[String(sourceSystemID)] === String(attackerFactionID)) &&
       (countIn(targetSystemID, defenderFactionID) >= minShips ||
        sdeOwner(targetSystemID) === String(defenderFactionID)),
     // The system is owned by this faction in the map the front was derived from, or by
