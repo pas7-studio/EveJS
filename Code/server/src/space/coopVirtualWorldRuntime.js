@@ -2693,6 +2693,26 @@ function advanceNativeWarCaptureByForce(){
    evidence:"NATIVE_WRECK_AND_EMPTY_DEFENDER_ONLY"});
  else if(result.skips.length)warSkip("capture-by-force",
   String(result.skips[0].reason||result.status));
+ // FW-139 (measured 16:51-17:21Z): four systems really changed hands by force and the
+ // only front reports were the OBJECTIVE_DIRECTOR ones, so a capture that came from
+ // capture-by-force was never announced - the owner could not see his own war move in
+ // Local. The objective director already reports MILITARY_CONTROL_CAPTURED once per
+ // transition; this reports the force path the same way, once per campaign+system+wreck.
+ for(const event of result.captured||[]){
+  if(!event||event.kind!=="CAPTURED")continue;
+  let capturerFactionID=0;
+  try{
+   const warState=warStateStore().read();
+   const campaign=warState&&warState.campaigns&&warState.campaigns[event.campaignID];
+   capturerFactionID=Number(warState?.wars?.[campaign?.warID]?.attackerFactionID)||0;
+  }catch(_error){capturerFactionID=0}
+  warFrontChat("objective-captured",{
+   eventKey:String(event.campaignID||"")+":"+String(event.systemID||"")+":"+
+    String(event.wreckID||""),
+   systemID:event.systemID,
+   factionID:capturerFactionID,
+  },[event.systemID]);
+ }
 }
 runPhase("native-faction-war-battle",advanceNativeWarCombat);
  runPhase("native-faction-war-capture-by-force",advanceNativeWarCaptureByForce);
