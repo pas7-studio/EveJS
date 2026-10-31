@@ -11,7 +11,7 @@ const {combatEnabled,ammoEnabled}=require("./coopWarCombatAuthority"+
 function createWarBattleDirector({authority,bridge,sceneForSystem,
  issueNativeAttack,getController,isAmmoDepleted=()=>false,isTactical=()=>false,
  clock=()=>Date.now(),env=process.env,maxOrders=2,cooldownMs=120000,
- playerOpponents=null}={}){
+ playerOpponents=null,roleOfEntity=null}={}){
  if(!authority?.snapshots||!authority?.evaluatePair||!bridge?.issue||
   [sceneForSystem,issueNativeAttack,getController,isAmmoDepleted,isTactical,clock].some(x=>typeof x!=="function")||
   !Number.isSafeInteger(maxOrders)||maxOrders<1||maxOrders>3||
@@ -22,6 +22,12 @@ function createWarBattleDirector({authority,bridge,sceneForSystem,
  // for nobody else. The verdict comes from coopMilitiaWarPlayer, which requires
  // an ACTIVE enlistment plus an ACTIVE war whose campaign is in ASSAULT in this
  // system; without one this list is empty and stock behaviour is unchanged.
+ // FW-117: the role a hull flies, asked of the doctrine table by the caller. Absent or
+ // unreadable is an empty role, never a guess.
+ function roleOf(entityID){
+  if(typeof roleOfEntity!=="function")return "";
+  try{return String(roleOfEntity(Number(entityID))||"")}catch{return ""}
+ }
  function militiaTargets({systemID,shipRow,scene}){
   try{
    if(typeof playerOpponents==="function")
@@ -75,7 +81,8 @@ function createWarBattleDirector({authority,bridge,sceneForSystem,
       if(!entity||entity.nativeNpc!==true||!vec(entity.position)||warp(entity))continue;
       const distance=dist(attacker.position,entity.position);
       if(distance>250000)continue;
-      candidates.push({kind:"WAR_SHIP",entityID:row.entityID,entity,distance,row});
+      candidates.push({kind:"WAR_SHIP",entityID:row.entityID,entity,distance,row,
+    targetRole:roleOf(row.entityID)});
      }
      for(const target of militiaTargets({systemID,shipRow,scene})){
       if(!pos(target.entityID)||target.entityID===id||!target.entity||
@@ -85,14 +92,20 @@ function createWarBattleDirector({authority,bridge,sceneForSystem,
       candidates.push({kind:"MILITIA_PLAYER",entityID:target.entityID,
         entity:target.entity,characterID:Number(target.characterID)||0,distance});
      }
-     // Same rule for every candidate: nearest first. On an exact distance tie a
-     // native hull wins over a player, so a player is never preferred.
-     candidates.sort((a,b)=>a.distance-b.distance||
-       (a.kind===b.kind?0:a.kind==="WAR_SHIP"?-1:1)||a.entityID-b.entityID);
+     // FW-117: role first, then the old nearest-first rule. A fleet whose hulls carry no
+     // role scores 0 everywhere and is ordered exactly as before.
+     const attackerRole=roleOf(id);
+     const ordered=require("./coopWarTargetPriority"+
+      (__filename.endsWith(".js")?"":".cjs"))
+      .orderCandidates({candidates,attackerRole});
+     candidates.length=0;
+     for(const row of ordered)candidates.push(row);
      const selection=candidates.length?{shipID:id,systemID,
        factionID:shipRow.factionID,warID:shipRow.warID,campaignID:shipRow.campaignID,
+       attackerRole,
        candidates:candidates.slice(0,8).map(c=>({entityID:c.entityID,kind:c.kind,
-         distanceMeters:Math.round(c.distance),chosen:false,reason:""})),
+         distanceMeters:Math.round(c.distance),targetRole:String(c.targetRole||""),
+         chosen:false,reason:""})),
        ordered:0}:null;
      if(selection)selections.push(selection);
      for(const candidate of candidates){

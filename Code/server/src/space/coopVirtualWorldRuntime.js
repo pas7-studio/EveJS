@@ -5,7 +5,7 @@ const { observedNpcIDs, visitedSystems, raidDiagnose, initializedNativeMiningSce
 const jsonFileCache = require("./coopJsonFileCache");
 // Optional background driver of virtual world; no NPC ships materialized.
 let world=null,timer=null,combatTimer=null,bridge=null,gateTravelDirector=null,nativeGateTransfer=null,nativeMarketTrader=null,nativeMarketTickRunning=false,nativeMarketBlocked=false,economy=null,lossBridge=null,factionDirector=null,patrolDirector=null,patrolNavigator=null,civilianOrders=null,life=null,identityRegistry=null,raidDirector=null,huntPolicy=null,tacticsDirector=null,pveSiteDefenseDirector=null,pveWaveReinforcementsDirector=null,pveObjectiveDoctrineDirector=null,pveNativeBossDirector=null,activityDirector=null,combatEvidenceDirector=null,stockCombatEvidenceDirector=null,warpPointDirector=null,nativeGunRange=null;
-let warCaptureByForce=null,warFleetRegistry=null,warBattleDirector=null,warEngagement=null,warPosture=null,warLossReconcile=null,warGarrison=null,warMobilizer=null,warGateStaging=null,warGateHandoff=null,warRecoverySocket=null,warDemobilizer=null,warCasualtyLedger=null,warObjectiveDirector=null,warOpening=null,warRelief=null,gateStagingSkipKey=null,followOrderReason=null;
+let warDoctrineInstance=null,warCaptureByForce=null,warFleetRegistry=null,warBattleDirector=null,warEngagement=null,warPosture=null,warLossReconcile=null,warGarrison=null,warMobilizer=null,warGateStaging=null,warGateHandoff=null,warRecoverySocket=null,warDemobilizer=null,warCasualtyLedger=null,warObjectiveDirector=null,warOpening=null,warRelief=null,gateStagingSkipKey=null,followOrderReason=null;
 // Native wreck IDs this process confirmed (and, after a restart, the durable
 // casualty ledger): the only proof that a registered warship is really gone.
 let casualtySeedDone=false;
@@ -1830,7 +1830,19 @@ function advanceNativeWarCombat(){
    issueNativeAttack:(id,targetID,options)=>npc.issueAttackOrder(id,targetID,options),
    getController:id=>require("./npc/npcRegistry").getControllerByEntityID(id),
    isAmmoDepleted:(sys,id)=>nativeAmmoSupply?.activeIDs(sys)?.has(id)===true,
-   isTactical:id=>tacticsDirector?.activeIDs()?.has(id)===true
+   isTactical:id=>tacticsDirector?.activeIDs()?.has(id)===true,
+   // FW-117: the role a hull flies, so a destroyer hunts enemy tackle and an EWAR ship
+   // hunts enemy support instead of everyone shooting the nearest hull.
+   roleOfEntity:id=>{
+    try{
+     const native=require("./npc/nativeNpcStore").getNativeEntity(Number(id));
+     const typeID=Number(native&&(native.shipTypeID||native.typeID))||0;
+     if(!typeID)return "";
+     if(!warDoctrineInstance)warDoctrineInstance=
+      require("./coopWarDoctrine").createWarDoctrine();
+     return String(warDoctrineInstance.roleForHullType(typeID)||"");
+    }catch(_error){return ""}
+   }
   });
  }
  // FW-031: a war hull spawned at a belt anchor sits 150 km from home with a 90 km

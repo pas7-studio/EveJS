@@ -595,7 +595,30 @@ function createWarDoctrine(injected) {
     };
   }
 
-  return Object.freeze({ resolve, resolveRow, catalog, parseDoctrineID, doctrineIDFor });
+  // FW-117: which ROLE a hull flies, taken from the doctrines themselves. The battle
+ // director needs it to aim a destroyer at the enemy tackle and an EWAR ship at the
+ // enemy support, and a role is never guessed from a name or a hull size.
+ let roleByHull = null;
+ function roleForHullType(typeID) {
+  const id = Number(typeID);
+  if (!pos(id)) return "";
+  if (!roleByHull) {
+   roleByHull = new Map();
+   for (const factionID of Object.keys(DOCTRINES)) {
+    for (const role of ROLES) {
+     let resolved = null;
+     try { resolved = resolve({ factionID: Number(factionID), role }); }
+     catch (_error) { resolved = null; }
+     if (!resolved || resolved.status !== "RESOLVED" || !resolved.hull) continue;
+     const hullTypeID = Number(resolved.hull.typeID);
+     if (pos(hullTypeID) && !roleByHull.has(hullTypeID)) roleByHull.set(hullTypeID, role);
+    }
+   }
+  }
+  return roleByHull.get(id) || "";
+ }
+ return Object.freeze({ resolve, resolveRow, catalog, parseDoctrineID, doctrineIDFor,
+  roleForHullType });
 }
 
 let singleton = null;
