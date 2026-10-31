@@ -736,6 +736,43 @@ function createCourierDispatch(deps = {}) {
         return;
       }
     }
+    // A "warp" step needs a hull that is really in space. A native undock can report OK while the hull
+    // row never leaves the hangar (live 2026-10-31, contract 980000004: five minutes of "no ship entity"
+    // and "warpToPoint NOT_IN_SPACE" before the step timed out, and a timed-out flight was never
+    // replaced). When the real hull is in a station hangar of the flight's own system, re-plan from that
+    // hangar - a real undock of a real ship, nothing invented - and keep it bounded.
+    const hullRow = itemRow(flight.shipItemID);
+    const hullStationID = num(hullRow && hullRow.locationID);
+    if (flight.step !== "undock" && flight.step !== "done" && flight.step !== "failed" &&
+        hullStationID > 0 && Number(hullRow && hullRow.flagID) === 4) {
+      const restarts = num(flight.hullRestarts) + 1;
+      if (restarts > 3) {
+        log(`[CoopCourier] courier ${flight.characterID} hull back in station ${hullStationID} after ${restarts} restarts, abandoning the leg`);
+        if (flight.reposition) repositions.delete(num(flight.characterID));
+        else {
+          noteIncident(contractID, "flight-abandoned", "hull docked at " + hullStationID);
+          flights.delete(contractID);
+        }
+        saveFlights();
+        return;
+      }
+      const replanned = Object.assign({}, flight, {
+        step: "undock",
+        stationID: num(hullRow && hullRow.spaceState && hullRow.spaceState.systemID) || num(flight.systemID),
+        entityID: num(flight.entityID) || num(flight.shipItemID),
+        hop: null,
+        hopReason: "",
+        missingSinceMs: 0,
+        hullRestarts: restarts,
+        stepStartedAtMs: now(),
+      });
+      if (flight.reposition) repositions.set(num(flight.characterID), replanned);
+      else flights.set(contractID, replanned);
+      log(`[CoopCourier] courier ${flight.characterID} hull docked at ${hullStationID} mid-flight, replanning from undock (attempt ${restarts})`);
+      noteIncident(contractID, "hull-docked-replan", "step " + String(flight.step) + " restarted at " + hullStationID);
+      saveFlights();
+      return;
+    }
     const action = flightCore.nextAction(flight, now());
     if (action.status === "FLIGHT_DONE") {
       if (flight.reposition) {
@@ -771,6 +808,32 @@ function createCourierDispatch(deps = {}) {
       return;
     }
     if (action.status !== "ACTION") {
+      // A timed-out step used to be logged and then retried forever with the same stale stamp, so a
+      // flight could never leave a step that genuinely failed (live: repeated FLIGHT_TIMEOUT warp for
+      // contract 980000004). Restart the step from its real state, bounded, and give up loudly instead.
+      if (action.status === "FLIGHT_TIMEOUT") {
+        const restarts = num(flight.hullRestarts) + 1;
+        if (restarts > 3) {
+          log(`[CoopCourier] contract ${contractID} flight gave up after ${restarts} timeouts at ${String(action.step || flight.step)}`);
+          if (flight.reposition) repositions.delete(num(flight.characterID));
+          else {
+            noteIncident(contractID, "flight-abandoned", "timeout at " + String(action.step || flight.step));
+            flights.delete(contractID);
+          }
+          saveFlights();
+          return;
+        }
+        const stamped = Object.assign({}, flight, {
+          stepStartedAtMs: now(),
+          missingSinceMs: 0,
+          hullRestarts: restarts,
+        });
+        if (flight.reposition) repositions.set(num(flight.characterID), stamped);
+        else flights.set(contractID, stamped);
+        log(`[CoopCourier] contract ${contractID} flight ${action.status} ${action.step || ""}, restarting ${String(flight.step)} (attempt ${restarts})`.trim());
+        saveFlights();
+        return;
+      }
       log(`[CoopCourier] contract ${contractID} flight ${action.status} ${action.step || ""}`.trim());
       return;
     }
