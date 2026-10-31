@@ -45,9 +45,15 @@ function createWarRetirement({ gameStore, navyCapability, clock = () => Date.now
         if (!state || state.version !== 1) return { status: "WAR_STATE_UNAVAILABLE", ended: [], skips: [] };
         core.validateState(state);
         const ended = [], skips = [];
-        for (const war of Object.values(state.wars || {})) {
+        // MEASURED 17:54:21Z: two wars were retired in one tick and only the SECOND one stayed
+        // ENDED, because every transition cloned the state read at the start of the tick and
+        // the later put overwrote the earlier retirement. The working state now advances with
+        // each applied transition, so two retirements in one tick cannot erase each other.
+        let current = state;
+        for (const warID of Object.keys(state.wars || {})) {
+          const war = (current.wars || {})[warID];
           if (!war || war.state !== "ACTIVE") continue;
-          const campaigns = Object.values(state.campaigns || {}).filter((c) => c && c.warID === war.warID);
+          const campaigns = Object.values(current.campaigns || {}).filter((c) => c && c.warID === war.warID);
           const live = campaigns.filter((c) => LIVE.includes(String(c.state)));
           if (live.length) { skips.push({ warID: war.warID, reason: "WAR_IS_FIGHTING" }); continue; }
           const reason = decision(war);
@@ -55,7 +61,7 @@ function createWarRetirement({ gameStore, navyCapability, clock = () => Date.now
           const proofID = "no-navy:" + war.warID + ":" + String(war.attackerFactionID) + ":" +
             String(war.defenderFactionID);
           if (!key(proofID)) { skips.push({ warID: war.warID, reason: "PROOF_ID_INVALID" }); continue; }
-          const result = core.transition(state, {
+          const result = core.transition(current, {
             type: "END_WAR",
             eventID: "fwr-retire:" + war.warID,
             warID: war.warID,
@@ -76,6 +82,7 @@ function createWarRetirement({ gameStore, navyCapability, clock = () => Date.now
             continue;
           }
           tx.put(warStore.TABLE, warStore.KEY, result.state);
+          current = result.state;
           ended.push({ warID: war.warID, attackerFactionID: Number(war.attackerFactionID),
             defenderFactionID: Number(war.defenderFactionID), reason,
             cancelledCampaigns: campaigns.length, receipt: result.receipt });
