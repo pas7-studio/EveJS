@@ -5189,6 +5189,33 @@ function releaseStationIdleTarget({systemID,stationID,haulerID,scene=null}={}){
   return true;
  }catch(_error){return false;}
 }
+// Buying ONE unit of a seeded station stock (a blueprint, in practice) with the same trader and
+// the same identity registry the arrival sale uses. The co-op economy could never grow new
+// products because it owned four blueprints; the seeded world sells 2 772 of them, and this is
+// the only path that spends real ISK for a real item. Nothing is created: the trader matches a
+// seeded ask, debits the corporation and puts the real copy in the hangar.
+async function buyFromStationStock({systemID,stationID,typeID,haulerID,scene=null}={}){
+ if(process.env.EVEJS_COOP_BLUEPRINT_PURCHASE!=="1")return {status:"DISABLED"};
+ if(process.env.EVEJS_COOP_NATIVE_NPC_MARKET!=="1")return {status:"MARKET_OFF"};
+ const pilotID=String((registry?.snapshot?.()?.links||{})[Object.keys(registry?.snapshot?.()?.links||{})
+  .find(key=>Number(registry.snapshot().links[key].entityID)===Number(haulerID))]?.pilotID||"");
+ const trader=ensureMarketTrader();
+ if(!trader)return {status:"MARKET_UNAVAILABLE"};
+ const link=Object.values(registry?.snapshot?.()?.links||{})
+  .find(row=>Number(row.entityID)===Number(haulerID))||null;
+ if(!link)return {status:"NO_IDENTITY_LINK"};
+ try{
+  const answer=await trader.execute({scene:scene||require("./runtime").ensureScene(Number(systemID),
+   {refreshStargates:false}),pilotID:link.pilotID,entityID:Number(haulerID),
+   stationID:Number(stationID),side:"buy",typeID:Number(typeID),buyTypes:[Number(typeID)],sellTypes:[]},
+   {withinBatch:false});
+  try{require("./coopRuntimeProbe").observe("living-npc-blueprint-bought",null,null,
+   {systemID:Number(systemID),stationID:Number(stationID),typeID:Number(typeID),
+    haulerID:Number(haulerID),status:String(answer&&answer.status||"UNKNOWN"),
+    price:Number(answer&&answer.price||0),quantity:Number(answer&&answer.quantity||0)});}catch(_error){}
+  return answer||{status:"NO_ANSWER"};
+ }catch(error){return {status:"BUY_THREW",reason:String(error?.message||error).slice(0,90)};}
+}
 function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
  if(process.env.EVEJS_COOP_NPC_MARKET_SELL_ON_ARRIVAL!=="1")return {status:"DISABLED"};
  if(process.env.EVEJS_COOP_NATIVE_NPC_MARKET!=="1")return {status:"MARKET_OFF"};
@@ -5535,4 +5562,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={nativeGateTransferAdapter,identityRegistryAdapter,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,reconcileBountyCredits,warBountyRelease,diagnoseWarPayout,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={nativeGateTransferAdapter,identityRegistryAdapter,buyFromStationStock,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,reconcileBountyCredits,warBountyRelease,diagnoseWarPayout,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
