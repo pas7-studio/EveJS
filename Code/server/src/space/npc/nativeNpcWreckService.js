@@ -29,6 +29,25 @@ const {
 } = require(path.join(__dirname, "../wreckUtils"));
 
 const DESTRUCTION_EFFECT_EXPLOSION = 3;
+const wreckTransferGuard = require(path.join(__dirname, "../coopNativeWreckTransferGuard"));
+
+function removeGrantedItem(itemID) {
+  const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
+  if (typeof inventory.removeInventoryItem !== "function") return false;
+  inventory.removeInventoryItem(itemID);
+  return true;
+}
+
+function abandonWreckTransfer(reservation, grantResult, errorMsg) {
+  const changes = (grantResult && grantResult.data && grantResult.data.changes) || [];
+  const created = changes.filter((change) => change && change.created === true && change.item)
+    .map((change) => change.item.itemID);
+  for (const itemID of created) {
+    if (removeGrantedItem(itemID) !== true) return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
+  }
+  wreckTransferGuard.finish(reservation.id);
+  return { success: false, errorMsg };
+}
 
 function toPositiveInt(value, fallback = 0) {
   const numeric = Math.trunc(Number(value) || 0);
@@ -348,7 +367,20 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     };
   }
 
-  if (process.env.EVEJS_COOP_NATIVE_LOOT_QUARANTINE === "1") { const guard = require("../coopNativeLootQuarantine").check({wreckID,wreckItemID}); if (guard.status !== "ALLOW") return {success:false,errorMsg:"COOP_LOOT_QUARANTINED"}; }
+  const transferReservation = wreckTransferGuard.begin({
+    characterID,
+    wreckID,
+    wreckItemID,
+    destinationLocationID,
+    destinationFlagID,
+    quantityBefore: availableQuantity,
+    quantity: requestedQuantity,
+    singleton,
+  });
+  if (transferReservation.ok !== true) {
+    return { success: false, errorMsg: "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+  }
+  if (process.env.EVEJS_COOP_NATIVE_LOOT_QUARANTINE === "1") { const guard = require("../coopNativeLootQuarantine").check({wreckID,wreckItemID}); if (guard.status !== "ALLOW") { wreckTransferGuard.finish(transferReservation.id); return {success:false,errorMsg:"COOP_LOOT_QUARANTINED"}; } }
   const itemType = resolveItemByTypeID(wreckItemRecord.typeID) || {
     typeID: wreckItemRecord.typeID,
     name: wreckItemRecord.itemName,
@@ -366,13 +398,22 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     },
   );
   if (!grantResult.success) {
+    wreckTransferGuard.finish(transferReservation.id);
     return grantResult;
   }
 
   const previousData = buildWreckItemLikeRow(wreckItemRecord);
   let sourceChange = null;
   if (singleton || requestedQuantity === availableQuantity) {
-    nativeNpcStore.removeNativeWreckItem(wreckItemID);
+    let removal = null;
+    try {
+      removal = nativeNpcStore.removeNativeWreckItem(wreckItemID);
+    } catch (_error) {
+      removal = null;
+    }
+    if (!removal || removal.success !== true) {
+      return abandonWreckTransfer(transferReservation, grantResult, "WRECK_SOURCE_NOT_REMOVED");
+    }
     sourceChange = {
       removed: true,
       previousData,
@@ -383,11 +424,16 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
       ...wreckItemRecord,
       quantity: availableQuantity - requestedQuantity,
     };
-    const updateResult = nativeNpcStore.upsertNativeWreckItem(updatedRecord, {
-      transient: wreckRecord.transient === true,
-    });
+    let updateResult = null;
+    try {
+      updateResult = nativeNpcStore.upsertNativeWreckItem(updatedRecord, {
+        transient: wreckRecord.transient === true,
+      });
+    } catch (_error) {
+      updateResult = { success: false, errorMsg: "WRECK_SOURCE_UPDATE_THREW" };
+    }
     if (!updateResult.success) {
-      return updateResult;
+      return abandonWreckTransfer(transferReservation, grantResult, "WRECK_SOURCE_NOT_DECREMENTED");
     }
     sourceChange = {
       removed: false,
@@ -396,6 +442,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     };
   }
 
+  wreckTransferGuard.finish(transferReservation.id);
   if (process.env.EVEJS_COOP_NATIVE_LOOT_EVIDENCE === "1") { try { require("../coopNativeLootPickupEvidence").note({scene:spaceRuntime.ensureScene(wreckRecord.systemID),wreck:wreckRecord,characterID,wreckItemID,destinationLocationID,sourceBefore:wreckItemRecord,sourceAfter:nativeNpcStore.getNativeWreckItem(wreckItemID),availableQuantity,requestedQuantity,grantResult}); } catch (_coopError) { console.warn("[CoopNativeLoot]",_coopError.message); } }
   refreshNativeWreckRuntimeEntity(wreckRecord.systemID, wreckRecord.wreckID, { broadcast: true });
   return {
