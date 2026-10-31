@@ -76,6 +76,8 @@ function seedFromJson(filePath, db) {
   db.prepare("INSERT OR REPLACE INTO journal (id, doc) VALUES (1, ?)").run(JSON.stringify(document));
 }
 
+// read() must never write: seeding a legacy JSON file from here could commit over an intent another
+// process wrote between the read and the seed. Migration happens inside update()'s transaction only.
 function read(filePath) {
   let db;
   try {
@@ -83,9 +85,6 @@ function read(filePath) {
   } catch (error) {
     throw new Error("WRECK_TRANSFER_GUARD_UNREADABLE");
   }
-  const current = loadRow(db);
-  if (current) return current;
-  seedFromJson(filePath, db);
   return loadRow(db) || empty();
 }
 
