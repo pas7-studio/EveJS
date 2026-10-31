@@ -330,8 +330,15 @@ function warFactionCorporation(factionID,pilots,ledger){
  const ranked=[...counts.values()].sort((a,b)=>b.paid-a.paid||b.ships-a.ships||a.corp-b.corp);
  if(ranked.length)return ranked[0].corp;
  try{
-  return Number(require("../services/faction/factionState")
-   .getFactionRecord(factionID)?.militiaCorporationID)||0;
+  const record=require("../services/faction/factionState").getFactionRecord(factionID);
+  // FW-142 (measured 18:22Z): a pirate faction has NO militia corporation - Sansha's
+  // Nation and Serpentis both report militiaCorporationID 0 - and a faction that has not
+  // mustered yet has no presence pilots either, so this answered 0 for every Sansha front
+  // and its four PREPARING campaigns could never spawn a hull: NO_FACTION_CORPORATION
+  // forever. The faction's own corporation is the same wallet the capital grant sits in
+  // (1000162 for Sansha, 1000135 for Serpentis - the one Serpentis hulls already use), so
+  // it is the honest fallback and never invents a corporation.
+  return Number(record?.militiaCorporationID)||Number(record?.corporationID)||0;
  }catch(_error){return 0}
 }
 
