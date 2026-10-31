@@ -647,6 +647,17 @@ function createCourierDispatch(deps = {}) {
 
   // A real station of the system the hull is actually sitting in. A dock repair
   // must never move the ship into another system: that would fake a gate jump.
+  function stationSystemID(stationID) {
+    const id = num(stationID);
+    if (!(id > 0)) return 0;
+    try {
+      const station = typeof worldData.getStationByID === "function" ? worldData.getStationByID(id) : null;
+      return num(station && station.solarSystemID);
+    } catch (_error) {
+      return 0;
+    }
+  }
+
   function stationInSystem(systemID, preferredID) {
     try {
       const stations = typeof worldData.getStationsForSystem === "function"
@@ -792,7 +803,9 @@ function createCourierDispatch(deps = {}) {
     // and "warpToPoint NOT_IN_SPACE" before the step timed out, and a timed-out flight was never
     // replaced). When the real hull is in a station hangar of the flight's own system, re-plan from that
     // hangar - a real undock of a real ship, nothing invented - and keep it bounded.
-    const hullRow = itemRow(flight.shipItemID);
+    const hullRow = (itemStore && typeof itemStore.findItemById === "function"
+      ? itemStore.findItemById(num(flight.shipItemID))
+      : null) || itemRow(flight.shipItemID);
     const hullStationID = num(hullRow && hullRow.locationID);
     if (flight.step !== "undock" && flight.step !== "done" && flight.step !== "failed" &&
         hullStationID > 0 && Number(hullRow && hullRow.flagID) === 4) {
@@ -809,7 +822,11 @@ function createCourierDispatch(deps = {}) {
       }
       const replanned = Object.assign({}, flight, {
         step: "undock",
-        stationID: num(hullRow && hullRow.spaceState && hullRow.spaceState.systemID) || num(flight.systemID),
+        // The hangar's own system decides where the leg restarts: a hull docked in another system
+        // must not be undocked as if it were at the origin (live: hull docked at 60000361 in
+        // Perimeter while the flight still named Jita).
+        stationID: stationSystemID(hullStationID) ||
+          num(hullRow && hullRow.spaceState && hullRow.spaceState.systemID) || num(flight.systemID),
         entityID: num(flight.entityID) || num(flight.shipItemID),
         hop: null,
         hopReason: "",
