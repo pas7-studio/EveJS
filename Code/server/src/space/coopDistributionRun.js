@@ -268,6 +268,27 @@ async function tick(haulerID, authorities = {}, env = process.env) {
           }
         }
       }
+      // Nothing worth SHIPPING is not nothing worth doing: stock that no station bids for is
+      // exactly the material a new blueprint can turn into something that sells. Buy one where
+      // the stock sits, once per run, before the hull stops.
+      if (!state || state.blueprintTried !== true) {
+        let stationID = 0;
+        try {
+          stationID = typeof authorities.stockStationFor === "function"
+            ? Number(authorities.stockStationFor({haulerID: id})) || 0 : 0;
+        } catch (_error) { stationID = 0; }
+        if (stationID && typeof authorities.buyBlueprint === "function") {
+          if (state) write({ ...state, blueprintTried: true, updatedAt: now }, env);
+          let bought = null;
+          try {
+            bought = await authorities.buyBlueprint({haulerID: id, stationID,
+              systemID: typeof authorities.hullSystemOf === "function"
+                ? Number(authorities.hullSystemOf(id)) || 0 : 0});
+          } catch (_error) { bought = null; }
+          if (bought) note(observe, "living-distribution-blueprint", state || {haulerID: id},
+            {reason: String(bought.status || (bought.bought && bought.bought.status) || "")});
+        }
+      }
       // A second cycle that finds nothing worth shipping is the honest end of the run:
       // leaving it in PLAN would re-ask the market every beat for ever.
       if (num(state && state.trips) > 0 || authorities.recycle === true) {

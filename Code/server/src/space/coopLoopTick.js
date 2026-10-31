@@ -405,6 +405,32 @@ function distributionRunAuthorities(options = {}) {
         } catch (_error) { return null; }
       },
       wait: (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(1, Number(ms) || 1))),
+      // The station in this hull's system that holds the most corporation stock: that is where
+      // a blueprint is worth buying and where its materials already are.
+      stockStationFor: ({haulerID}) => {
+        try {
+          const native = store.getNativeEntity(haulerID);
+          const systemID = Number(native && native.systemID) || 0;
+          const scene = sceneFor(systemID);
+          const stations = new Set((scene && Array.isArray(scene.staticEntities)
+            ? scene.staticEntities : []).filter((row) => String(row.kind) === "station")
+            .map((row) => Number(row.itemID)).filter(Boolean));
+          const items = require("../services/inventory/itemStore");
+          const owned = items.listOwnedItems(Number(process.env.EVEJS_COOP_FACTORY_CORP_ID || 1000129),
+            {locationID: undefined});
+          const rows = Array.isArray(owned) ? owned : (owned && owned.data) || [];
+          const totals = new Map();
+          for (const row of rows) {
+            const stationID = Number(row.locationID) || 0;
+            if (!stationID || !stations.has(stationID)) continue;
+            if (Number(row.flagID) !== 4) continue;
+            totals.set(stationID, (totals.get(stationID) || 0) + Math.max(0, Number(row.quantity) || 0));
+          }
+          let best = {stationID: 0, units: 0};
+          for (const [stationID, units] of totals) if (units > best.units) best = {stationID, units};
+          return best.stationID;
+        } catch (_error) { return 0; }
+      },
       observe: require("./coopRuntimeProbe").observe,
       minIsk: Number(env.EVEJS_COOP_DISTRIBUTION_MIN_ISK || 200000),
     };
