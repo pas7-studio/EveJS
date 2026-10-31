@@ -6,6 +6,7 @@
 // stores with what the intent recorded, never by assuming the failed call did what it meant to.
 const fs = require("node:fs");
 const path = require("node:path");
+const journal = require(path.join(__dirname, "./coopNativeWreckTransferJournal"));
 
 const FILE_ENV = "EVEJS_COOP_WRECK_TRANSFER_GUARD_FILE";
 const MAX_PENDING = 512;
@@ -124,34 +125,7 @@ function valid(record) {
 }
 
 function read() {
-  const file = filePath();
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (error) {
-    if (error && error.code === "ENOENT") return { version: 1, entries: {} };
-    throw error;
-  }
-  const state = JSON.parse(text);
-  if (!state || state.version !== 1 || !state.entries || typeof state.entries !== "object") {
-    throw new Error("WRECK_TRANSFER_GUARD_UNREADABLE");
-  }
-  return state;
-}
-
-function write(state) {
-  const file = filePath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = file + ".tmp-" + process.pid;
-  const fd = fs.openSync(tmp, "w");
-  try {
-    fs.writeFileSync(fd, JSON.stringify(state));
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tmp, file);
-  return true;
+  return journal.read(filePath());
 }
 
 function begin(fields = {}) {
@@ -177,45 +151,47 @@ function begin(fields = {}) {
   if (acquire(record.wreckItemID) !== true) {
     return { ok: false, errorMsg: "WRECK_TRANSFER_BUSY" };
   }
-  try {
-    const state = read();
+  let refusal = null;
+  const written = journal.update(filePath(), (state) => {
     if (settledFor(state.entries, record.wreckItemID)) {
       // This item was already settled. A second caller may still hold a stale copy of the wreck
       // row from before the settlement, so the durable tombstone - not the cache - decides.
-      release(record.wreckItemID);
-      return { ok: false, errorMsg: "ITEM_NOT_FOUND" };
+      refusal = { ok: false, errorMsg: "ITEM_NOT_FOUND" };
+      return null;
     }
     if (Object.keys(state.entries).length >= MAX_PENDING) {
-      release(record.wreckItemID);
-      return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_FULL" };
+      refusal = { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_FULL" };
+      return null;
     }
     state.entries[String(record.id)] = record;
-    write(state);
-    trace("intent-written", { id: record.id, wreckItemID: record.wreckItemID });
-    return { ok: true, id: record.id, record };
-  } catch (error) {
+    return state;
+  });
+  if (!written.ok || refusal) {
     release(record.wreckItemID);
-    return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+    return refusal || { ok: false, errorMsg: written.errorMsg || "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
   }
+  trace("intent-written", { id: record.id, wreckItemID: record.wreckItemID });
+  return { ok: true, id: record.id, record };
 }
 
 function finish(id) {
-  try {
-    const state = read();
+  let settled = null;
+  const outcome = journal.update(filePath(), (state) => {
     const key = String(id);
     const record = state.entries[key];
-    if (!record) return { ok: true, alreadyGone: true };
+    if (!record) return null;
     // Keep a bounded tombstone: a stale reader in another process must be refused by the durable
     // record, and a settled item must never be payable twice.
     trace("settle", { id: record.id, wreckItemID: record.wreckItemID });
+    settled = record;
     state.entries[key] = { ...record, phase: "SETTLED", settledAt: new Date().toISOString() };
     pruneSettled(state);
-    write(state);
-    release(record.wreckItemID);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
-  }
+    return state;
+  });
+  if (!outcome.ok) return { ok: false, errorMsg: outcome.errorMsg || "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+  if (!settled) return { ok: true, alreadyGone: true };
+  release(settled.wreckItemID);
+  return { ok: true };
 }
 
 function pending() {
