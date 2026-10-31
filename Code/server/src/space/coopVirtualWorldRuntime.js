@@ -1735,7 +1735,8 @@ function advanceNativeWarGarrison(){
   // instead of the single identical frigate every side used to field.
   meritOf:pilotID=>{
    try{
-    const row=warMeritRecords()?.records?.[String(pilotID)];
+    // records() already answers the per-pilot map, not the whole ledger state.
+    const row=warMeritRecords()?.[String(pilotID)];
     return Number(row&&row.merit)||0;
    }catch(_error){return 0}
   },
