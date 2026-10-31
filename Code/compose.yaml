@@ -79,6 +79,9 @@ services:
       EVEJS_COOP_CAREER_GOALS: "1"
       # Third-party SKIN licences (space/coopThirdPartySkins).
       EVEJS_COOP_THIRD_PARTY_SKINS: "1"
+      # A physically linked pirate may hunt a real player hull (space/coopNativeRaids). The code
+      # default is OFF: the world fights itself unless this is switched on.
+      EVEJS_COOP_PIRATE_PREY_PLAYERS: "1"
       EVEJS_COOP_CHARACTER_TITLES: "1"
       EVEJS_COOP_ACHIEVEMENTS: "1"
       EVEJS_COOP_SKIN_MARKET: "1"
