@@ -4,21 +4,31 @@
 // ships as raid targets. Existing two-named-NPC faction rules still apply.
 const positive=v=>Number.isSafeInteger(Number(v))&&Number(v)>0?Number(v):null;
 const named=id=>typeof id==="string"&&/^coop-pilot-[0-9]{3,}$/.test(id);
+// EVEJS_COOP_PIRATE_PREY_PLAYERS=1 is the ONE player-facing exception: a physically linked pirate
+// may hunt a real player hull that is a live ship in this scene. It is OFF by default and it can
+// never apply to an NPC hull, so the NPC rules below stay exactly as they were.
+const playerPreyEnabled=env=>String(env&&env.EVEJS_COOP_PIRATE_PREY_PLAYERS||"")==="1";
 function isAuthorizedStockMiningRaid({
- systemID,attacker,target,links=[],pilots=[],fleetShips=[]
+ systemID,attacker,target,links=[],pilots=[],fleetShips=[],env=process.env
 }={}){
  const system=positive(systemID),sourceID=positive(attacker?.itemID),targetID=positive(target?.itemID);
  if(!system||!sourceID||!targetID||sourceID===targetID||
   attacker?.kind!=="ship"||attacker.nativeNpc!==true||
-  target?.kind!=="ship"||target.nativeNpc!==true||
-  !Array.isArray(links)||!Array.isArray(pilots)||!Array.isArray(fleetShips))return false;
+  target?.kind!=="ship"||!Array.isArray(links)||!Array.isArray(pilots)||
+  !Array.isArray(fleetShips))return false;
+ // The attacker half of the rule is identical for every prey: exactly one named, physically
+ // linked pirate in this system.
+ const sourceLinks=links.filter(x=>Number(x?.systemID)===system&&
+  Number(x?.entityID)===sourceID&&named(x?.pilotID));
+ if(sourceLinks.length!==1||sourceLinks[0].role!=="pirate")return false;
+ if(target.nativeNpc!==true){
+  // A player hull is a ship with a live session, never an NPC with a label.
+  return playerPreyEnabled(env)&&Number(target.session?.characterID)>0;
+ }
  // Fleet membership comes ONLY from the current upstream EveJS mining
  // service. A persisted co-op 'miner' label does not grant permission.
  if(!fleetShips.some(x=>Number(x?.id)===targetID&&
   (x?.role==="miner"||x?.role==="hauler")))return false;
- const sourceLinks=links.filter(x=>Number(x?.systemID)===system&&
-  Number(x?.entityID)===sourceID&&named(x?.pilotID));
- if(sourceLinks.length!==1||sourceLinks[0].role!=="pirate")return false;
  const targetLinks=links.filter(x=>Number(x?.systemID)===system&&
   Number(x?.entityID)===targetID&&named(x?.pilotID));
  if(targetLinks.length>1)return false;

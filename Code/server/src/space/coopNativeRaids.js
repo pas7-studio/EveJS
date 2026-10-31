@@ -1,7 +1,8 @@
 "use strict";
 // Organic native NPC raids: pirates target real ore-bearing mining ships.
 // EveJS handles locking, damage, pursuit, aggression response and wrecks.
-// No scripted kills, fake mining, arena bubbles or player-target selection.
+// No scripted kills, fake mining or arena bubbles. Player hulls are never targeted by default;
+// EVEJS_COOP_PIRATE_PREY_PLAYERS=1 is the one explicit, operator-controlled exception (see below).
 const pos=v=>Number.isSafeInteger(Number(v))&&Number(v)>0?Number(v):null;
 // A loaded hauler is preferred over a loaded miner only within this slack of the
 // nearest authorized hull, never across an entire solar system.
@@ -21,10 +22,37 @@ const warping=e=>{const mode=String(e?.mode||"").toUpperCase();
  return mode==="WARP"||Boolean(e?.pendingWarp)||Boolean(e?.warpState)||
   e?.isWarping===true;};
 const holdsAttack=c=>String(c?.manualOrder?.type||"").toLowerCase()==="attack";
+// EVEJS_COOP_PIRATE_PREY_PLAYERS=1 lets a pirate take a real player hull as prey, through the very
+// same order path every NPC prey uses (approach warp, the hull's own gun range, the warp point).
+// It is OFF by default: the stock invariant is that this world fights itself, and a player is drawn
+// in only when an operator deliberately switches it on. Nothing here guesses a target - the ship id
+// comes from the live session and the scene, and a hull that is docked, warping or unusable is
+// never chosen.
+const playerPreyEnabled=env=>String(env&&env.EVEJS_COOP_PIRATE_PREY_PLAYERS||"")==="1";
+function playerPreyShips(scene){
+ const out=[],seen=new Set();
+ if(!scene?.sessions||typeof scene.sessions.values!=="function"||
+  typeof scene.getEntityByID!=="function")return out;
+ for(const session of scene.sessions.values()){
+  const shipID=pos(session&&session._space&&session._space.shipID);
+  if(!shipID||seen.has(shipID))continue;
+  let ship=null;
+  try{ship=scene.getEntityByID(shipID);}catch(_error){ship=null;}
+  if(!ship||String(ship.kind||"")!=="ship")continue;
+  // A hull flown by the pirate itself, or one that already left, is not prey.
+  if(ship.session&&Number(ship.session.characterID)!==Number(session.characterID))continue;
+  if(!valid(ship.position))continue;
+  if(String(ship.mode||"").toUpperCase().includes("WARP")||ship.pendingWarp||ship.warpState)continue;
+  seen.add(shipID);
+  out.push({id:shipID,role:"player",ship,ore:0,
+   characterID:Number(session.characterID)||0});
+ }
+ return out;
+}
 function createRaids({warp,attack,release=null,clock=()=>Date.now(),cooldownMs=480000,
  approachVerifyMs=APPROACH_VERIFY_MS,attackNoLockMs=ATTACK_NO_LOCK_MS,
  releaseCooldownMs=RELEASE_COOLDOWN_MS,ensurePoint=null,preyScrambled=null,
- gunRange=null}){
+ gunRange=null,env=process.env}){
  if(typeof warp!=="function"||typeof attack!=="function"||cooldownMs<60000)throw Error("invalid native raid API");
  if(release!==null&&typeof release!=="function")throw Error("invalid native raid release API");
  if(ensurePoint!==null&&typeof ensurePoint!=="function")throw Error("invalid native raid point API");
@@ -59,6 +87,9 @@ function createRaids({warp,attack,release=null,clock=()=>Date.now(),cooldownMs=4
     .filter(t=>t.ship&&t.ore>0&&valid(t.ship.position)&&
      !String(t.ship.mode||"").toUpperCase().includes("WARP")&&
      !t.ship.pendingWarp&&!t.ship.warpState);
+  // A real player hull joins the same prey list only when an operator switched it on. It carries no
+  // ore, so it is never the "better prize" by cargo - proximity decides, exactly as it does for NPCs.
+  if(playerPreyEnabled(env))for(const prey of playerPreyShips(scene))candidates.push(prey);
   const actions=[];
   // A prey that really reads back as warp-scrambled cannot leave the fight, so
   // its attack order is never released for "no native lock": the lock is exactly
@@ -131,7 +162,10 @@ function createRaids({warp,attack,release=null,clock=()=>Date.now(),cooldownMs=4
      }
      if(!pendingRelease)continue;
     }
-    if(playerShipIDs.has(activeTarget))continue;
+    // A player hull is never hijacked as a side effect of somebody else's fight. Our own player
+    // hunt (a lease with targetRole player) is the one exception: that order is exactly what the
+    // approach below is meant to turn into a weapon attack.
+    if(playerShipIDs.has(activeTarget)&&String(old?.targetRole||"")!=="player")continue;
     if(!pendingRelease&&manual?.type==="attack"&&manualTarget===activeTarget)continue;
     if(!pendingRelease&&manual&&manual.type!=="resumeBehavior"&&
       (!ownedApproach||manual.type!=="warp"))continue;
