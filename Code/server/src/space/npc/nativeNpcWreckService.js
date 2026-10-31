@@ -374,9 +374,13 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
   };
   if (process.env.EVEJS_COOP_PVE_BOSS_LOOT_FENCE === "1") { const claim = require("../coopPveBossLootClaim").begin({wreck:wreckRecord,wreckItem:wreckItemRecord,characterID,destinationLocationID,requestedQuantity}); if (claim.status !== "NOT_VERIFIED_BOSS_WRECK" && claim.status !== "BOSS_LOOT_CLAIMED") return {success:false,errorMsg:"COOP_BOSS_LOOT_CLAIM_BLOCKED"}; }
   // KNOWN SEQUENCING (preserved, not fixed here): the destination grant is committed before the
-  // wreck source row is removed or decremented. If the source store fails after the grant, the item
-  // exists in both places and this call reports the source failure without rolling the grant back.
-  // Changing that is a separate, explicitly reviewed fix, not part of this refactor.
+  // wreck source row is updated, and the two update paths fail differently:
+  //   * full transfer: removeNativeWreckItem()'s result is not inspected, so a failed removal leaves
+  //     the whole stack in the wreck while this call still reports success with removed:true;
+  //   * partial transfer: a failed upsertNativeWreckItem() is returned to the caller, but the grant
+  //     is already committed, so the units exist in both places.
+  // Changing either is a separate, explicitly reviewed fix: it changes transaction semantics, which
+  // must not happen inside a behaviour-preserving refactor.
   const grantResult = grantItemToCharacterLocation(
     characterID,
     destinationLocationID,
