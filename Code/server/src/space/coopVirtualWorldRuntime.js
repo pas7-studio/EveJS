@@ -2656,7 +2656,30 @@ function start(){
   runPhase("native-pve-wave-reinforcements",advanceNativePveWaveReinforcements);
   runPhase("native-pve-objective-doctrine",advanceNativePveObjectiveDoctrine);
   runPhase("native-faction-war-demobilization",advanceNativeWarDemobilization);
-  runPhase("native-faction-war-opening",advanceNativeWarOpening);
+  // FW-140: a war nobody can fight must stop being called a war. Factions 500014 (ORE) and
+ // 500019 (Sansha) have NO_NAVY by the navy authority's own measurement, so their wars
+ // produced six EXPIRED campaigns for one target and nothing else while the world still
+ // reported seven ACTIVE wars. A war with a live or captured campaign is never touched.
+ function advanceNativeWarRetirement(){
+  if(process.env.EVEJS_COOP_FACTION_WAR!=="1")return warSkip("war-retirement","FLAG_OFF");
+  let instance=null;
+  try{
+   const navy=warNavyCapability();
+   if(!navy||typeof navy.decide!=="function")return warSkip("war-retirement","NO_NAVY_AUTHORITY");
+   instance=require("./coopWarRetirement").createWarRetirement({
+    gameStore:require("../gameStore"),
+    navyCapability:({attackerFactionID,defenderFactionID})=>navy.decide({attackerFactionID,
+     defenderFactionID})
+   });
+  }catch(_error){return warSkip("war-retirement","UNAVAILABLE")}
+  const result=instance.tick();
+  if(result.ended&&result.ended.length)require("./coopRuntimeProbe").observe(
+   "living-native-war-retired",null,null,{status:result.status,ended:result.ended,
+    evidence:"NAVY_AUTHORITY_SAYS_NEITHER_SIDE_CAN_FIELD_A_NAVY_AND_NO_CAMPAIGN_IS_LIVE"});
+  else if(result.skips&&result.skips.length)warSkip("war-retirement",
+   String(result.skips[0].reason||result.status));
+ }
+ runPhase("native-faction-war-opening",advanceNativeWarOpening);
   // A dry hull releases its campaign slot first, so the same tick can field one
   // that can really fire.
   runPhase("native-faction-war-battle-line-relief",advanceNativeWarBattleLineRelief);
@@ -2716,6 +2739,7 @@ function advanceNativeWarCaptureByForce(){
 }
 runPhase("native-faction-war-battle",advanceNativeWarCombat);
  runPhase("native-faction-war-capture-by-force",advanceNativeWarCaptureByForce);
+ runPhase("native-faction-war-retirement",advanceNativeWarRetirement);
   runPhase("native-faction-war-objectives",advanceNativeWarObjectives);
   runPhase("native-ammo-observe",observeNativeAmmoConsumption);
   runPhase("native-wreck-claim-reconcile",advanceNativeWreckClaimReconcile);
