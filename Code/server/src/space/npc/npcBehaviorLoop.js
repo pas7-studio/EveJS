@@ -1432,6 +1432,10 @@ function isFriendlyCombatTarget(entity, target) {
   // High-sec safety: a living-world NPC never opens fire on a player hull at security >= 0.45 unless the
   // player shot it first or is an enemy militia hull. Without this a pirate killed a Venture in Jita.
   if (sourceClass === "npc" && targetClass === "player") { try { if (require("../coopHighSecNpcSafety").blocksAggression(entity, target)) return true; } catch (_coopSafetyError) { console.warn("[CoopHighSecNpcSafety]", _coopSafetyError.message); } }
+  // Co-op hook (EVEJS_COOP_PIRATE_PREY_PLAYERS=1): a pirate that really holds an attack order on this
+  // player hull - or that the player just shot - is not friendly to it. Without this the order is
+  // issued and never fired (measured 2026-10-31: three pirates at 207 m, mode STOP, zero damage).
+  if (sourceClass === "npc" && targetClass === "player") { try { if (require("../coopPlayerPreyHostility").allowsPlayerPrey(entity, target)) return false; } catch (_coopPreyError) { console.warn("[CoopPlayerPrey]", _coopPreyError.message); } }
   if (sourceClass === "npc") {
     return targetClass === "npc";
   }
