@@ -1,4 +1,4 @@
-const path = require("path");
+﻿const path = require("path");
 
 const spaceRuntime = require(path.join(__dirname, "../runtime"));
 const {
@@ -29,6 +29,151 @@ const {
 } = require(path.join(__dirname, "../wreckUtils"));
 
 const DESTRUCTION_EFFECT_EXPLOSION = 3;
+const wreckTransferGuard = require(path.join(__dirname, "../coopNativeWreckTransferGuard"));
+
+function inventoryModule() {
+  return require(path.join(__dirname, "../../services/inventory/itemStore"));
+}
+
+function listDestinationRows(characterID, locationID, flagID) {
+  const rows = inventoryModule().listContainerItems(characterID, locationID, flagID) || [];
+  return rows
+    .filter((row) => row && Number(row.ownerID) === Number(characterID))
+    .map((row) => ({ itemID: row.itemID, quantity: row.quantity, typeID: row.typeID }));
+}
+
+function recoverNativeWreckTransfers() {
+  return wreckTransferGuard.recover({
+    getWreckItem: (wreckItemID) => nativeNpcStore.getNativeWreckItem(wreckItemID),
+    listDestination: (record) => listDestinationRows(record.characterID,
+      record.destinationLocationID, record.destinationFlagID)
+      .filter((row) => Number(row.typeID) === Number(record.typeID)),
+    undoItems: (record, items) => {
+      const inventory = inventoryModule();
+      for (const item of items) {
+        const current = inventory.findItemById(item.itemID);
+        if (!current) continue;
+        if (Number(item.previous) === 0) {
+          inventory.removeInventoryItem(item.itemID);
+          continue;
+        }
+        const target = Number(item.previous);
+        inventory.updateInventoryItem(item.itemID, (existing) => ({
+          ...existing,
+          quantity: target,
+          stacksize: Number(existing.singleton) === 1 ? 1 : target,
+        }));
+      }
+      return true;
+    },
+    restoreWreckItem: (record) => {
+      const existing = nativeNpcStore.getNativeWreckItem(record.wreckItemID);
+      if (existing) return true;
+      const wreck = nativeNpcStore.getNativeWreck(record.wreckID);
+      const result = nativeNpcStore.upsertNativeWreckItem({
+        wreckItemID: record.wreckItemID,
+        wreckID: record.wreckID,
+        typeID: record.typeID,
+        quantity: record.quantityBefore,
+        singleton: record.singleton === true,
+        itemName: "Recovered Wreck Item",
+        ownerID: Number((wreck && wreck.ownerID) || 500001),
+        volume: 0.01,
+      }, { transient: false });
+      return Boolean(result && result.success === true);
+    },
+  });
+}
+
+// Rollback is driven by the grant's own change records - the identity of what this transaction
+// created or merged - and every plan is checked against the destination snapshot the intent took
+// before the grant. Nothing is inferred by subtraction, and an item this transaction did not touch
+// is never removed, even if it shares the type and location.
+function planGrantRollback(record, grantResult) {
+  const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
+  const before = new Map((record.destinationBefore || [])
+    .map((row) => [Number(row.itemID), Number(row.quantity)]));
+  const changes = ((grantResult && grantResult.data && grantResult.data.changes) || [])
+    .filter((change) => change && change.item);
+  const plans = new Map();
+  let remaining = Number(record.quantity);
+  const currentQuantity = (itemID) => {
+    const current = inventory.findItemById(itemID);
+    return current ? Number(current.quantity) : 0;
+  };
+  // Created items carry their own identity and their whole quantity is ours to remove.
+  for (const change of changes) {
+    if (change.created !== true) continue;
+    const itemID = Number(change.item.itemID);
+    if (!Number.isSafeInteger(itemID) || itemID <= 0 || before.has(itemID)) continue;
+    plans.set(itemID, { remove: true });
+    remaining -= currentQuantity(itemID);
+  }
+  // A merge is undone by exactly the quantity this pickup put into that stack, taken item by item
+  // from the recorded total. Anything that appeared there for another reason stays.
+  for (const change of changes) {
+    if (change.created === true) continue;
+    if (remaining <= 0) break;
+    const itemID = Number(change.item.itemID);
+    if (!Number.isSafeInteger(itemID) || itemID <= 0 || !before.has(itemID)) continue;
+    const current = currentQuantity(itemID);
+    const delta = current - Number(before.get(itemID));
+    if (delta <= 0) continue;
+    const take = Math.min(delta, remaining);
+    plans.set(itemID, { remove: false, target: current - take });
+    remaining -= take;
+  }
+  if (remaining !== 0) return null; // the grant cannot be accounted for exactly
+  return plans;
+}
+
+function applyGrantRollback(plans) {
+  const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
+  for (const [itemID, plan] of plans) {
+    const current = inventory.findItemById(itemID);
+    if (!current) continue;
+    if (plan.remove) {
+      const removed = inventory.removeInventoryItem(itemID);
+      if (!removed || removed.success !== true) return false;
+      continue;
+    }
+    if (Number(current.quantity) <= plan.target) continue;
+    const updated = inventory.updateInventoryItem(itemID, (existing) => ({
+      ...existing,
+      quantity: plan.target,
+      stacksize: Number(existing.singleton) === 1 ? 1 : plan.target,
+    }));
+    if (!updated || updated.success !== true) return false;
+  }
+  return true;
+}
+
+function verifyRollback(record, plans) {
+  const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
+  for (const [itemID, plan] of plans) {
+    const current = inventory.findItemById(itemID);
+    if (plan.remove && current) return false;
+    if (!plan.remove && current && Number(current.quantity) > plan.target) return false;
+  }
+  return true;
+}
+
+function abandonWreckTransfer(reservation, grantResult, errorMsg) {
+  const record = reservation && reservation.record;
+  if (!record) return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
+  const plans = planGrantRollback(record, grantResult);
+  if (!plans || !applyGrantRollback(plans) || !verifyRollback(record, plans)) {
+    // The inventory could not be proven back to its pre-grant state. Keep the intent pending (and
+    // the lock held) so recovery resolves it; never report a clean failure here.
+    return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
+  }
+  const flush = require(path.join(__dirname, "../../gameStore")).flushTableSync("items");
+  if (!flush || flush.success !== true) {
+    return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
+  }
+  wreckTransferGuard.finish(reservation.id);
+  return { success: false, errorMsg };
+}
 
 function toPositiveInt(value, fallback = 0) {
   const numeric = Math.trunc(Number(value) || 0);
@@ -296,7 +441,17 @@ function buildWreckItemLikeRow(wreckItemRecord) {
   };
 }
 
+let transferRecoveryDone = false;
+
 function transferNativeWreckItemToCharacterLocation(options = {}) {
+  if (!transferRecoveryDone) {
+    transferRecoveryDone = true;
+    try {
+      recoverNativeWreckTransfers();
+    } catch (_error) {
+      transferRecoveryDone = false;
+    }
+  }
   const characterID = toPositiveInt(options.characterID, 0);
   const wreckID = toPositiveInt(options.wreckID, 0);
   const wreckItemID = toPositiveInt(options.wreckItemID, 0);
@@ -348,12 +503,43 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     };
   }
 
-  if (process.env.EVEJS_COOP_NATIVE_LOOT_QUARANTINE === "1") { const guard = require("../coopNativeLootQuarantine").check({wreckID,wreckItemID}); if (guard.status !== "ALLOW") return {success:false,errorMsg:"COOP_LOOT_QUARANTINED"}; }
+  // Quarantine is a property of the item, not of this attempt: it must answer before the durable
+  // intent is opened, otherwise a settled item would report ITEM_NOT_FOUND instead of QUARANTINED.
+  if (process.env.EVEJS_COOP_NATIVE_LOOT_QUARANTINE === "1") {
+    const quarantine = require("../coopNativeLootQuarantine").check({ wreckID, wreckItemID });
+    if (quarantine.status !== "ALLOW") {
+      return { success: false, errorMsg: "COOP_LOOT_QUARANTINED" };
+    }
+  }
+  if (process.env.EVEJS_COOP_PVE_BOSS_LOOT_FENCE === "1") { const claim = require("../coopPveBossLootClaim").begin({wreck:wreckRecord,wreckItem:wreckItemRecord,characterID,destinationLocationID,requestedQuantity}); if (claim.status !== "NOT_VERIFIED_BOSS_WRECK" && claim.status !== "BOSS_LOOT_CLAIMED") return {success:false,errorMsg:"COOP_BOSS_LOOT_CLAIM_BLOCKED"}; }
+  const transferReservation = wreckTransferGuard.begin({
+    characterID,
+    wreckID,
+    wreckItemID,
+    destinationLocationID,
+    destinationFlagID,
+    typeID: toPositiveInt(wreckItemRecord.typeID, 0),
+    quantityBefore: availableQuantity,
+    quantity: requestedQuantity,
+    singleton,
+    destinationBefore: listDestinationRows(characterID, destinationLocationID, destinationFlagID)
+      .map((row) => ({ itemID: row.itemID, quantity: row.quantity })),
+  });
+  if (transferReservation.ok !== true) {
+    return { success: false, errorMsg: transferReservation.errorMsg === "ITEM_NOT_FOUND"
+      ? "ITEM_NOT_FOUND" : "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+  }
+  // The row was read before the lock was taken; re-read it now that this call owns the item, so a
+  // second process that finished in between cannot be paid twice.
+  const recheckRecord = nativeNpcStore.getNativeWreckItem(wreckItemID);
+  if (!recheckRecord || toPositiveInt(recheckRecord.quantity, 0) !== availableQuantity) {
+    wreckTransferGuard.finish(transferReservation.id);
+    return { success: false, errorMsg: "ITEM_NOT_FOUND" };
+  }
   const itemType = resolveItemByTypeID(wreckItemRecord.typeID) || {
     typeID: wreckItemRecord.typeID,
     name: wreckItemRecord.itemName,
   };
-  if (process.env.EVEJS_COOP_PVE_BOSS_LOOT_FENCE === "1") { const claim = require("../coopPveBossLootClaim").begin({wreck:wreckRecord,wreckItem:wreckItemRecord,characterID,destinationLocationID,requestedQuantity}); if (claim.status !== "NOT_VERIFIED_BOSS_WRECK" && claim.status !== "BOSS_LOOT_CLAIMED") return {success:false,errorMsg:"COOP_BOSS_LOOT_CLAIM_BLOCKED"}; }
   const grantResult = grantItemToCharacterLocation(
     characterID,
     destinationLocationID,
@@ -366,13 +552,26 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     },
   );
   if (!grantResult.success) {
+    wreckTransferGuard.finish(transferReservation.id);
     return grantResult;
+  }
+  const grantFlush = require(path.join(__dirname, "../../gameStore")).flushTableSync("items");
+  if (!grantFlush || grantFlush.success !== true) {
+    return abandonWreckTransfer(transferReservation, grantResult, "WRECK_GRANT_NOT_DURABLE");
   }
 
   const previousData = buildWreckItemLikeRow(wreckItemRecord);
   let sourceChange = null;
   if (singleton || requestedQuantity === availableQuantity) {
-    nativeNpcStore.removeNativeWreckItem(wreckItemID);
+    let removal = null;
+    try {
+      removal = nativeNpcStore.removeNativeWreckItem(wreckItemID);
+    } catch (_error) {
+      removal = null;
+    }
+    if (!removal || removal.success !== true) {
+      return abandonWreckTransfer(transferReservation, grantResult, "WRECK_SOURCE_NOT_REMOVED");
+    }
     sourceChange = {
       removed: true,
       previousData,
@@ -383,11 +582,16 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
       ...wreckItemRecord,
       quantity: availableQuantity - requestedQuantity,
     };
-    const updateResult = nativeNpcStore.upsertNativeWreckItem(updatedRecord, {
-      transient: wreckRecord.transient === true,
-    });
+    let updateResult = null;
+    try {
+      updateResult = nativeNpcStore.upsertNativeWreckItem(updatedRecord, {
+        transient: wreckRecord.transient === true,
+      });
+    } catch (_error) {
+      updateResult = { success: false, errorMsg: "WRECK_SOURCE_UPDATE_THREW" };
+    }
     if (!updateResult.success) {
-      return updateResult;
+      return abandonWreckTransfer(transferReservation, grantResult, "WRECK_SOURCE_NOT_DECREMENTED");
     }
     sourceChange = {
       removed: false,
@@ -396,6 +600,11 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     };
   }
 
+  const sourceFlush = require(path.join(__dirname, "../../gameStore")).flushTableSync("npcWreckItems");
+  if (!sourceFlush || sourceFlush.success !== true) {
+    return { success: false, errorMsg: "WRECK_SOURCE_NOT_DURABLE" };
+  }
+  wreckTransferGuard.finish(transferReservation.id);
   if (process.env.EVEJS_COOP_NATIVE_LOOT_EVIDENCE === "1") { try { require("../coopNativeLootPickupEvidence").note({scene:spaceRuntime.ensureScene(wreckRecord.systemID),wreck:wreckRecord,characterID,wreckItemID,destinationLocationID,sourceBefore:wreckItemRecord,sourceAfter:nativeNpcStore.getNativeWreckItem(wreckItemID),availableQuantity,requestedQuantity,grantResult}); } catch (_coopError) { console.warn("[CoopNativeLoot]",_coopError.message); } }
   refreshNativeWreckRuntimeEntity(wreckRecord.systemID, wreckRecord.wreckID, { broadcast: true });
   return {
@@ -715,5 +924,7 @@ module.exports = {
   spawnNativeWreck,
   destroyNativeWreck,
   transferNativeWreckItemToCharacterLocation,
+  recoverNativeWreckTransfers,
   destroyNativeNpcEntityWithWreck,
 };
+
