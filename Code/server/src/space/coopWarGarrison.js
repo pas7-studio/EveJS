@@ -35,6 +35,11 @@ function createWarGarrison({
   spawnFleet,
   chestCommitment = null,
   isHullLive = null,
+  // FW-115: the commander's REAL earned merit, so the doctrine composition can field a
+  // role-complete formation. MEASURED 2026-10-31: every garrison spawn passed merit 0, which
+  // the composition reads as a recruit's single hull, so seven live campaigns fielded seven
+  // identical frigates and no role mix at all while 1380 merit sat in the ledger.
+  meritOf = null,
   clock = () => Date.now(),
   env = process.env,
   garrisonSize = 2,
@@ -47,6 +52,7 @@ function createWarGarrison({
     typeof clock !== "function" ||
     (isHullLive !== null && typeof isHullLive !== "function") ||
     (chestCommitment !== null && typeof chestCommitment !== "function") ||
+    (meritOf !== null && typeof meritOf !== "function") ||
     !Number.isInteger(garrisonSize) || garrisonSize < 1 || garrisonSize > 6 ||
     !Number.isSafeInteger(cooldownMs) || cooldownMs < 10000 ||
     !Number.isInteger(maxSpawnsPerTick) || maxSpawnsPerTick < 1 || maxSpawnsPerTick > 2
@@ -156,8 +162,13 @@ function createWarGarrison({
         nextAt.set(key, now + cooldownMs);
         spawned += 1;
         let ack = null, threw = "";
+        let commanderMerit = 0;
+        if (typeof meritOf === "function") {
+          try { commanderMerit = Math.max(0, Number(meritOf(commanderPilotID)) || 0); }
+          catch (_error) { commanderMerit = 0; }
+        }
         try {
-          ack = spawnFleet({ factionID, systemID, commanderPilotID, merit: 0 });
+          ack = spawnFleet({ factionID, systemID, commanderPilotID, merit: commanderMerit });
         } catch (error) { threw = String(error?.message || error).slice(0, 120); }
         const ok = ack && ack.ok === true;
         applied.push({
@@ -165,6 +176,7 @@ function createWarGarrison({
           systemID,
           factionID,
           commanderPilotID,
+          merit: commanderMerit,
           missing,
           fleetID: String(ack && ack.fleetID || ""),
           ships: Array.isArray(ack && ack.ships)

@@ -1730,6 +1730,15 @@ function advanceNativeWarGarrison(){
  if(!warGarrison)warGarrison=garrison.createWarGarrison({
   readWarState:()=>warStateStore().read(),
   registry:nativeWarFleetRegistry(),
+  // FW-115: a commander spawns the formation its EARNED merit allows (recruit 1, pilot 2,
+  // wingman 3, squad-lead 5 ...), so a veteran side brings tackle, EWAR and logistics
+  // instead of the single identical frigate every side used to field.
+  meritOf:pilotID=>{
+   try{
+    const row=warMeritRecords()?.records?.[String(pilotID)];
+    return Number(row&&row.merit)||0;
+   }catch(_error){return 0}
+  },
   // N5: a replacement hull must be paid for by the campaign chest, which only
   // ever holds ISK a real market fill paid to an NPC pilot (FW-005B). An unfunded
   // front stops buying navies, which is the only way a force-captured system
@@ -5562,4 +5571,4 @@ function linkSpawnedIdentity({pilotID,systemID,entityID,role}={}){
   return {status:"LINK_FAILED",reason:String(error?.message||error)};
  }
 }
-module.exports={nativeGateTransferAdapter,identityRegistryAdapter,buyFromStationStock,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,reconcileBountyCredits,warBountyRelease,diagnoseWarPayout,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
+module.exports={nativeGateTransferAdapter,identityRegistryAdapter,buyFromStationStock,reconcileMarketJournalsAtBoot,witnessedNativeBossWreck,createWarRecoveryAdmin,start,observeSession,confirmedWreck,confirmedNativeNpcWreck,nextHeadlessRetryMs,isHeadlessNativeReady,alifeOrderArbitrationEnabled,sellOnArrival,nativeWarFleetRegistry,livingWorldPhases,linkSpawnedIdentity,releaseSpawnedIdentity,diagnoseMobilization,identityLinks,deriveTerritoryOwners,planTerritoryBootstrap,bootstrapTerritoriesFromPresence,chooseWarRestore,readWarMirror,legacyWarStateMirrorEnabled,refundExpiredCampaigns,reconcileTerminalEscrow,reconcileBountyCredits,warBountyRelease,diagnoseWarPayout,diagnoseNavy,diagnoseCombat,diagnoseWarFunding,executeMercenaryContract,diagnoseMercenarySettlement,diagnoseNpcOrder,diagnoseNativeRaids,diagnoseWarState,warFrontChat};
