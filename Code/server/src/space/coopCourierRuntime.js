@@ -884,6 +884,19 @@ function createCourierDispatch(deps = {}) {
       if (flight.reposition) repositions.set(num(flight.characterID), pending);
       else flights.set(contractID, pending);
       if (progressed) log(`[CoopCourier] ${hopLabel} gate hop ${hopReason}`);
+      // The verified jump is reported here, not in the OK branch: once the flight's systemID is the
+      // destination, the next tick no longer enters the cross-system branch at all (live run of
+      // contract 980000003 completed with no courier-gate-hop line).
+      if (verifiedSystemID > 0 && verifiedSystemID !== num(flight.systemID) && !flight.reposition) {
+        courierEvent("courier-gate-hop", {
+          contractID: num(contractID),
+          characterID: num(flight.characterID),
+          status: "JUMP_VERIFIED",
+          fromSystemID: num(flight.systemID),
+          toSystemID: verifiedSystemID,
+          gateHopReason: hopReason,
+        });
+      }
       return;
     }
     const observed = driver.runStep(ctx, flight, target);
