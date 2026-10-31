@@ -86,7 +86,11 @@ function createWarMobilizer({registry,readWarState,readLinks,sceneForSystem,
  getNativeEntity,getController,getFactionForCorporation,
  inspectReadiness,getOrderLeases,isTactical=()=>false,
  commandCap=null,
- clock=()=>Date.now(),env=process.env,maxPerTick=2,maxPerSide=2}={}){
+ // FW-113b: three hulls per side instead of two. MEASURED 2026-10-31: 141 ships were
+ // physically present around six systems while the whole war registered six of them, so a
+ // front was a skirmish of four hulls. The rank cap still binds (a recruit commands one
+ // hull), so this only lets experienced sides field what they have earned.
+ clock=()=>Date.now(),env=process.env,maxPerTick=2,maxPerSide=3}={}){
  if(!registry?.snapshot||!registry?.execute||
   [readWarState,readLinks,sceneForSystem,getNativeEntity,getController,
    getFactionForCorporation,inspectReadiness,getOrderLeases,isTactical,clock]

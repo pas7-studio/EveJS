@@ -430,19 +430,20 @@ function planWars({
   if (!Object.keys(territories).length)
     return refuse("NO_TERRITORY_FROM_PRESENCE", { territories, observedCount, registeredCount, summary });
   if (typeof getStargatesForSystem !== "function") return refuse("NO_GATE_AUTHORITY", { territories });
-  let built = buildFronts({ territories, getStargatesForSystem, getGate });
-  // FW-112: no border between two REGISTERED territories is not the end of the war.
-  // MEASURED on the play stack 2026-10-30: after the first capture the frontier answered
-  // NO_FRONT 137 times in one hour with an empty skip list, because every owned system now
-  // touched only friends. A faction that holds its whole border pushes into the next system,
-  // and the SDE owner of that system is the defender. The navy gate below still decides
-  // whether both sides can really shoot, so this can never invent a fightable war.
-  let expansion = false;
-  if (!built.length && typeof ownerOfSystem === "function") {
-    built = buildFronts({ territories, getStargatesForSystem, getGate,
-      fallbackOwner: ownerOfSystem });
-    expansion = built.length > 0;
-  }
+  // FW-113: expansion borders are ADDITIONAL candidates, not a last resort.
+  //
+  // MEASURED on the play stack 2026-10-31: while the single registered border was being
+  // fought, the planner saw exactly ONE front and answered NO_OPENABLE_FRONT because that
+  // target was already contested, while five SDE-owned neighbours waited to be contested.
+  // The frontier therefore had a hard ceiling of one live campaign - a war the owner asked to
+  // scale up looked frozen. Registered borders are still planned FIRST; expansion borders only
+  // fill the remaining opening budget, and the navy gate still decides whether both sides can
+  // really shoot, so nothing here invents a fightable war.
+  const registered = buildFronts({ territories, getStargatesForSystem, getGate });
+  const built = typeof ownerOfSystem === "function"
+    ? buildFronts({ territories, getStargatesForSystem, getGate, fallbackOwner: ownerOfSystem })
+    : registered;
+  const expansion = built.some((front) => (front.edges || []).some((edge) => edge.expanded === true));
   if (!built.length)
     return refuse("NO_FRONT", { territories, observedCount, registeredCount, summary,
       expansionAttempted: typeof ownerOfSystem === "function" });
@@ -454,6 +455,10 @@ function planWars({
   // front-by-front, edge-by-edge order unless a market authority reorders it.
   const candidates = [];
   for (const front of fronts) for (const edge of front.edges || []) candidates.push({ front, edge });
+  // A registered border is a decided fact; an expansion border is a proposal. The opening
+  // budget is spent on the decided ones first, then on expansion, in a stable order.
+  candidates.sort((a, b) => (a.edge && a.edge.expanded ? 1 : 0) -
+    (b.edge && b.edge.expanded ? 1 : 0));
   const ordered = typeof marketAccess === "function"
     ? candidates.map((row, index) => ({ ...row, index,
       rank: edgeMarketRank(row.edge, marketAccess) }))
