@@ -540,11 +540,17 @@ function createCourierDispatch(deps = {}) {
           }
           continue;
         }
-        const repaired = Object.assign({}, identity.character, { stationID: num(record.startStationID) });
+        // A repaired station must carry its own solar system: undocking reads the character's system,
+        // so a station in Perimeter with solarSystemID=Jita attached the hull to the wrong scene and
+        // the ship existed nowhere (live 2026-10-31, item 9988400102932).
+        const originSystemID = stationSystemID(num(record.startStationID));
+        const repaired = Object.assign({}, identity.character, { stationID: num(record.startStationID) },
+          originSystemID > 0 ? { solarSystemID: originSystemID } : {});
         delete repaired.characterID;
         gameStore.write("characters", String(pilotID), repaired);
         if (typeof gameStore.flushTableSync === "function") gameStore.flushTableSync("characters");
         identity.character.stationID = num(record.startStationID);
+        if (originSystemID > 0) identity.character.solarSystemID = originSystemID;
         log(`[CoopCourier] courier ${pilotID} hull is docked at origin ${num(record.startStationID)}, station record repaired`);
         noteIncident(contractID, "station-repair", "character station record lagged behind the hull");
       }
@@ -734,7 +740,9 @@ function createCourierDispatch(deps = {}) {
         // the interrupted undock threw. Repair the location through the store -
         // never by pretending a flight happened.
         const id = num(identity.character.characterID);
-        const row = Object.assign({}, identity.character, { stationID: dockAt });
+        const dockSystemID = stationSystemID(dockAt);
+        const row = Object.assign({}, identity.character, { stationID: dockAt },
+          dockSystemID > 0 ? { solarSystemID: dockSystemID } : {});
         delete row.characterID;
         gameStore.write("characters", String(id), row);
         if (typeof gameStore.flushTableSync === "function") gameStore.flushTableSync("characters");
@@ -820,13 +828,29 @@ function createCourierDispatch(deps = {}) {
         saveFlights();
         return;
       }
+      const replannedSystemID = stationSystemID(hullStationID) ||
+        num(hullRow && hullRow.spaceState && hullRow.spaceState.systemID) || num(flight.systemID);
+      // The character row must name the hangar's system before undocking, otherwise the native undock
+      // attaches the hull to the wrong scene (that is exactly how item 9988400102932 got lost).
+      const replanIdentity = identityFor(num(flight.characterID));
+      if (replanIdentity && replannedSystemID > 0 &&
+          num(replanIdentity.character.solarSystemID) !== replannedSystemID) {
+        const systemRepair = Object.assign({}, replanIdentity.character, {
+          stationID: hullStationID,
+          solarSystemID: replannedSystemID,
+        });
+        delete systemRepair.characterID;
+        gameStore.write("characters", String(num(flight.characterID)), systemRepair);
+        if (typeof gameStore.flushTableSync === "function") gameStore.flushTableSync("characters");
+        replanIdentity.character.stationID = hullStationID;
+        replanIdentity.character.solarSystemID = replannedSystemID;
+      }
       const replanned = Object.assign({}, flight, {
         step: "undock",
         // The hangar's own system decides where the leg restarts: a hull docked in another system
         // must not be undocked as if it were at the origin (live: hull docked at 60000361 in
         // Perimeter while the flight still named Jita).
-        stationID: stationSystemID(hullStationID) ||
-          num(hullRow && hullRow.spaceState && hullRow.spaceState.systemID) || num(flight.systemID),
+        stationID: replannedSystemID,
         entityID: num(flight.entityID) || num(flight.shipItemID),
         hop: null,
         hopReason: "",
