@@ -461,7 +461,8 @@ function createCourierDispatch(deps = {}) {
     const shipID = num(identity.ship && identity.ship.itemID);
     if (!(characterID > 0) || !(shipID > 0) || !(target > 0)) return null;
     const stationID = num(identity.character.stationID);
-    const inSpace = !(stationID > 0);
+    // flagID 4 is a hangar; anything else means the hull is really in space (locationID is a system id).
+    const inSpace = Number(identity.ship && identity.ship.flagID) !== 4 || !(stationID > 0);
     return {
       contractID: characterID,
       characterID,
@@ -497,10 +498,11 @@ function createCourierDispatch(deps = {}) {
       // character row can still name the origin system. Resuming from the contract's start system
       // docked a courier that had really jumped to Perimeter back into Jita (live 2026-10-31,
       // contract 980000004).
-      const hull = identity.ship || {};
+      const hull = itemRow(num(identity.ship && identity.ship.itemID)) || identity.ship || {};
       const hullSystemID = num(hull.spaceState && hull.spaceState.systemID);
       const realSystemID = hullSystemID || num(identity.character.solarSystemID) || num(record.startSolarSystemID);
-      const hullInSpace = !(num(hull.locationID) > 0) && !(num(identity.character.stationID) > 0);
+      // A hull in space carries the solar system id in locationID with flagID 0; only flagID 4 is a hangar.
+      const hullInSpace = num(hull.itemID) > 0 && Number(hull.flagID) !== 4;
       if (hullInSpace) {
         const plannedInSpace = flightCore.createFlight({ contract: record, identity, nowMs: now() });
         if (plannedInSpace.status !== "FLIGHT_PLANNED") {
