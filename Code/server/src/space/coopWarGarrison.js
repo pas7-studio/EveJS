@@ -154,7 +154,24 @@ function createWarGarrison({
             continue;
           }
         }
-        const commanderPilotID = free.shift();
+        // FW-119: the best free commander leads. MEASURED 2026-10-31: the garrison always took
+        // the FIRST free identity, so a fresh pilot with merit 0 commanded a whole side and the
+        // formation was one hull while veterans with 150 merit stood idle - ten registered hulls
+        // and every one of them a tackle frigate. The earned rank is the thing that decides how
+        // big a gang a side can field, so it decides who leads it too.
+        const pickCommander = () => {
+          if (!free.length) return null;
+          if (typeof meritOf !== "function") return free.shift();
+          let bestIndex = 0;
+          let bestMerit = -1;
+          for (let index = 0; index < free.length; index += 1) {
+            let merit = 0;
+            try { merit = Number(meritOf(free[index])) || 0; } catch (_error) { merit = 0; }
+            if (merit > bestMerit) { bestMerit = merit; bestIndex = index; }
+          }
+          return free.splice(bestIndex, 1)[0];
+        };
+        const commanderPilotID = pickCommander();
         if (!commanderPilotID) {
           skips.push({ campaignID: campaign.campaignID, systemID, factionID, reason: "NO_FREE_PILOT_IDENTITY", missing });
           continue;
