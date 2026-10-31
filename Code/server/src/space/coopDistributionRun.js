@@ -410,6 +410,18 @@ async function tick(haulerID, authorities = {}, env = process.env) {
 
   if (step.action === "LIFT") {
     if (typeof authorities.lift !== "function") return { status: "NO_LIFT" };
+    // Buy a blueprint where the hull LOADS: that is the station the corporation keeps its
+    // materials at, so a new blueprint can be built at once instead of needing a second haul.
+    if (!state.blueprintTried && typeof authorities.buyBlueprint === "function") {
+      state = write({ ...state, blueprintTried: true, updatedAt: now }, env);
+      let bought = null;
+      try {
+        bought = await authorities.buyBlueprint({haulerID: id, stationID: stop.stationID,
+          systemID: state.fromSystemID});
+      } catch (_error) { bought = null; }
+      if (bought) note(observe, "living-distribution-blueprint", state,
+        {reason: String(bought.status || (bought.bought && bought.bought.status) || "")});
+    }
     let answer = null;
     // The demand of THIS stop only: the types that really sit at this station.
     const stopDemand = {};
@@ -571,16 +583,7 @@ async function tick(haulerID, authorities = {}, env = process.env) {
       // A hull standing at the buyer's station is the one place a blueprint can be bought (the
       // native trader needs a real ship there). One attempt per trip, and only when the world
       // says the purchase feature is on - the decision itself is coopBlueprintPurchase.choose.
-      let bought = null;
-      if (!state.blueprintTried && typeof authorities.buyBlueprint === "function") {
-        state = write({ ...state, blueprintTried: true, updatedAt: now }, env);
-        try {
-          bought = await authorities.buyBlueprint({haulerID: id, stationID: state.toStationID,
-            systemID: state.toSystemID});
-        } catch (_error) { bought = null; }
-        if (bought) note(observe, "living-distribution-blueprint", state,
-          {reason: String(bought.status || (bought.bought && bought.bought.status) || "")});
-      }
+
       // The market fills in bounded settlements, so a load can be sold in parts. Measured
       // 2026-10-30: 37 428 units settled while 35 629 stayed aboard, and the run went home
       // with them. A trip ends when the HOLD is empty, not when one settlement says SOLD.

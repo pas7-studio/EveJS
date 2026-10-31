@@ -490,6 +490,22 @@ function distributionAuthorities(options = {}) {
             asks.push({typeID, name: String(meta.name || typeID), stationID: Number(row.station_id),
               price: Number(row.price) || 0, quantity: Number(row.quantity) || 0});
           }
+          // Can it be BUILT here? A blueprint is useless at a station that holds none of its
+          // materials (measured: 2.8 M Tritanium at 60000682, chipset blueprint at 60014935).
+          const runsAtStation = {};
+          for (const typeID of Object.keys(productOf)) {
+            let plan = null;
+            try { plan = manufacture.recipe(Number(typeID), 1); } catch (_error) { plan = null; }
+            if (!plan || plan.status !== "READY") continue;
+            let runs = Infinity;
+            for (const material of plan.materials || []) {
+              const held = rows.filter((row) => Number(row.typeID) === Number(material.typeID) &&
+                Number(row.locationID) === Number(stationID))
+                .reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+              runs = Math.min(runs, Math.floor(held / Math.max(1, Number(material.quantity))));
+            }
+            if (Number.isFinite(runs)) runsAtStation[Number(typeID)] = Math.max(0, runs);
+          }
           const demand = {};
           for (const row of db.prepare("select type_id, sum(quantity) as volume, max(price) as price " +
             "from seed_buy_orders where solar_system_id=? and quantity>0 group by type_id")
@@ -498,6 +514,7 @@ function distributionAuthorities(options = {}) {
           }
           db.close();
           const chosen = require("./coopBlueprintPurchase").choose({asks, owned, demand, productOf,
+            runsAtStation,
             budget: Number(process.env.EVEJS_COOP_BLUEPRINT_BUDGET || 5000000),
             priceCap: Number(process.env.EVEJS_COOP_BLUEPRINT_PRICE_CAP || 500000)});
           if (chosen.status !== "BUY") return chosen;

@@ -25,7 +25,7 @@ const DEFAULT_BUDGET = 50000000;
  * @param {number} input.maxOwned stop buying once this many extra blueprints were bought
  */
 function choose({asks = [], owned = [], demand = {}, productOf = {}, budget = DEFAULT_BUDGET,
-  priceCap = DEFAULT_PRICE_CAP, alreadyBought = 0, maxOwned = 3} = {}) {
+  priceCap = DEFAULT_PRICE_CAP, alreadyBought = 0, maxOwned = 3, runsAtStation = {}} = {}) {
   const have = new Set((Array.isArray(owned) ? owned : []).map(pos).filter(Boolean));
   const refusals = [];
   if (num(alreadyBought) >= num(maxOwned)) {
@@ -52,13 +52,20 @@ function choose({asks = [], owned = [], demand = {}, productOf = {}, budget = DE
     }
     // Value the blueprint by what its product can earn from the demand that really exists,
     // against the price of the blueprint itself. A cheap blueprint for unsold goods is a loss.
+    // A blueprint is only worth buying where the corporation can actually BUILD with it: the
+    // recipe needs its materials at the same station (measured 2026-10-31: 2.8 M Tritanium sat
+    // at 60000682 while the chipset blueprint was at 60014935 with zero there).
+    const runsHere = num(runsAtStation[typeID] || runsAtStation[String(typeID)] || 0);
     candidates.push({typeID, stationID, price, quantity,
       name: String((ask && ask.name) || typeID), productTypeID, demandVolume: volume,
-      demandPrice: sellPrice, potential: Math.round(volume * sellPrice),
+      demandPrice: sellPrice, potential: Math.round(volume * sellPrice), runsHere,
       value: Math.round((volume * sellPrice) / Math.max(1, price) * 100) / 100});
   }
   if (!candidates.length) return {status: "NO_BLUEPRINT_WORTH_BUYING", blueprint: null, refusals};
-  candidates.sort((left, right) => right.value - left.value ||
+  // Buildable-here first, then the best value: a cheap blueprint nobody can feed is a purchase
+  // that only looks productive.
+  candidates.sort((left, right) => (right.runsHere > 0 ? 1 : 0) - (left.runsHere > 0 ? 1 : 0) ||
+    right.value - left.value ||
     right.potential - left.potential || left.price - right.price);
   return {status: "BUY", blueprint: candidates[0], alternatives: candidates.slice(1, 3), refusals};
 }
