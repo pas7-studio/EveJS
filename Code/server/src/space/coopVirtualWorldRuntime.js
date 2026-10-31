@@ -2567,6 +2567,7 @@ function start(){
   backgroundTicks++;
   syncWarRuntime();
   for(const fleetSystemID of warFleetSystemIDs())visitedSystems.add(fleetSystemID);
+  for(const campaignSystemID of warCampaignSystemIDs())visitedSystems.add(campaignSystemID);
   // Read-only courier pass (COOP-024). It never mutates a contract: it only
   // reports what the decision core thinks of the outstanding courier contracts,
   // so the live wiring can be verified before anything is accepted.
@@ -5702,6 +5703,26 @@ function sellOnArrival({systemID,stationID,haulerID,types=[],scene=null}={}){
 // The war layer only looked at systems a client had flown into. A real war
 // fleet spawned into a system creates a native scene there and the durable
 // roster proves those hulls, so that system is observed too.
+// FW-143 (measured 18:37Z): the mobiliser may only place a pilot in a system it
+// considers reachable, and reachability came from the fleet roster alone. Sansha's
+// Nation opened four PREPARING fronts and never spawned a hull, because its single
+// source system (30000145) held no hull yet, so it was never tracked - the front could
+// not bootstrap itself. A live campaign NAMES its own systems, in the persisted war
+// record, so those systems are war systems even before the first hull arrives there.
+function warCampaignSystemIDs(){
+ try{
+  const store=require("./coopFactionWarStore"),
+   war=require("./coopNativeRowPath").readRow(require("../gameStore"),
+    store.TABLE,store.KEY,store.validate);
+  const out=[];
+  for(const campaign of Object.values((war&&war.campaigns)||{})){
+   if(!campaign||!["PREPARING","ASSAULT"].includes(String(campaign.state)))continue;
+   for(const id of [Number(campaign.sourceSystemID),Number(campaign.targetSystemID)])
+    if(Number.isSafeInteger(id)&&id>0)out.push(id);
+  }
+  return out;
+ }catch(_error){return []}
+}
 function warFleetSystemIDs(){
  try{
   return require("./coopWarObservedSystems")
