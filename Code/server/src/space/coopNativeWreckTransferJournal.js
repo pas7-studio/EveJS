@@ -77,7 +77,12 @@ function seedFromJson(filePath, db) {
 }
 
 function read(filePath) {
-  const db = openDatabase(filePath);
+  let db;
+  try {
+    db = openDatabase(filePath);
+  } catch (error) {
+    throw new Error("WRECK_TRANSFER_GUARD_UNREADABLE");
+  }
   const current = loadRow(db);
   if (current) return current;
   seedFromJson(filePath, db);
@@ -85,7 +90,12 @@ function read(filePath) {
 }
 
 function update(filePath, mutator) {
-  const db = openDatabase(filePath);
+  let db;
+  try {
+    db = openDatabase(filePath);
+  } catch (error) {
+    return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+  }
   for (let attempt = 0; attempt < BUSY_RETRIES; attempt += 1) {
     try {
       db.exec("BEGIN IMMEDIATE");

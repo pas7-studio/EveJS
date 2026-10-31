@@ -130,7 +130,7 @@ function read() {
 
 function begin(fields = {}) {
   const record = {
-    id: Date.now() * 1000 + (counter++ % 1000),
+    id: 0, // assigned inside the journal transaction, where it is unique across processes
     characterID: Number(fields.characterID),
     wreckID: Number(fields.wreckID),
     wreckItemID: Number(fields.wreckItemID),
@@ -147,12 +147,14 @@ function begin(fields = {}) {
     phase: "PENDING",
     startedAt: new Date().toISOString(),
   };
-  if (!valid(record)) return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_INVALID" };
+  if (!valid({ ...record, id: 1 })) return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_INVALID" };
   if (acquire(record.wreckItemID) !== true) {
     return { ok: false, errorMsg: "WRECK_TRANSFER_BUSY" };
   }
   let refusal = null;
-  const written = journal.update(filePath(), (state) => {
+  let written = null;
+  try {
+    written = journal.update(filePath(), (state) => {
     if (settledFor(state.entries, record.wreckItemID)) {
       // This item was already settled. A second caller may still hold a stale copy of the wreck
       // row from before the settlement, so the durable tombstone - not the cache - decides.
@@ -163,12 +165,19 @@ function begin(fields = {}) {
       refusal = { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_FULL" };
       return null;
     }
+    const highest = Object.keys(state.entries).reduce((max, key) => Math.max(max, Number(key) || 0), 0);
+    record.id = Math.max(Number(state.nextId) || 0, highest) + 1;
+    state.nextId = record.id;
     state.entries[String(record.id)] = record;
     return state;
-  });
-  if (!written.ok || refusal) {
+    });
+  } catch (error) {
     release(record.wreckItemID);
-    return refusal || { ok: false, errorMsg: written.errorMsg || "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+    return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+  }
+  if (!written || !written.ok || refusal) {
+    release(record.wreckItemID);
+    return refusal || { ok: false, errorMsg: (written && written.errorMsg) || "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
   }
   trace("intent-written", { id: record.id, wreckItemID: record.wreckItemID });
   return { ok: true, id: record.id, record };
@@ -179,7 +188,8 @@ function finish(id) {
   const outcome = journal.update(filePath(), (state) => {
     const key = String(id);
     const record = state.entries[key];
-    if (!record) return null;
+    // An unknown id, or one that is already settled, is a no-op that still reports success.
+    if (!record || record.phase === "SETTLED") return state;
     // Keep a bounded tombstone: a stale reader in another process must be refused by the durable
     // record, and a settled item must never be payable twice.
     trace("settle", { id: record.id, wreckItemID: record.wreckItemID });
