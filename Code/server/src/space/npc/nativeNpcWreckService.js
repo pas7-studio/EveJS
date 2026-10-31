@@ -1,4 +1,4 @@
-const path = require("path");
+﻿const path = require("path");
 
 const spaceRuntime = require(path.join(__dirname, "../runtime"));
 const {
@@ -85,49 +85,84 @@ function recoverNativeWreckTransfers() {
   });
 }
 
-// Undo exactly what this transaction added, measured against the destination snapshot the intent
-// recorded before the grant. Identity comes from the recorded item ids and quantities, never from
-// "subtract what was granted": a merge into an existing stack is restored to its previous quantity,
-// and a created item is removed. The function is idempotent, so a half-done undo can be resumed.
-function restoreDestinationToSnapshot(record, listDestinationRows) {
+// Rollback is driven by the grant's own change records - the identity of what this transaction
+// created or merged - and every plan is checked against the destination snapshot the intent took
+// before the grant. Nothing is inferred by subtraction, and an item this transaction did not touch
+// is never removed, even if it shares the type and location.
+function planGrantRollback(record, grantResult) {
   const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
   const before = new Map((record.destinationBefore || [])
     .map((row) => [Number(row.itemID), Number(row.quantity)]));
-  const rows = (listDestinationRows() || [])
-    .filter((row) => Number(row.typeID) === Number(record.typeID));
-  for (const row of rows) {
-    const itemID = Number(row.itemID);
-    const had = before.has(itemID) ? before.get(itemID) : 0;
-    const now = Number(row.quantity);
-    if (now <= had) continue;
-    if (had === 0) {
+  const changes = ((grantResult && grantResult.data && grantResult.data.changes) || [])
+    .filter((change) => change && change.item);
+  const plans = new Map();
+  let remaining = Number(record.quantity);
+  const currentQuantity = (itemID) => {
+    const current = inventory.findItemById(itemID);
+    return current ? Number(current.quantity) : 0;
+  };
+  // Created items carry their own identity and their whole quantity is ours to remove.
+  for (const change of changes) {
+    if (change.created !== true) continue;
+    const itemID = Number(change.item.itemID);
+    if (!Number.isSafeInteger(itemID) || itemID <= 0 || before.has(itemID)) continue;
+    plans.set(itemID, { remove: true });
+    remaining -= currentQuantity(itemID);
+  }
+  // A merge is undone by exactly the quantity this pickup put into that stack, taken item by item
+  // from the recorded total. Anything that appeared there for another reason stays.
+  for (const change of changes) {
+    if (change.created === true) continue;
+    if (remaining <= 0) break;
+    const itemID = Number(change.item.itemID);
+    if (!Number.isSafeInteger(itemID) || itemID <= 0 || !before.has(itemID)) continue;
+    const current = currentQuantity(itemID);
+    const delta = current - Number(before.get(itemID));
+    if (delta <= 0) continue;
+    const take = Math.min(delta, remaining);
+    plans.set(itemID, { remove: false, target: current - take });
+    remaining -= take;
+  }
+  if (remaining !== 0) return null; // the grant cannot be accounted for exactly
+  return plans;
+}
+
+function applyGrantRollback(plans) {
+  const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
+  for (const [itemID, plan] of plans) {
+    const current = inventory.findItemById(itemID);
+    if (!current) continue;
+    if (plan.remove) {
       const removed = inventory.removeInventoryItem(itemID);
       if (!removed || removed.success !== true) return false;
       continue;
     }
+    if (Number(current.quantity) <= plan.target) continue;
     const updated = inventory.updateInventoryItem(itemID, (existing) => ({
       ...existing,
-      quantity: had,
-      stacksize: Number(existing.singleton) === 1 ? 1 : had,
+      quantity: plan.target,
+      stacksize: Number(existing.singleton) === 1 ? 1 : plan.target,
     }));
     if (!updated || updated.success !== true) return false;
-  }
-  // Verify against the same authoritative snapshot: nothing may be above what it held before.
-  const after = (listDestinationRows() || [])
-    .filter((row) => Number(row.typeID) === Number(record.typeID));
-  for (const row of after) {
-    const had = before.has(Number(row.itemID)) ? before.get(Number(row.itemID)) : 0;
-    if (Number(row.quantity) > had) return false;
   }
   return true;
 }
 
-function abandonWreckTransfer(reservation, errorMsg) {
+function verifyRollback(record, plans) {
+  const inventory = require(path.join(__dirname, "../../services/inventory/itemStore"));
+  for (const [itemID, plan] of plans) {
+    const current = inventory.findItemById(itemID);
+    if (plan.remove && current) return false;
+    if (!plan.remove && current && Number(current.quantity) > plan.target) return false;
+  }
+  return true;
+}
+
+function abandonWreckTransfer(reservation, grantResult, errorMsg) {
   const record = reservation && reservation.record;
   if (!record) return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
-  const restored = restoreDestinationToSnapshot(record, () => listDestinationRows(
-    record.characterID, record.destinationLocationID, record.destinationFlagID));
-  if (!restored) {
+  const plans = planGrantRollback(record, grantResult);
+  if (!plans || !applyGrantRollback(plans) || !verifyRollback(record, plans)) {
     // The inventory could not be proven back to its pre-grant state. Keep the intent pending (and
     // the lock held) so recovery resolves it; never report a clean failure here.
     return { success: false, errorMsg: "WRECK_TRANSFER_UNCERTAIN" };
@@ -522,7 +557,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
   }
   const grantFlush = require(path.join(__dirname, "../../gameStore")).flushTableSync("items");
   if (!grantFlush || grantFlush.success !== true) {
-    return abandonWreckTransfer(transferReservation, "WRECK_GRANT_NOT_DURABLE");
+    return abandonWreckTransfer(transferReservation, grantResult, "WRECK_GRANT_NOT_DURABLE");
   }
 
   const previousData = buildWreckItemLikeRow(wreckItemRecord);
@@ -535,7 +570,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
       removal = null;
     }
     if (!removal || removal.success !== true) {
-      return abandonWreckTransfer(transferReservation, "WRECK_SOURCE_NOT_REMOVED");
+      return abandonWreckTransfer(transferReservation, grantResult, "WRECK_SOURCE_NOT_REMOVED");
     }
     sourceChange = {
       removed: true,
@@ -556,7 +591,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
       updateResult = { success: false, errorMsg: "WRECK_SOURCE_UPDATE_THREW" };
     }
     if (!updateResult.success) {
-      return abandonWreckTransfer(transferReservation, "WRECK_SOURCE_NOT_DECREMENTED");
+      return abandonWreckTransfer(transferReservation, grantResult, "WRECK_SOURCE_NOT_DECREMENTED");
     }
     sourceChange = {
       removed: false,
