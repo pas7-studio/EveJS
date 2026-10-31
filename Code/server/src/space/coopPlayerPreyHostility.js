@@ -13,6 +13,12 @@
 // High-sec safety keeps the first word: if it still protects the player hull, nothing here overrides
 // it, so a pirate does not open fire in high sec on a player who has done nothing.
 const enabled = env => String((env && env.EVEJS_COOP_PIRATE_PREY_PLAYERS) || "") === "1";
+// A second, explicit switch: let an ORDERED pirate engage a player hull even in high security. The
+// stock safety exists so a living-world NPC never opens fire on a player who has done nothing; a
+// private co-op world may still want its pirates to come at the owner. Default OFF, and only an
+// ordered pirate is affected - retaliation rules do not change.
+const ignoreHighSecEnabled = env =>
+  String((env && env.EVEJS_COOP_PIRATE_PREY_HIGHSEC) || "") === "1";
 const pos = value => (Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : 0);
 const RETALIATION_MS = 5 * 60 * 1000;
 
@@ -70,8 +76,10 @@ function allowsPlayerPrey(source, target, options = {}) {
   const aggressedAt = Number(controller.lastAggressedAtMs) || 0;
   const retaliating = pos(controller.lastAggressorID) === targetID && aggressedAt > 0 &&
     nowMs >= aggressedAt && nowMs - aggressedAt <= RETALIATION_MS;
-  const hostile = !highSecBlocked && (ordered || retaliating);
+  const hostile = (ordered || retaliating) &&
+    (!highSecBlocked || (ignoreHighSecEnabled(env) && ordered));
   note(hostile, {ordered, retaliating, highSecBlocked,
+    ignoreHighSec: ignoreHighSecEnabled(env),
     aggressorID: pos(controller.lastAggressorID), aggressedAgeMs: aggressedAt ? nowMs - aggressedAt : 0});
   return hostile;
 }

@@ -82,6 +82,9 @@ services:
       # A physically linked pirate may hunt a real player hull (space/coopNativeRaids). The code
       # default is OFF: the world fights itself unless this is switched on.
       EVEJS_COOP_PIRATE_PREY_PLAYERS: "1"
+      # ... and it may do so in high security too, so an ordered pirate really comes at the player
+      # instead of standing still until it is shot. Only an ordered pirate is affected.
+      EVEJS_COOP_PIRATE_PREY_HIGHSEC: "1"
       EVEJS_COOP_CHARACTER_TITLES: "1"
       EVEJS_COOP_ACHIEVEMENTS: "1"
       EVEJS_COOP_SKIN_MARKET: "1"
