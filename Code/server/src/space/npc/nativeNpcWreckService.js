@@ -56,6 +56,30 @@ function normalizeWreckSingleton(value) {
   return value === true || Number(value) === 1;
 }
 
+let nativeWreckExpeditionCustody = null;
+
+function getNativeWreckExpeditionCustody() {
+  if (!nativeWreckExpeditionCustody) {
+    nativeWreckExpeditionCustody = require(path.join(__dirname, "../coopNpcExpeditionWreckCustody"))
+      .createNpcExpeditionWreckCustody({
+        items: require(path.join(__dirname, "../../services/inventory/itemStore")),
+        npcStore: nativeNpcStore,
+        gameStore: require(path.join(__dirname, "../../gameStore")),
+      });
+  }
+  return nativeWreckExpeditionCustody;
+}
+
+function isNativeWreckEmpty(wreckID) {
+  if (nativeNpcStore.listNativeWreckItemsForWreck(wreckID).length !== 0) {
+    return false;
+  }
+  if (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK !== "1") {
+    return true;
+  }
+  return getNativeWreckExpeditionCustody().list({ wreckID }).length === 0;
+}
+
 function buildNativeWreckRuntimeEntity(wreckRecord, options = {}) {
   const wreckItemRecord = nativeNpcStore.buildNativeWreckInventoryItem(
     wreckRecord && wreckRecord.wreckID,
@@ -81,11 +105,7 @@ function buildNativeWreckRuntimeEntity(wreckRecord, options = {}) {
   );
   entity.createdAtMs = toFiniteNumber(wreckRecord && wreckRecord.createdAtMs, 0) || null;
   entity.expiresAtMs = toFiniteNumber(wreckRecord && wreckRecord.expiresAtMs, 0) || null;
-  entity.isEmpty =
-    nativeNpcStore.listNativeWreckItemsForWreck(
-      toPositiveInt(wreckRecord && wreckRecord.wreckID, 0),
-    ).length === 0 &&
-    (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK!=="1" || require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))}).list({wreckID:wreckRecord.wreckID}).length===0);
+  entity.isEmpty = isNativeWreckEmpty(toPositiveInt(wreckRecord && wreckRecord.wreckID, 0));
   entity.launcherID = toPositiveInt(wreckRecord && wreckRecord.launcherID, 0) || null;
   const sourceTypeID = toPositiveInt(wreckRecord && wreckRecord.sourceTypeID, 0);
   if (sourceTypeID > 0) {
@@ -175,8 +195,7 @@ function refreshNativeWreckRuntimeEntity(systemID, wreckID, options = {}) {
 
   entity.itemName = String(wreckRecord.itemName || entity.itemName || "Wreck");
   // EX03B18_NATIVE_WRECK_SLIM_REFRESH
-  entity.isEmpty = nativeNpcStore.listNativeWreckItemsForWreck(normalizedWreckID).length === 0 &&
-    (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK!=="1" || require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))}).list({wreckID:normalizedWreckID}).length===0);
+  entity.isEmpty = isNativeWreckEmpty(normalizedWreckID);
   if (options.broadcast === true) {
     scene.broadcastSlimItemChanges([entity]);
   }
@@ -312,7 +331,7 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
   const wreckRecord = nativeNpcStore.getNativeWreck(wreckID);
   // EX03B18_NATIVE_ORIGINAL_ITEM_PICKUP
   if (process.env.EVEJS_COOP_NPC_EXPEDITION_WRECK==="1") {
-    const original=require(path.join(__dirname, "../coopNpcExpeditionWreckCustody")).createNpcExpeditionWreckCustody({items:require(path.join(__dirname, "../../services/inventory/itemStore")),npcStore:nativeNpcStore,gameStore:require(path.join(__dirname, "../../gameStore"))}).claim({
+    const original=getNativeWreckExpeditionCustody().claim({
       characterID,wreckID,itemID:wreckItemID,
       destinationLocationID,destinationFlagID,quantity:options.quantity
     });
@@ -354,6 +373,14 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     name: wreckItemRecord.itemName,
   };
   if (process.env.EVEJS_COOP_PVE_BOSS_LOOT_FENCE === "1") { const claim = require("../coopPveBossLootClaim").begin({wreck:wreckRecord,wreckItem:wreckItemRecord,characterID,destinationLocationID,requestedQuantity}); if (claim.status !== "NOT_VERIFIED_BOSS_WRECK" && claim.status !== "BOSS_LOOT_CLAIMED") return {success:false,errorMsg:"COOP_BOSS_LOOT_CLAIM_BLOCKED"}; }
+  // KNOWN SEQUENCING (preserved, not fixed here): the destination grant is committed before the
+  // wreck source row is updated, and the two update paths fail differently:
+  //   * full transfer: removeNativeWreckItem()'s result is not inspected, so a failed removal leaves
+  //     the whole stack in the wreck while this call still reports success with removed:true;
+  //   * partial transfer: a failed upsertNativeWreckItem() is returned to the caller, but the grant
+  //     is already committed, so the units exist in both places.
+  // Changing either is a separate, explicitly reviewed fix: it changes transaction semantics, which
+  // must not happen inside a behaviour-preserving refactor.
   const grantResult = grantItemToCharacterLocation(
     characterID,
     destinationLocationID,
