@@ -354,19 +354,36 @@ function liveCampaignFor(state, targetSystemID) {
       LIVE_CAMPAIGN_STATES.has(campaign.state)) || null;
 }
 
-function buildProofs({ plan, presence, territories, getStargatesForSystem, getGate, minShips, funding }) {
+function buildProofs({ plan, presence, territories, getStargatesForSystem, getGate, minShips,
+ funding, ownerOfSystem = null }) {
   const pilots = (presence && presence.pilots) || [];
   const countIn = (systemID, factionID) => pilots
     .filter((pilot) => pilot.systemID === Number(systemID) && pilot.factionID === String(factionID)).length;
   const sourceSystemID = plan.campaign.sourceSystemID;
   const targetSystemID = plan.campaign.targetSystemID;
+  // FW-112: who owns a system no campaign has decided yet. The SDE is a real authority,
+  // not a guess, and it is used ONLY where the territory map is silent.
+  const sdeOwner = (systemID) => {
+    if (typeof ownerOfSystem !== "function") return null;
+    try {
+      const raw = Number(ownerOfSystem(Number(systemID)));
+      return Number.isSafeInteger(raw) && raw > 0 ? String(raw) : null;
+    } catch (_error) { return null; }
+  };
   return {
-    // Both sides must really be present on their own side of the border.
+    // Both sides must really be present on their own side of the border - or, for an
+    // EXPANSION border, the defender must really own the target system in the SDE. A
+    // defender that owns the ground but has no hull there yet is exactly the war the
+    // garrison then has to defend.
     declaration: ({ attackerFactionID, defenderFactionID }) =>
       countIn(sourceSystemID, attackerFactionID) >= minShips &&
-      countIn(targetSystemID, defenderFactionID) >= minShips,
-    // The system is owned by this faction in the map the front was derived from.
-    territory: ({ systemID, ownerFactionID }) => territories[String(systemID)] === String(ownerFactionID),
+      (countIn(targetSystemID, defenderFactionID) >= minShips ||
+       sdeOwner(targetSystemID) === String(defenderFactionID)),
+    // The system is owned by this faction in the map the front was derived from, or by
+    // the SDE when no campaign has ever decided it.
+    territory: ({ systemID, ownerFactionID }) =>
+      territories[String(systemID)] === String(ownerFactionID) ||
+      (!territories[String(systemID)] && sdeOwner(systemID) === String(ownerFactionID)),
     // A real reciprocal stargate connects the two systems.
     adjacency: ({ sourceSystemID: from, targetSystemID: to }) =>
       gateBetween(from, to, getStargatesForSystem, getGate) !== null,
@@ -580,6 +597,7 @@ function planWars({
       }
       const proofs = buildProofs({
         plan, presence, territories, getStargatesForSystem, getGate, minShips, funding: supply,
+        ownerOfSystem,
       });
       // FW-092: the opening carries the measured market access of the system it
       // contests, so a campaign that cannot ever pay for itself is visible in the
