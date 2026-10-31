@@ -692,8 +692,23 @@ function createCourierDispatch(deps = {}) {
     const missingSince = num(flight.missingSinceMs);
     if (!(missingSince > 0)) return Object.assign({}, flight, { missingSinceMs: now() });
     if (now() - missingSince < SCENE_ENTITY_GRACE_MS) return flight;
+    // The hull can be in the system the jump targeted while the flight still names the origin: the
+    // stored system is repaired from the real scene instead of docking a ship that really jumped.
+    const otherSystemID = num(flight.destinationSystemID);
+    if (otherSystemID > 0 && otherSystemID !== num(flight.systemID)) {
+      const otherScene = sceneFor(otherSystemID);
+      const otherEntity = otherScene && typeof otherScene.getEntityByID === "function"
+        ? otherScene.getEntityByID(shipID)
+        : null;
+      if (otherEntity) {
+        return Object.assign({}, flight, { systemID: otherSystemID, missingSinceMs: 0, stepStartedAtMs: now() });
+      }
+    }
     const identity = identityFor(num(flight.characterID));
-    if (!identity || num(identity.character.stationID)) return flight;
+    if (!identity) return flight;
+    const physicalHull = itemRow(shipID);
+    const reallyInSpace = physicalHull ? Number(physicalHull.flagID) !== 4 : !(num(identity.character.stationID) > 0);
+    if (!reallyInSpace) return flight;
     const dockAt = stationInSystem(num(flight.systemID), num(flight.destinationStationID));
     if (!(dockAt > 0)) return flight;
     const session = driver.buildCourierSession(identity.character, dockAt);
@@ -735,7 +750,13 @@ function createCourierDispatch(deps = {}) {
     // is not only an undock case: a server restart while the ship was flying
     // leaves it in space with no entity, and the old code re-warped forever.
     const recovering = identityFor(num(flight.characterID));
-    const inSpace = recovering && !num(recovering.character.stationID);
+    // The hull row is the physical truth: a ship in space keeps its solar system id in locationID with
+    // flagID 0, while the character row can still say "docked" after a repair. Using only the character
+    // row left a flight with no scene entity ticking forever without any log (live 2026-10-31).
+    const hullRowForRecovery = itemRow(flight.shipItemID);
+    const hullInSpaceNow = num(hullRowForRecovery && hullRowForRecovery.itemID) > 0 &&
+      Number(hullRowForRecovery && hullRowForRecovery.flagID) !== 4;
+    const inSpace = (recovering && !num(recovering.character.stationID)) || hullInSpaceNow;
     if (inSpace && flight.step !== "done" && flight.step !== "failed") {
       const recovered = recoverInSpace(flight);
       if (recovered.recoveredInSpace) {
