@@ -12,22 +12,58 @@ const MAX_PENDING = 512;
 let counter = 0;
 
 function filePath() {
-  return process.env[FILE_ENV] || path.join(process.env.EVEJS_DATA_ROOT || process.cwd(),
-    "coop-wreck-transfer-guard.json");
+  if (process.env[FILE_ENV]) return process.env[FILE_ENV];
+  // Keep the guard beside the game store it protects: a test fixture and a container volume both
+  // get their own file, and no repository checkout is ever written to.
+  const dataDir = process.env.EVEJS_GAMESTORE_DATA_DIR;
+  if (dataDir) return path.join(path.resolve(dataDir, ".."), "coop-wreck-transfer-guard.json");
+  return path.join(process.env.EVEJS_DATA_ROOT || process.cwd(), "coop-wreck-transfer-guard.json");
 }
 
 function lockPath(wreckItemID) {
   return filePath() + ".lock-" + String(wreckItemID);
 }
 
-function acquire(wreckItemID) {
+function trace(event, detail) {
+  if (process.env.EVEJS_WRECK_GUARD_TRACE !== "1") return;
   try {
-    const fd = fs.openSync(lockPath(wreckItemID), "wx");
-    fs.closeSync(fd);
+    process.stderr.write("[guard] " + process.pid + " " + event + " " + JSON.stringify(detail) + "\n");
+  } catch (error) { /* tracing must never break the guard */ }
+}
+
+function ownerAlive(pid) {
+  const numeric = Number(pid);
+  if (!Number.isSafeInteger(numeric) || numeric <= 0) return false;
+  try {
+    process.kill(numeric, 0);
     return true;
   } catch (error) {
-    return false;
+    return Boolean(error && error.code === "EPERM");
   }
+}
+
+function acquire(wreckItemID) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(lockPath(wreckItemID), "wx");
+      fs.writeFileSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      trace("lock-acquired", { wreckItemID });
+      return true;
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") return false;
+      let owner = 0;
+      try { owner = Number(fs.readFileSync(lockPath(wreckItemID), "utf8")); } catch (_error) { owner = 0; }
+      if (owner === process.pid || ownerAlive(owner)) {
+        trace("lock-busy", { wreckItemID, owner });
+        return false;
+      }
+      // The lock belongs to a process that is gone: reclaim it.
+      trace("lock-stale", { wreckItemID, owner });
+      release(wreckItemID);
+    }
+  }
+  return false;
 }
 
 function release(wreckItemID) {
@@ -106,12 +142,19 @@ function begin(fields = {}) {
   }
   try {
     const state = read();
+    if (settledFor(state.entries, record.wreckItemID)) {
+      // This item was already settled. A second caller may still hold a stale copy of the wreck
+      // row from before the settlement, so the durable tombstone - not the cache - decides.
+      release(record.wreckItemID);
+      return { ok: false, errorMsg: "ITEM_NOT_FOUND" };
+    }
     if (Object.keys(state.entries).length >= MAX_PENDING) {
       release(record.wreckItemID);
       return { ok: false, errorMsg: "WRECK_TRANSFER_GUARD_FULL" };
     }
     state.entries[String(record.id)] = record;
     write(state);
+    trace("intent-written", { id: record.id, wreckItemID: record.wreckItemID });
     return { ok: true, id: record.id };
   } catch (error) {
     release(record.wreckItemID);
@@ -125,7 +168,11 @@ function finish(id) {
     const key = String(id);
     const record = state.entries[key];
     if (!record) return { ok: true, alreadyGone: true };
-    delete state.entries[key];
+    // Keep a bounded tombstone: a stale reader in another process must be refused by the durable
+    // record, and a settled item must never be payable twice.
+    trace("settle", { id: record.id, wreckItemID: record.wreckItemID });
+    state.entries[key] = { ...record, phase: "SETTLED", settledAt: new Date().toISOString() };
+    pruneSettled(state);
     write(state);
     release(record.wreckItemID);
     return { ok: true };
@@ -136,10 +183,25 @@ function finish(id) {
 
 function pending() {
   try {
-    return Object.values(read().entries);
+    return Object.values(read().entries).filter((entry) => entry.phase !== "SETTLED");
   } catch (error) {
     return [];
   }
+}
+
+function settledFor(entries, wreckItemID) {
+  return Object.values(entries).some((entry) => entry.phase === "SETTLED" &&
+    Number(entry.wreckItemID) === Number(wreckItemID));
+}
+
+function pruneSettled(state, keep = 256) {
+  const settled = Object.entries(state.entries)
+    .filter(([, entry]) => entry.phase === "SETTLED")
+    .sort((a, b) => String(a[1].settledAt || "").localeCompare(String(b[1].settledAt || "")));
+  for (const [key] of settled.slice(0, Math.max(0, settled.length - keep))) {
+    delete state.entries[key];
+  }
+  return state;
 }
 
 function delta(record, now) {
@@ -171,10 +233,17 @@ function recover({ getWreckItem, listDestination, undoItems, restoreWreckItem } 
   const blocked = [];
   const entries = pending();
   for (const record of entries) {
+    // A live pickup holds this lock. Recovery must never resolve an intent that another process is
+    // still working on: that would undo a grant mid-flight and let a second caller take the item.
+    if (acquire(record.wreckItemID) !== true) {
+      blocked.push(record.id);
+      continue;
+    }
     let row = null;
     try {
       row = getWreckItem(record.wreckItemID);
     } catch (error) {
+      release(record.wreckItemID);
       blocked.push(record.id);
       continue;
     }
@@ -187,6 +256,7 @@ function recover({ getWreckItem, listDestination, undoItems, restoreWreckItem } 
     try {
       granted = delta(record, listDestination(record));
     } catch (error) {
+      release(record.wreckItemID);
       blocked.push(record.id);
       continue;
     }
@@ -208,6 +278,7 @@ function recover({ getWreckItem, listDestination, undoItems, restoreWreckItem } 
       finish(record.id);
       resolved.push(record.id);
     } else {
+      release(record.wreckItemID);
       blocked.push(record.id);
     }
   }
@@ -219,7 +290,16 @@ function recover({ getWreckItem, listDestination, undoItems, restoreWreckItem } 
     for (const name of fs.readdirSync(dir)) {
       if (!name.startsWith(prefix)) continue;
       const wreckItemID = name.slice(prefix.length);
-      if (!live.has(wreckItemID)) release(wreckItemID);
+      if (live.has(wreckItemID)) continue;
+      // Only debris. A lock younger than a minute may belong to a pickup that has just written its
+      // intent, and deleting it would let a second caller in.
+      let age = Infinity;
+      try {
+        age = Date.now() - fs.statSync(path.join(dir, name)).mtimeMs;
+      } catch (error) {
+        age = Infinity;
+      }
+      if (age > 60000) release(wreckItemID);
     }
   } catch (error) {
     // the directory may not exist yet

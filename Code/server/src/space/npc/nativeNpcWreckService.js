@@ -431,6 +431,14 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
     };
   }
 
+  // Quarantine is a property of the item, not of this attempt: it must answer before the durable
+  // intent is opened, otherwise a settled item would report ITEM_NOT_FOUND instead of QUARANTINED.
+  if (process.env.EVEJS_COOP_NATIVE_LOOT_QUARANTINE === "1") {
+    const quarantine = require("../coopNativeLootQuarantine").check({ wreckID, wreckItemID });
+    if (quarantine.status !== "ALLOW") {
+      return { success: false, errorMsg: "COOP_LOOT_QUARANTINED" };
+    }
+  }
   const transferReservation = wreckTransferGuard.begin({
     characterID,
     wreckID,
@@ -445,7 +453,15 @@ function transferNativeWreckItemToCharacterLocation(options = {}) {
       .map((row) => ({ itemID: row.itemID, quantity: row.quantity })),
   });
   if (transferReservation.ok !== true) {
-    return { success: false, errorMsg: "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+    return { success: false, errorMsg: transferReservation.errorMsg === "ITEM_NOT_FOUND"
+      ? "ITEM_NOT_FOUND" : "WRECK_TRANSFER_GUARD_UNAVAILABLE" };
+  }
+  // The row was read before the lock was taken; re-read it now that this call owns the item, so a
+  // second process that finished in between cannot be paid twice.
+  const recheckRecord = nativeNpcStore.getNativeWreckItem(wreckItemID);
+  if (!recheckRecord || toPositiveInt(recheckRecord.quantity, 0) !== availableQuantity) {
+    wreckTransferGuard.finish(transferReservation.id);
+    return { success: false, errorMsg: "ITEM_NOT_FOUND" };
   }
   if (process.env.EVEJS_COOP_NATIVE_LOOT_QUARANTINE === "1") { const guard = require("../coopNativeLootQuarantine").check({wreckID,wreckItemID}); if (guard.status !== "ALLOW") { wreckTransferGuard.finish(transferReservation.id); return {success:false,errorMsg:"COOP_LOOT_QUARANTINED"}; } }
   const itemType = resolveItemByTypeID(wreckItemRecord.typeID) || {
