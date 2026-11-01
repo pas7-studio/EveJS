@@ -11,11 +11,38 @@ function assertTables(names){
  return names;
 }
 function assertRowKey(k){if(typeof k!=="string"||!k.length||k.length>200||k.includes("\0"))throw Error("INVALID_NATIVE_ROW_KEY");}
+// A row-size ceiling protects the write bridge from an accidental leak, but one table is global by
+// design: npcCargo keeps every NPC ship's cargo in the single row "cargo", so its size scales with
+// the live universe (measured 2026-11-01: 8,503 stacks / 3,240 ships = 2.12M chars, 48 dead stacks
+// totalling 11K - not a leak). The 2M guard therefore refused every npcCargo write (705 ammo-bank
+// refusals in 2h). npcCargo gets its own ceiling plus a warning once it passes the standard one.
+const STANDARD_MAX_ROW_CHARS=2000000;
+const UNIVERSE_ROW_MAX_CHARS=16000000;
+const universeWarned=new Set();
+let lastHeadroomWarn=null;
+function maxRowChars(t){
+ const env=Number(process.env.EVEJS_COOP_ATOMIC_MAX_ROW_CHARS);
+ const base=Number.isSafeInteger(env)&&env>0?env:STANDARD_MAX_ROW_CHARS;
+ return t==="npcCargo"?Math.max(base,UNIVERSE_ROW_MAX_CHARS):base;
+}
 function serialize(v,t,k){
  const scalar=t==="identityState"&&["nextItemID","nextCharacterID","nextAccountID","version"].includes(k)&&Number.isSafeInteger(v)&&v>=1;
  if(!scalar&&(v===null||typeof v!=="object"||Array.isArray(v)))throw Error("NATIVE_ROW_MUST_BE_OBJECT");
  const encoded=JSON.stringify(v);
- if(typeof encoded!=="string"||encoded.length>2000000)throw Error("NATIVE_ROW_INVALID_SIZE");
+ if(typeof encoded!=="string"||encoded.length>maxRowChars(t))throw Error("NATIVE_ROW_INVALID_SIZE");
+ if(encoded.length>STANDARD_MAX_ROW_CHARS&&!universeWarned.has(t)){
+  universeWarned.add(t);
+  console.warn("[COOP Atomic] row over the standard limit",t,k,encoded.length);
+ }
+ // operational headroom: a global row grows with the live universe, so the operator must see the
+ // distance to the ceiling before writes start failing again (measured 2026-11-01: ~190 chars/s)
+ if(t==="npcCargo"&&encoded.length>maxRowChars(t)*0.7){
+  const now=Date.now();
+  if(lastHeadroomWarn===null||now-lastHeadroomWarn>3600000){
+   lastHeadroomWarn=now;
+   console.warn("[COOP Atomic] headroom",t,encoded.length,"of",maxRowChars(t));
+  }
+ }
  return encoded;
 }
 function createSqliteAdapter(getDb){
@@ -224,4 +251,6 @@ function createGameStoreAdapter({sqliteStore,ensureSqliteReady,ensureCached,flus
  return Object.freeze({transact,mode:"SERVER_INTERNAL_FLAGGED",
   supportsAtomicInstall:false,supportsAtomicDelivery:false,isPoisoned:()=>poisoned});
 }
-module.exports={createSqliteAdapter,createGameStoreAdapter,assertTables,reconcileObject,SEP};
+module.exports={createSqliteAdapter,createGameStoreAdapter,assertTables,reconcileObject,SEP,
+ // row-size policy is exported so the ceiling can be proven without a live SQLite handle
+ rowSizeLimits:{maxRowChars,serialize,STANDARD_MAX_ROW_CHARS,UNIVERSE_ROW_MAX_CHARS}};
