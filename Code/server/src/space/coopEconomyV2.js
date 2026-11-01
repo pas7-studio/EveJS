@@ -127,6 +127,11 @@ function stationRow(stationID, typeID) {
 }
 
 function snapshot() {
+  // hydrate FIRST. The object literal below evaluates `mode: enabled()`, and enabled() hydrates;
+  // evaluating stations before that produced an EMPTY station map on the first snapshot after a
+  // restart while deliveries and receipts looked correct, and status() then persisted that empty
+  // picture over the good one. A view must never be smaller than the file it came from.
+  hydrate();
   const stations = {};
   for (const [stationID, types] of state.stations.entries()) {
     const view = {};
