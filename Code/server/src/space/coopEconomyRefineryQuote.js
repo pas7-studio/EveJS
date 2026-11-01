@@ -4,6 +4,7 @@ const REFINERY_CODE = {
   REFINED: 'REFINED',
   INVALID_QUOTE: 'INVALID_QUOTE',
   FACILITY_MISMATCH: 'FACILITY_MISMATCH',
+  ALREADY_REFINED: 'ALREADY_REFINED',
   FEE_PAYMENT_UNSUPPORTED: 'FEE_PAYMENT_UNSUPPORTED',
   INPUT_SHORT: 'INPUT_SHORT',
   INSUFFICIENT_FUNDS: 'INSUFFICIENT_FUNDS',
@@ -29,6 +30,27 @@ function isNonNegativeInt(v) {
 // IE-030: a refinery run debits the real input and pays a real fee, or it does nothing at all.
 // The fee path is the dangerous one: a fee that cannot be paid natively must block the run instead of
 // producing output "on credit".
+// The fee is money: a retry of the same operation must not debit again. The key is the operation
+// identity AND the request itself, because a call without an operationID has no retry identity at
+// all and a caller that reuses an id for a different request is making a new request, not a retry.
+const REFINED = new Map();
+const MAX_REFINED = 1000;
+function refinedKey(operationID, quote, inputs, walletCents) {
+  if (typeof operationID !== "string" || operationID.length === 0) return null;
+  let body;
+  try {
+    body = JSON.stringify([quote, inputs, walletCents]);
+  } catch (error) {
+    return null;
+  }
+  return operationID + "|" + body;
+}
+function rememberRefined(key, value) {
+  if (key === null) return;
+  REFINED.set(key, value);
+  if (REFINED.size > MAX_REFINED) REFINED.delete(REFINED.keys().next().value);
+}
+
 function runRefinery(args) {
   const { operationID, quote, inputs, walletCents, facility, paymentPort } = args || {};
 
@@ -47,6 +69,16 @@ function runRefinery(args) {
     return fail(REFINERY_CODE.FACILITY_MISMATCH);
   }
   const feeCents = quote.feeCents;
+  // A completed operation is never charged twice; the retry reports the first outcome.
+  const refinedKeyValue = refinedKey(operationID, quote, inputs, walletCents);
+  const already = refinedKeyValue === null ? null : REFINED.get(refinedKeyValue);
+  // A retry goes through the SAME payment authority. A different port is a different request even
+  // when it reuses the operation id, so it must not inherit the earlier outcome.
+  if (already && already.port === paymentPort) {
+    return { ok: true, code: REFINERY_CODE.ALREADY_REFINED, output: already.result.output,
+      feeCents: already.result.feeCents, debitReceiptID: already.result.debitReceiptID };
+  }
+
   const debit = paymentPort && paymentPort.debit;
   if (feeCents > 0 && (facility.supportsFeePayment !== true || typeof debit !== 'function')) {
     return fail(REFINERY_CODE.FEE_PAYMENT_UNSUPPORTED);
@@ -77,13 +109,15 @@ function runRefinery(args) {
     debitReceiptID = receipt.receiptID;
   }
 
-  return {
+  const result = {
     ok: true,
     code: REFINERY_CODE.REFINED,
     output: { typeID: quote.outputTypeID, quantity: quote.outputQuantity },
     feeCents: feeCents,
     debitReceiptID: debitReceiptID,
   };
+  rememberRefined(refinedKeyValue, { port: paymentPort, result });
+  return result;
 }
 
 module.exports = { runRefinery, REFINERY_CODE };

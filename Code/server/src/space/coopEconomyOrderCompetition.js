@@ -87,10 +87,20 @@ function chooseFill(args) {
     return { ok: false, code: COMPETITION_CODE.REPRICE_OUT_OF_BOUNDS };
   }
 
+  // The cap was validated as an integer and then never read: an NPC willing to pay 50 matched an
+  // ask at 9000 against maxPriceCents 100 and reported MATCH. A budget that is not enforced is not
+  // a budget - the bid and the price actually paid both have to fit under it.
+  if (npc.priceCents > maxPriceCents) {
+    return { ok: true, code: COMPETITION_CODE.NO_MATCH, reason: 'PRICE_CAP' };
+  }
+
   const eligible = orders.filter((order) => order.ownerID !== npc.corpID);
   if (eligible.length === 0) return { ok: false, code: COMPETITION_CODE.SELF_TRADE_ONLY };
 
   const best = bestOf(eligible);
+  if (best.priceCents > maxPriceCents) {
+    return { ok: true, code: COMPETITION_CODE.NO_MATCH, reason: 'PRICE_CAP' };
+  }
   if (npc.priceCents > best.priceCents) {
     return { ok: true, code: COMPETITION_CODE.NO_MATCH, reason: 'NPC_BEST' };
   }
