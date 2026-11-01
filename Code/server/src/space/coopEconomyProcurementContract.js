@@ -87,6 +87,10 @@ function openContract(args) {
 function expire(contractID, tick) {
   const contract = openContracts.get(contractID);
   if (!contract) return { ok: false, code: CONTRACT_CODE.NOT_OPEN };
+  // expiry is a one-way door: an older tick cannot bring an expired contract back to life
+  if (contract.status === 'EXPIRED') {
+    return { ok: true, code: CONTRACT_CODE.EXPIRED, status: 'EXPIRED', contractID };
+  }
   if (Number.isSafeInteger(tick) && tick > contract.expiryTick) {
     contract.status = 'EXPIRED';
     return { ok: true, code: CONTRACT_CODE.EXPIRED, status: 'EXPIRED', contractID };

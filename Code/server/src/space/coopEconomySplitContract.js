@@ -48,12 +48,18 @@ function createSplitContract() {
     if (!c) {
       return { ok: false, code: 'UNKNOWN_CONTRACT' };
     }
+    // each party is paid at most once: a held share may be paid later, a paid share never again
+    if (!(c.paid instanceof Map)) c.paid = new Map();
+    if (c.parties.every((p) => c.paid.has(p.playerID))) {
+      return { ok: true, code: 'ALREADY_AWARDED', payouts: [], held: [], paidCents: 0 };
+    }
     const workMap = work && typeof work === 'object' ? work : {};
     const disconnectedSet = new Set(disconnected || []);
     const payouts = [];
     const held = [];
     let paidCents = 0;
     for (const p of c.parties) {
+      if (c.paid.has(p.playerID)) continue;
       const w = workMap[p.playerID];
       const isDisconnected = disconnectedSet.has(p.playerID);
       const verified = w && w.verified === true;
@@ -67,11 +73,14 @@ function createSplitContract() {
       } else {
         const payoutCents = Math.floor(c.totalCents * p.shareBps / 10000);
         payouts.push({ playerID: p.playerID, role: p.role, payoutCents });
+        c.paid.set(p.playerID, payoutCents);
         paidCents += payoutCents;
       }
     }
     c.awarded.push({ contractID, paidCents });
-    return { ok: true, code: 'AWARDED', payouts, held, paidCents };
+    const totalPaidCents = [...c.paid.values()].reduce((sum, value) => sum + value, 0);
+    // paidCents is what THIS call paid; totalPaidCents is the cumulative position of the contract
+    return { ok: true, code: 'AWARDED', payouts, held, paidCents, totalPaidCents };
   }
 
   return { create, award };

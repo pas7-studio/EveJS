@@ -72,7 +72,9 @@ function createAcceptance() {
 
     // 4. One receipt, one credit: an already-accepted receiptID is a no-op success.
     if (accepted.has(delivery.receiptID)) {
-      return { ok: true, code: 'ALREADY_ACCEPTED', quantity: delivery.quantity };
+      // report the quantity that was really credited; a replayed payload may claim anything
+      const stored = accepted.get(delivery.receiptID);
+      return { ok: true, code: 'ALREADY_ACCEPTED', quantity: stored.quantity, itemID: stored.itemID };
     }
 
     // 5. The native authority must be present.

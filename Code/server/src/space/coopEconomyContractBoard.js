@@ -60,7 +60,7 @@ function createBoard() {
             if (contract.status !== 'FUNDED') {
                 continue;
             }
-            if (tick >= contract.expiryTick) {
+            if (tick > contract.expiryTick) {
                 continue;
             }
             result.push({
@@ -87,7 +87,7 @@ function createBoard() {
 
         const contract = contracts.get(contractID);
 
-        if (!contract || tick >= contract.expiryTick) {
+        if (!contract || tick > contract.expiryTick) {
             return { ok: false, code: 'UNKNOWN_CONTRACT' };
         }
 
