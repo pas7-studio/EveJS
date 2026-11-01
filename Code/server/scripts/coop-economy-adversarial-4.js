@@ -234,7 +234,7 @@ check("flag audit: a negated read is classified before a plain read", () => {
 
 check("capability index: every family is represented in the markdown", () => {
   assert(Array.isArray(m.cap.CAPABILITY_FAMILIES) && m.cap.CAPABILITY_FAMILIES.length > 0);
-  const index = m.cap.buildCapabilityIndex({ srcRoot: path.join(root, "Code/server/src") });
+  const index = m.cap.buildCapabilityIndex({ srcRoot: path.join(spaceDir, "..") });
   const markdown = m.cap.toMarkdown(index);
   for (const family of m.cap.CAPABILITY_FAMILIES) {
     const id = typeof family === "string" ? family : family.id || family.name;
