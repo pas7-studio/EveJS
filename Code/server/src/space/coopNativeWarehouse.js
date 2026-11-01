@@ -175,6 +175,10 @@ function createWarehouse({root, store, items, flush, getStation, getCorporation,
    try{require("./coopConvoyOutcomeProof").noteWarehouse(record,target,!findCargo(record))}
    catch(error){console.warn("[CoopConvoyOutcomeProof] stock",String(error?.message||error))}
   }
+  // Mission 003: read-only economy shadow over the same durable receipt. It is
+  // OFF unless the economy flag/enable file is present, and it never writes.
+  try{const v2=require("./coopEconomyV2");if(v2.enabled())v2.noteWarehouse(record,target,!findCargo(record));}
+  catch(error){console.warn("[CoopEconomyV2]",String(error?.message||error))}
   return answer("COMMITTED",record,{itemID:record.itemID,quantity:record.quantity});
  }
  // Only independently verified native GameStore ownership and payment
