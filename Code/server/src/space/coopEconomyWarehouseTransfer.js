@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 const TRANSFER_CODE = 'TRANSFER';
 
@@ -14,8 +15,9 @@ function isNonNegativeSafeInteger(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
-function createTransfer() {
-  const transferred = new Map();
+function createTransfer(options) {
+  // a replay after a restart must still see this record: pass {journal} to persist it
+  const transferred = createJournal(options && options.journal);
 
   function transfer({
     cargoID,

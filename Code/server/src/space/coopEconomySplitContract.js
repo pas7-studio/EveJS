@@ -1,11 +1,13 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 function isPositiveSafeInt(n) {
   return Number.isSafeInteger(n) && n > 0;
 }
 
-function createSplitContract() {
-  const store = new Map();
+function createSplitContract(options) {
+  // a replay after a restart must still see this record: pass {journal} to persist it
+  const store = createJournal(options && options.journal);
 
   function create({ contractID, totalCents, parties }) {
     if (typeof contractID !== 'string' || contractID.length === 0) {

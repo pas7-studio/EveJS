@@ -1,12 +1,30 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 function createReputation(opts) {
   opts = opts || {};
   var maxScore = opts.maxScore !== undefined ? opts.maxScore : 100;
 
-  var records = new Map();
+  const durable = opts && opts.journal;
+  const namespaced = (prefix) => {
+    if (!durable) return undefined;
+    return {
+      get: (k) => durable.get(prefix + k),
+      set: (k, v) => durable.set(prefix + k, v),
+      has: (k) => (typeof durable.has === "function" ? durable.has(prefix + k) : durable.get(prefix + k) !== undefined),
+      delete: (k) => (typeof durable.delete === "function" ? durable.delete(prefix + k) : undefined),
+      entries: () => (typeof durable.entries === "function"
+        ? [...durable.entries()].filter((e) => String(e[0]).startsWith(prefix))
+            .map((e) => [String(e[0]).slice(prefix.length), e[1]])
+        : []),
+    };
+  };
+  var records = createJournal(namespaced("record:"));
   var idSet = new Set();
-  var scores = new Map();
+  // the journal already knows the recorded contracts; the fast set must start from it, or a restart
+  // re-records the same contract and inflates the score
+  records.forEach(function (_entry, idKey) { idSet.add(idKey); });
+  var scores = createJournal(namespaced("score:"));
 
   function isSafePositiveInt(n) {
     return typeof n === 'number' && Number.isInteger(n) && n > 0 && n <= Number.MAX_SAFE_INTEGER;

@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 var FUNDS_STATUS = {
   QUOTED: 'QUOTED',
@@ -15,8 +16,9 @@ function isValidOperationID(operationID) {
   return typeof operationID === 'string' && operationID.length > 0;
 }
 
-function createGateway() {
-  var store = new Map();
+function createGateway(options) {
+  // a replay after a restart must still see this record: pass {journal} to persist it
+  var store = createJournal(options && options.journal);
 
   function commit(params) {
     var operationID = params && params.operationID;

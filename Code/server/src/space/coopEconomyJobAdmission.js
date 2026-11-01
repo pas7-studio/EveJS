@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 const ADMISSION_CODE = 'ADMITTED';
 
@@ -15,8 +16,9 @@ function isValidQuote(quote) {
   return true;
 }
 
-function createJobAdmission() {
-  const map = new Map();
+function createJobAdmission(options) {
+  // a replay after a restart must still see this record: pass {journal} to persist it
+  const map = createJournal(options && options.journal);
 
   function admit(input) {
     const { operationID, quote, materials, walletCents, installPort } = input || {};

@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 // IE-046: one persistent distribution run, attached to the existing PLAN -> LOAD -> CROSS -> SELL stages.
 // The run is keyed by runID and holds the real hull and cargo identity, so a restart or a crash reattaches
@@ -29,8 +30,9 @@ function isID(value) {
   return typeof value === 'string' && value.length > 0;
 }
 
-function createDistributor() {
-  const runs = new Map();
+function createDistributor(options) {
+  // an in-flight run must survive a restart, or the hull is free while the cargo is gone
+  const runs = createJournal(options && options.journal);
 
   function start(args) {
     const { runID, hullID, cargoID, quantity } = args || {};

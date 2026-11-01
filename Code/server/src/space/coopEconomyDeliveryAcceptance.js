@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 /**
  * coopEconomyDeliveryAcceptance.js
@@ -15,9 +16,10 @@
  *
  * @returns {{ accept: Function }}
  */
-function createAcceptance() {
+function createAcceptance(options) {
   // Private ledger: receiptID -> accepted delivery record.
-  const accepted = new Map();
+  // a replay after a restart must still see this record: pass {journal} to persist it
+  const accepted = createJournal(options && options.journal);
 
   /**
    * accept({ contract, delivery, itemStore })

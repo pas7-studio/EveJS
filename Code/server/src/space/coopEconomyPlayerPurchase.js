@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 const PURCHASE_CODE = 'PURCHASED';
 
@@ -13,8 +14,9 @@ function isValidAsk(ask) {
   return true;
 }
 
-function createBuyer() {
-  const records = new Map();
+function createBuyer(options) {
+  // a replay after a restart must still see this record: pass {journal} to persist it
+  const records = createJournal(options && options.journal);
 
   function purchase({ operationID, buyerCorpID, ask, walletCents, settlementPort, itemPort } = {}) {
     if (!isValidAsk(ask)) {

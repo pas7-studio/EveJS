@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 const INVALID_EVIDENCE = 'INVALID_EVIDENCE';
 const DUPLICATE_IGNORED = 'DUPLICATE_IGNORED';
@@ -19,9 +20,23 @@ function isPositiveSafeInteger(value) {
   );
 }
 
-function createDemandLedger() {
-  const evidenceMap = new Map(); // evidenceID -> { typeID, quantity }
-  const typeDemand = new Map(); // typeID -> quantity
+function createDemandLedger(opts) {
+  const durable = opts && opts.journal;
+  const namespaced = (prefix) => {
+    if (!durable) return undefined;
+    return {
+      get: (k) => durable.get(prefix + k),
+      set: (k, v) => durable.set(prefix + k, v),
+      has: (k) => (typeof durable.has === "function" ? durable.has(prefix + k) : durable.get(prefix + k) !== undefined),
+      delete: (k) => (typeof durable.delete === "function" ? durable.delete(prefix + k) : undefined),
+      entries: () => (typeof durable.entries === "function"
+        ? [...durable.entries()].filter((e) => String(e[0]).startsWith(prefix))
+            .map((e) => [String(e[0]).slice(prefix.length), e[1]])
+        : []),
+    };
+  };
+  const evidenceMap = createJournal(namespaced("evidence:"));
+  const typeDemand = createJournal(namespaced("demand:"));
   const typeEvidence = new Map(); // typeID -> Set<evidenceID>
 
   function record({ evidenceID, hullID, typeID, quantity }) {

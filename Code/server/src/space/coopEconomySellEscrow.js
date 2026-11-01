@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 // IE-038: an NPC-manufactured item is escrowed physically for a market SELL order.
 // The fleet reserve and the market escrow are two separate pools over the same on-hand stock, so a unit
@@ -26,10 +27,27 @@ function isQuantity(value) {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
-function createEscrow() {
-  const stock = new Map(); // itemID -> { onHand, reserved }
-  const listings = new Map(); // escrowID -> { itemID, remaining, priceCents }
-  const listedByItem = new Map(); // itemID -> escrowID
+function createEscrow(options) {
+  const durable = options && options.journal;
+  // Three maps share one store, so each gets its own namespace; without it a listing key could read
+  // a stock row. Without a journal the behaviour is exactly the old in-memory one.
+  const namespaced = (prefix) => {
+    if (!durable) return undefined;
+    return {
+      get: (k) => durable.get(prefix + k),
+      set: (k, v) => durable.set(prefix + k, v),
+      has: (k) => (typeof durable.has === "function" ? durable.has(prefix + k) : durable.get(prefix + k) !== undefined),
+      delete: (k) => (typeof durable.delete === "function" ? durable.delete(prefix + k) : undefined),
+      entries: () => (typeof durable.entries === "function"
+        ? [...durable.entries()].filter((e) => String(e[0]).startsWith(prefix))
+            .map((e) => [String(e[0]).slice(prefix.length), e[1]])
+        : []),
+    };
+  };
+  // a hold is a promise to the outside world: it must survive a restart
+  const stock = createJournal(namespaced("stock:"));
+  const listings = createJournal(namespaced("listing:"));
+  const listedByItem = createJournal(namespaced("byItem:"));
 
   function row(itemID) {
     let entry = stock.get(itemID);

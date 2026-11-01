@@ -1,4 +1,5 @@
 ﻿'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 // IE-062: a two-process race matrix over durable leases. Only one writer may ever hold a resource key at a
 // time, a reclaim needs proof that the old owner is really gone, and a paused-but-alive owner is never
@@ -20,8 +21,9 @@ function isID(value) {
   return typeof value === 'string' && value.length > 0;
 }
 
-function createLeases({ ttlTicks = 30, graceTicks = 5 } = {}) {
-  const leases = new Map(); // key -> { ownerID, acquiredTick, heartbeatTick }
+function createLeases({ ttlTicks = 30, graceTicks = 5, journal } = {}) {
+  // a lease that forgets itself across a restart is not a fence
+  const leases = createJournal(journal); // key -> { ownerID, acquiredTick, heartbeatTick }
   const history = [];
 
   function acquire(args) {
