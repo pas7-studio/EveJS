@@ -58,6 +58,13 @@ function createBackpressure(opts) {
   }
 
   function admit(req) {
+    // The counters were incremented on admit and never touched by complete(), so a finished job
+    // kept its slot for ever and the pool reported itself full after a few operations. The map is
+    // the authority (counts() already recomputes from it); derive the limits from it here too.
+    var live = recomputeCounts();
+    activeCount = live.active;
+    queuedCount = live.queued;
+
     if (!isValidRequest(req.operationID)) {
       return { ok: false, code: 'INVALID_REQUEST', state: undefined };
     }

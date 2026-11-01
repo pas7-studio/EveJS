@@ -56,7 +56,12 @@ function createLeases({ ttlTicks = 30, graceTicks = 5 } = {}) {
     const held = leases.get(key);
     if (!held) return { ok: false, code: RACE_CODE.UNKNOWN_KEY };
     if (held.ownerID === ownerID) return { ok: true, code: RACE_CODE.ACQUIRED, key, ownerID, reentrant: true };
-    const alive = Number.isSafeInteger(held.heartbeatTick) && tick >= held.heartbeatTick && tick - held.heartbeatTick <= ttlTicks;
+    // The grace period exists so a slow heartbeat is not punished, and sweep already honours it
+    // (ttl + grace). reclaim used the bare ttl, so a recovered owner could lose the lease one tick
+    // after the ttl while sweep still considered it alive: the grace was decorative. Both paths now
+    // use the same deadline - a lease is dead only after ttl + grace.
+    const alive = Number.isSafeInteger(held.heartbeatTick) && tick >= held.heartbeatTick &&
+      tick - held.heartbeatTick <= ttlTicks + graceTicks;
     if (alive) {
       // a paused owner that still beats is alive: reclaim is refused, never granted silently
       return { ok: false, code: RACE_CODE.RECLAIM_REFUSED, key, ownerID: held.ownerID };
