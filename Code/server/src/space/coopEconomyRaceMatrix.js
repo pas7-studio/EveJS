@@ -26,7 +26,7 @@ function createLeases({ ttlTicks = 30, graceTicks = 5 } = {}) {
 
   function acquire(args) {
     const { key, ownerID, tick } = args || {};
-    if (!isID(key) || !isID(ownerID) || !Number.isSafeInteger(tick)) {
+    if (!isID(key) || !isID(ownerID) || !Number.isSafeInteger(tick) || tick < 0) {
       return { ok: false, code: RACE_CODE.INVALID_REQUEST };
     }
     const held = leases.get(key);
@@ -56,7 +56,7 @@ function createLeases({ ttlTicks = 30, graceTicks = 5 } = {}) {
     const held = leases.get(key);
     if (!held) return { ok: false, code: RACE_CODE.UNKNOWN_KEY };
     if (held.ownerID === ownerID) return { ok: true, code: RACE_CODE.ACQUIRED, key, ownerID, reentrant: true };
-    const alive = Number.isSafeInteger(held.heartbeatTick) && tick - held.heartbeatTick <= ttlTicks;
+    const alive = Number.isSafeInteger(held.heartbeatTick) && tick >= held.heartbeatTick && tick - held.heartbeatTick <= ttlTicks;
     if (alive) {
       // a paused owner that still beats is alive: reclaim is refused, never granted silently
       return { ok: false, code: RACE_CODE.RECLAIM_REFUSED, key, ownerID: held.ownerID };
@@ -68,7 +68,7 @@ function createLeases({ ttlTicks = 30, graceTicks = 5 } = {}) {
   }
 
   function sweep({ tick } = {}) {
-    if (!Number.isSafeInteger(tick)) return { ok: false, code: RACE_CODE.INVALID_REQUEST, released: [] };
+    if (!Number.isSafeInteger(tick) || tick < 0) return { ok: false, code: RACE_CODE.INVALID_REQUEST, released: [] };
     const released = [];
     for (const [key, held] of [...leases.entries()]) {
       if (tick - held.heartbeatTick > ttlTicks + graceTicks) {
