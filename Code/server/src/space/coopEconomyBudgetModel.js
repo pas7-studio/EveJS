@@ -47,6 +47,9 @@ function spendableCash({
   if (reason === BUDGET_REASON.OK && cashAvailable < 0) {
     reason = BUDGET_REASON.NO_SPENDABLE_FUNDS;
   }
+  // spendable cash is never negative: a negative position is zero spendable with a reason, not a
+  // number a caller could add to something else (the earlier reservedOn/spendableCash class of bug)
+  if (cashAvailable < 0) cashAvailable = 0;
   return { cashAvailable, reason };
 }
 

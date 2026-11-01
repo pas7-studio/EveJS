@@ -128,6 +128,7 @@ function buildRequireGraph({ srcRoot, entryFile }) {
 
   return {
     entry: entryFile,
+    srcRoot: path.resolve(srcRoot),
     files: files.size,
     reachable: sortedReach,
     unreachable,
@@ -137,10 +138,22 @@ function buildRequireGraph({ srcRoot, entryFile }) {
 
 function unreachableModules(graph, prefixes) {
   if (!Array.isArray(prefixes) || prefixes.length === 0) return [];
-  const result = new Set();
+  // graph.unreachable holds srcRoot-relative posix paths, while callers pass absolute directories:
+  // compare both forms or every prefix silently matches nothing.
+  const relatives = [];
   for (const prefix of prefixes) {
-    for (const u of graph.unreachable || []) {
-      if (typeof u === "string" && u.startsWith(prefix)) result.add(u);
+    const value = String(prefix);
+    relatives.push(value.replace(/\\/g, "/"));
+    if (path.isAbsolute(value) && graph && typeof graph.srcRoot === "string") {
+      relatives.push(path.relative(graph.srcRoot, value).split(path.sep).join("/"));
+    }
+  }
+  const result = new Set();
+  for (const u of graph.unreachable || []) {
+    if (typeof u !== "string") continue;
+    for (const prefix of relatives) {
+      const clean = prefix.replace(/\/$/, "");
+      if (clean.length > 0 && (u === clean || u.startsWith(clean + "/"))) result.add(u);
     }
   }
   return [...result].sort();

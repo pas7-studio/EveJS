@@ -42,12 +42,25 @@ function buildGapReport(input) {
     }
 
     var status;
+    var unreachable = [];
     if (missing.length > 0) {
       status = GAP_STATUS.MISSING;
-    } else if (reachableCount === 0) {
-      status = GAP_STATUS.BLOCKED;
     } else {
-      status = GAP_STATUS.READY;
+      // a module that exists but cannot be reached from the entry point is NOT an executor: a stage
+      // that silently loses half of its modules must block, not read READY
+      for (var r = 0; r < stage.modules.length; r++) {
+        var moduleId = stage.modules[r];
+        if (presentSet[moduleId] && !reachableSet[moduleId]) {
+          unreachable.push(moduleId);
+        }
+      }
+      if (reachableCount === 0) {
+        status = GAP_STATUS.BLOCKED;
+      } else if (unreachable.length > 0) {
+        status = GAP_STATUS.BLOCKED;
+      } else {
+        status = GAP_STATUS.READY;
+      }
     }
 
     stages.push({
@@ -55,6 +68,7 @@ function buildGapReport(input) {
       title: stage.title,
       status: status,
       missing: missing,
+      unreachable: unreachable,
       reachableCount: reachableCount,
       moduleCount: stage.modules.length
     });

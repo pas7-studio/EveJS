@@ -44,7 +44,11 @@ function createOutputDelivery() {
       return { ok: true, code: DELIVERY_CODE.ALREADY_DELIVERED, itemID: delivered[jobID].itemID };
     }
 
-    // 3. Readback readiness is the only evidence of readiness.
+    // 3. Readback readiness is the only evidence of readiness, and it must be this job's readback:
+    //    a completed readback for another job says nothing about this one.
+    if (readback && readback.jobID !== undefined && readback.jobID !== jobID) {
+      return { ok: false, code: DELIVERY_CODE.NOT_READY };
+    }
     if (readback && readback.completed === true && readback.readyAt !== undefined && readback.readyAt !== null) {
       // fall through to issue
     } else {

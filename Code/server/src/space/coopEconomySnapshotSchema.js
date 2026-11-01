@@ -30,6 +30,15 @@ function validateSnapshot(snapshot, options) {
 
     var errors = {};
 
+    // A missing or non-object snapshot is invalid, not a crash: this function is the gate every
+    // caller trusts, so it must fail closed on anything it was handed.
+    if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+        errors[SNAPSHOT_ERROR.MISSING_TIME] = true;
+        errors[SNAPSHOT_ERROR.MISSING_SOURCE] = true;
+        errors[SNAPSHOT_ERROR.CONTRADICTORY] = true;
+        return { ok: false, errors: Object.keys(errors).sort() };
+    }
+
     // MISSING_TIME: observedAt is not a finite number.
     if (typeof snapshot.observedAt !== 'number' || !isFinite(snapshot.observedAt)) {
         errors[SNAPSHOT_ERROR.MISSING_TIME] = true;
