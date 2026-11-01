@@ -140,15 +140,15 @@ function buildCapabilityIndex({ srcRoot }) {
       let flags = [];
       let exists = false;
       try {
-        exists = fs.existsSync(full);
-        if (exists) {
-          bytes = fs.statSync(full).size;
+        if (fs.existsSync(full)) {
           const text = fs.readFileSync(full, 'utf8');
           const found = new Set();
           for (const m of text.matchAll(EVEJS_RE)) {
             found.add(m[0]);
           }
           flags = Array.from(found).sort();
+          bytes = fs.statSync(full).size;
+          exists = true;
         }
       } catch {
         // ignore read errors; treat as missing
