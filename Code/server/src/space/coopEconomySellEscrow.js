@@ -86,6 +86,8 @@ function createEscrow() {
       return { ok: false, code: ESCROW_CODE.INSUFFICIENT_ESCROW };
     }
     listing.remaining -= quantity;
+    // A filled unit physically leaves the station, so on-hand stock drops with it.
+    row(listing.itemID).onHand = Math.max(0, row(listing.itemID).onHand - quantity);
     if (listing.remaining === 0) {
       // a fully filled listing stays recorded at zero so a replay cannot re-list the same stock
       listings.set(escrowID, listing);

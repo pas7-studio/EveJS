@@ -66,6 +66,10 @@ function chooseFill(args) {
   for (const order of orders) {
     if (badOrder(order)) return { ok: false, code: COMPETITION_CODE.INVALID_ORDER };
   }
+  // an ambiguous book is not a market: one orderID cannot appear twice
+  if (new Set(orders.map((order) => order.orderID)).size !== orders.length) {
+    return { ok: false, code: COMPETITION_CODE.INVALID_ORDER };
+  }
 
   // an NPC that posts every tick is order spam, not competition
   if (ordersThisTick > maxOrdersPerTick) return { ok: false, code: COMPETITION_CODE.ORDER_SPAM };

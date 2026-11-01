@@ -120,7 +120,8 @@ function persist(force) {
 function noteWarehouse(record, item, durable) {
   if (!enabled()) return null;
   try {
-    if (!record || !Number.isSafeInteger(Number(record.cargoID)) || Number(record.cargoID) <= 0) return null;
+    // a cargo id is a number: a numeric string is a caller bug, not a receipt
+    if (!record || typeof record.cargoID !== "number" || !Number.isSafeInteger(record.cargoID) || record.cargoID <= 0) return null;
     if (state.startedAt === null) state.startedAt = new Date().toISOString();
 
     const cargoID = Number(record.cargoID);

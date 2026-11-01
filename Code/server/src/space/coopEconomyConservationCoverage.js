@@ -29,7 +29,9 @@ function measure(entry) {
   const hasCents = entry.cents !== undefined;
   if (hasUnits === hasCents) return null;
   const amount = hasUnits ? entry.units : entry.cents;
-  return isCount(amount) ? amount : null;
+  if (!isCount(amount)) return null;
+  // the kind is part of the reading: 100 cents is not 100 physical units
+  return { kind: hasUnits ? 'units' : 'cents', amount };
 }
 
 function audit(args) {
@@ -49,11 +51,11 @@ function audit(args) {
     }
     const from = measure(before[scope]);
     const to = measure(after[scope]);
-    if (from === null || to === null) {
+    if (from === null || to === null || from.kind !== to.kind) {
       missing.push(scope);
       continue;
     }
-    deltas[scope] = to - from;
+    deltas[scope] = to.amount - from.amount;
   }
 
   if (missing.length > 0) {

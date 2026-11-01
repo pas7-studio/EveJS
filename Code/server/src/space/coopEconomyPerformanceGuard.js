@@ -47,7 +47,11 @@ function check(args) {
       continue;
     }
     const baseP95 = baselinePaths.get(name);
-    if (baseP95 === 0) continue;
+    // a zero baseline must not hide any nonzero candidate
+    if (baseP95 === 0) {
+      if (p95 > 0) regressions.push({ name, baselineP95Ms: 0, candidateP95Ms: p95, growthPct: Infinity });
+      continue;
+    }
     const growthPct = ((p95 - baseP95) / baseP95) * 100;
     if (growthPct > budgets.p95TolerancePct) {
       regressions.push({ name, baselineP95Ms: baseP95, candidateP95Ms: p95, growthPct });

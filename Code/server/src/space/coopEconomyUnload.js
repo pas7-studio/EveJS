@@ -8,6 +8,7 @@ const UNLOAD_CODE = {
   UNLOADED: 'UNLOADED',
   EMPTY_HULL: 'EMPTY_HULL',
   INVALID_CARGO: 'INVALID_CARGO',
+  INVALID_ORDER: 'INVALID_ORDER',
   NOT_AT_STATION: 'NOT_AT_STATION',
   NATIVE_AUTHORITY_UNAVAILABLE: 'NATIVE_AUTHORITY_UNAVAILABLE',
   UNLOAD_UNKNOWN: 'UNLOAD_UNKNOWN',
@@ -45,8 +46,16 @@ function unload(args) {
   let left = cargo.quantity;
   for (const order of Array.isArray(orders) ? orders : []) {
     if (!order || !Number.isSafeInteger(order.priceCents) || !Number.isSafeInteger(order.quantity)) continue;
+    if (order.priceCents <= 0 || order.quantity <= 0) continue;
     const take = Math.min(order.quantity, left);
     if (take <= 0) continue;
+    // a line total that overflows a safe integer is not money: refuse the whole unload
+    if (!Number.isSafeInteger(take * order.priceCents)) {
+      return { ok: false, code: UNLOAD_CODE.INVALID_ORDER };
+    }
+    if (!Number.isSafeInteger(revenueCents + take * order.priceCents)) {
+      return { ok: false, code: UNLOAD_CODE.INVALID_ORDER };
+    }
     demand += take;
     revenueCents += take * order.priceCents;
     left -= take;
