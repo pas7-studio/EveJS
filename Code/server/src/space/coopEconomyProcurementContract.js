@@ -11,7 +11,7 @@ const CONTRACT_CODE = {
   NOT_OPEN: 'NOT_OPEN',
 };
 
-const openContracts = new Map();
+let openContracts = new Map();
 
 function isID(value) {
   return typeof value === 'string' && value.length > 0;
@@ -103,4 +103,13 @@ function open(contractID) {
   return contract ? { ...contract } : null;
 }
 
-module.exports = { openContract, expire, open, CONTRACT_CODE };
+// Attach a durable journal {get,set,has?,delete?,entries?} so the module's records survive a
+// restart. Called once at boot by the host; without it the behaviour is unchanged.
+function useJournal(journal) {
+  const next = require("./coopEconomyJournal").createJournal(journal);
+  for (const entry of openContracts) next.set(entry[0], entry[1]);
+  openContracts = next;
+  return openContracts.durable !== null;
+}
+
+module.exports = { openContract, expire, open, CONTRACT_CODE, useJournal };

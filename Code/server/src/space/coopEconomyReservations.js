@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 var util = require('util');
 
@@ -9,8 +10,9 @@ var CODES = {
   RESERVED: 'RESERVED',
 };
 
-function createReservations() {
-  var byKey = new Map();
+function createReservations(options) {
+  // a reservation is a promise: it must survive a restart
+  var byKey = createJournal(options && options.journal);
 
   function reservedOn(key) {
     var m = byKey.get(key);

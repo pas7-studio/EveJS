@@ -1,4 +1,5 @@
 "use strict";
+const { createJournal } = require("./coopEconomyJournal");
 
 /**
  * Hauler reservation pool.
@@ -24,9 +25,23 @@ const HAULER_CODE = {
   RECONCILED: "RECONCILED"
 };
 
-function createHaulerPool() {
-  const hulls = new Map(); // hullID -> { capacityM3, frozen, reason }
-  const runs = new Map(); // runID -> { hullID, volumeM3, cargoIDs }
+function createHaulerPool(options) {
+  const durable = options && options.journal;
+  const namespaced = (prefix) => {
+    if (!durable) return undefined;
+    return {
+      get: (k) => durable.get(prefix + k),
+      set: (k, v) => durable.set(prefix + k, v),
+      has: (k) => (typeof durable.has === "function" ? durable.has(prefix + k) : durable.get(prefix + k) !== undefined),
+      delete: (k) => (typeof durable.delete === "function" ? durable.delete(prefix + k) : undefined),
+      entries: () => (typeof durable.entries === "function"
+        ? [...durable.entries()].filter((e) => String(e[0]).startsWith(prefix))
+            .map((e) => [String(e[0]).slice(prefix.length), e[1]])
+        : []),
+    };
+  };
+  const hulls = createJournal(namespaced("hull:")); // hullID -> { capacityM3, frozen, reason }
+  const runs = createJournal(namespaced("run:")); // runID -> { hullID, volumeM3, cargoIDs }
 
   function register(input) {
     const { hullID, capacityM3 } = input || {};

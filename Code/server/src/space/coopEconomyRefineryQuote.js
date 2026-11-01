@@ -33,7 +33,7 @@ function isNonNegativeInt(v) {
 // The fee is money: a retry of the same operation must not debit again. The key is the operation
 // identity AND the request itself, because a call without an operationID has no retry identity at
 // all and a caller that reuses an id for a different request is making a new request, not a retry.
-const REFINED = new Map();
+let REFINED = new Map();
 const MAX_REFINED = 1000;
 function refinedKey(operationID, quote, inputs, walletCents) {
   if (typeof operationID !== "string" || operationID.length === 0) return null;
@@ -120,4 +120,13 @@ function runRefinery(args) {
   return result;
 }
 
-module.exports = { runRefinery, REFINERY_CODE };
+// Attach a durable journal {get,set,has?,delete?,entries?} so the module's records survive a
+// restart. Called once at boot by the host; without it the behaviour is unchanged.
+function useJournal(journal) {
+  const next = require("./coopEconomyJournal").createJournal(journal);
+  for (const entry of REFINED) next.set(entry[0], entry[1]);
+  REFINED = next;
+  return REFINED.durable !== null;
+}
+
+module.exports = { runRefinery, REFINERY_CODE, useJournal };

@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 /**
  * A non-negative safe integer is a finite number within the safe integer
@@ -13,8 +14,9 @@ function isNonNegativeSafeInteger(n) {
  * entry { state, netCents }. The map is kept private via closure so callers
  * cannot tamper with settlement state.
  */
-function createContractSettlement() {
-  const ledger = new Map();
+function createContractSettlement(options) {
+  // a paid contract must not be paid again after a restart
+  const ledger = createJournal(options && options.journal);
 
   function settle(input) {
     const {

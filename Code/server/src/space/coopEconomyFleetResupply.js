@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 /**
  * Fleet resupply authority.
@@ -7,8 +8,9 @@
  * delivery against a hull, a warehouse and a native authority "fit" function.
  * Issued deliveries are tracked in a private Map keyed by deliveryID.
  */
-function createResupply() {
-  const issued = new Map();
+function createResupply(options) {
+  // one delivery, one issue: a restart must not resupply the same cargo twice
+  const issued = createJournal(options && options.journal);
 
   function resupply({ deliveryID, item, hull, warehouse, equipmentPort } = {}) {
     // 1. Validate the delivery identity and the requested quantity.

@@ -1,12 +1,27 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 /**
  * createQuarantine() returns an object that tracks quarantined operations.
  * State is held in a private Map(operationID -> { resourceKeys, reason, resolved }).
  * A quarantine never deletes state and never unblocks itself.
  */
-function createQuarantine() {
-    const entries = new Map();
+function createQuarantine(options) {
+  const durable = options && options.journal;
+  const namespaced = (prefix) => {
+    if (!durable) return undefined;
+    return {
+      get: (k) => durable.get(prefix + k),
+      set: (k, v) => durable.set(prefix + k, v),
+      has: (k) => (typeof durable.has === "function" ? durable.has(prefix + k) : durable.get(prefix + k) !== undefined),
+      delete: (k) => (typeof durable.delete === "function" ? durable.delete(prefix + k) : undefined),
+      entries: () => (typeof durable.entries === "function"
+        ? [...durable.entries()].filter((e) => String(e[0]).startsWith(prefix))
+            .map((e) => [String(e[0]).slice(prefix.length), e[1]])
+        : []),
+    };
+  };
+    const entries = createJournal(namespaced("entry:"));
 
     function validateResourceKeys(resourceKeys) {
         return Array.isArray(resourceKeys) &&

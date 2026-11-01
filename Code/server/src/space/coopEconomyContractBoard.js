@@ -1,4 +1,5 @@
 'use strict';
+const { createJournal } = require("./coopEconomyJournal");
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 
@@ -19,8 +20,9 @@ function byContractID(a, b) {
     return 0;
 }
 
-function createBoard() {
-    const contracts = new Map();
+function createBoard(options) {
+    // a published contract must survive a restart, or its funding is orphaned
+  const contracts = createJournal(options && options.journal);
 
     function publish(input) {
         const { contractID, typeID, stationID, quantity, unitPriceCents, expiryTick, status } = input || {};
