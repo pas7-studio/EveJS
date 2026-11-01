@@ -13,9 +13,16 @@ const SETTLEMENT_CODE = {
     NATIVE_AUTHORITY_UNAVAILABLE: 'NATIVE_AUTHORITY_UNAVAILABLE',
 };
 
-function createSettlement() {
+function createSettlement(options) {
+  const journal = options && options.journal;
     // Private map keyed by fillID -> { state, netCents, creditReceiptID }.
     const ledger = new Map();
+  // every state change goes through put(), which mirrors it into the durable journal when one is
+  // supplied; every lookup consults the journal first, so a restart cannot forget a settled fill
+  const put = (id, entry) => {
+    ledger.set(id, entry);
+    if (journal && typeof journal.set === "function") journal.set(id, entry);
+  };
 
     function isNonEmptyString(v) {
         return typeof v === 'string' && v.length > 0;
@@ -41,7 +48,7 @@ function createSettlement() {
         }
 
         // 2. Already settled -> replay-safe, never credit the wallet twice.
-        const existing = ledger.get(fillID);
+        const existing = (journal && typeof journal.get === "function" && journal.get(fillID)) || ledger.get(fillID);
         if (existing && existing.state === STATE_SETTLED) {
             return { ok: true, code: 'ALREADY_SETTLED', netCents: existing.netCents };
         }
@@ -68,17 +75,17 @@ function createSettlement() {
             const receipt = walletPort.credit({ corpID: ownerCorpID, cents: netCents, fillID });
             creditReceiptID = receipt && receipt.receiptID;
         } catch (err) {
-            ledger.set(fillID, { state: STATE_UNKNOWN, netCents, creditReceiptID: null });
+            put(fillID, { state: STATE_UNKNOWN, netCents, creditReceiptID: null });
             return { ok: false, code: 'SETTLEMENT_UNKNOWN' };
         }
 
         if (!creditReceiptID) {
-            ledger.set(fillID, { state: STATE_UNKNOWN, netCents, creditReceiptID: null });
+            put(fillID, { state: STATE_UNKNOWN, netCents, creditReceiptID: null });
             return { ok: false, code: 'SETTLEMENT_UNKNOWN' };
         }
 
         // 7. Success -> mark SETTLED.
-        ledger.set(fillID, { state: STATE_SETTLED, netCents, creditReceiptID });
+        put(fillID, { state: STATE_SETTLED, netCents, creditReceiptID });
         return { ok: true, code: 'SETTLED', fillID, netCents, creditReceiptID };
     }
 
