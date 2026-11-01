@@ -24,6 +24,7 @@ function buildScorecard(args) {
   let ornithAuthoredProductionLOC = 0;
   let ornithAuthoredTestLOC = 0;
   let deepseekRescueLOC = 0;
+  let deepseekAuthoredProductionLOC = 0;
   let toolFailures = 0;
   let reviewRounds = 0;
   let noCandidateAttempts = 0;
@@ -58,7 +59,18 @@ function buildScorecard(args) {
     }
 
     const ornith = event.actor === 'ornith-a' || event.actor === 'ornith-b';
-    if (!ornith) continue;
+    if (!ornith) {
+      // Work this author really produced is not invisible: dropping it made the ledger read
+      // as if every accepted file came from an agent, which is exactly the flattery the
+      // scorecard exists to prevent. It is counted, attributed, and never autonomous.
+      if (event.kind === 'PRODUCTION') {
+        deepseekAuthoredProductionLOC += loc;
+        if (event.accepted === true && !producedBy.has(event.taskID)) {
+          producedBy.set(event.taskID, 'deepseek');
+        }
+      }
+      continue;
+    }
 
     if (event.kind === 'PRODUCTION') ornithAuthoredProductionLOC += loc;
     if (event.kind === 'TEST') ornithAuthoredTestLOC += loc;
@@ -81,6 +93,7 @@ function buildScorecard(args) {
     ornithAuthoredProductionLOC,
     ornithAuthoredTestLOC,
     deepseekRescueLOC,
+    deepseekAuthoredProductionLOC,
     autonomousVerifiedTasks,
     rescuedTasks: rescuedTasks.size,
     noCandidateAttempts,

@@ -37,6 +37,12 @@ function buildRecoveryPlan({ walletCents, commitmentsCents, escrowClaimsCents, a
     ) {
       return { ok: false, code: 'INVALID_STATE' };
     }
+    // Units and cents are integers: a fractional or negative quantity (or a numeric string coerced
+    // by `*`) silently changes the amount of money the plan claims to recover, and a NaN infects
+    // every comparison below. A corrupt row is refused, never discounted.
+    if (!isNonNegativeSafeInt(asset.quantity) || !isNonNegativeSafeInt(asset.unitValueCents)) {
+      return { ok: false, code: 'INVALID_STATE' };
+    }
   }
 
   const sellableCents = assets.reduce((sum, asset) => {

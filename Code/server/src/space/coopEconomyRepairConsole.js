@@ -36,8 +36,12 @@ function act(params) {
   if (SAFE_CHOICES.indexOf(choice) === -1) {
     return { ok: false, code: "UNSAFE_CHOICE" };
   }
+  // An action without a target is not a repair: it cannot be applied, audited, or rolled back.
+  if (typeof operationID !== "string" || operationID.length === 0) {
+    return { ok: false, code: "INVALID_OPERATION" };
+  }
   if ((choice === "RECONCILE" || choice === "RETRY_AFTER_READBACK") &&
-      !(typeof evidence === "string" && evidence.length > 0)) {
+      !(typeof evidence === "string" && evidence.trim().length > 0)) {
     return { ok: false, code: "EVIDENCE_REQUIRED" };
   }
   return { ok: true, code: "ACCEPTED", choice: choice, operationID: operationID };
@@ -45,6 +49,12 @@ function act(params) {
 
 function isHealthy(params) {
   var journal = params && params.journal;
+  var operation = params && params.operation;
+  // Health is about the operation, not about the presence of a receipt: a failed operation
+  // with a journal is not healthy, and view() already said so. Two answers must not disagree.
+  if (operation && operation.state !== undefined) {
+    return operation.state === "COMPLETED" && hasReceipt(journal);
+  }
   return hasReceipt(journal);
 }
 

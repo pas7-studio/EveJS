@@ -22,13 +22,19 @@ function revalidate(_ref) {
     var after = input.after;
     var fields = input.fields;
 
-    var list = isMissing(fields) ? DEFAULT_FIELDS : fields;
+    // A caller that could not read one side of the comparison has NOT proved the state is
+    // unchanged. Anything that is not an object is treated as a missing side (every field
+    // changed) and a field list that is not an array falls back to the full list, so the gate
+    // fails closed instead of crashing a guard that trusts it.
+    var list = Array.isArray(fields) ? fields : DEFAULT_FIELDS;
+    var beforeMissing = typeof before !== "object" || before === null;
+    var afterMissing = typeof after !== "object" || after === null;
 
     var changed = [];
     for (var i = 0; i < list.length; i++) {
         var name = list[i];
         var code = CODES[name] || "FIELD_CHANGED";
-        if (isMissing(before) || isMissing(after) || before[name] !== after[name]) {
+        if (beforeMissing || afterMissing || before[name] !== after[name]) {
             changed.push(name);
         }
     }

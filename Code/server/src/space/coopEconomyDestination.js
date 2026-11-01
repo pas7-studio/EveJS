@@ -65,6 +65,7 @@ function rankStations({ cargo = [], candidates = [], books = {} } = {}) {
   const totals = cargoTotals(cargo);
   const totalQuantity = [...totals.values()].reduce((sum, quantity) => sum + quantity, 0);
   const ranked = [];
+  if (totalQuantity === 0) return { ranked, reasons: ["EMPTY_CARGO"] };
   for (const candidate of candidates || []) {
     const stationID = positive(candidate?.stationID);
     if (!stationID) continue;

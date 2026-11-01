@@ -30,6 +30,16 @@ function assessLiveReadiness(opts) {
 
   // Rule 2: attestation must exist, match the binding id, and carry both
   // non-empty string reviewedBy and reviewSHA fields.
+  // Rule 2a: the binding itself must have an identity. An attestation that names nobody
+  // (`{reviewedBy, reviewSHA}` with no id) matched an anonymous binding and promoted it.
+  if (typeof binding.id !== 'string' || binding.id.length === 0) {
+    return {
+      live: false,
+      code: 'ATTESTATION_REQUIRED',
+      reason: 'Binding has no id, so no attestation can be tied to it.',
+    };
+  }
+
   if (!attestation) {
     return {
       live: false,
@@ -50,9 +60,9 @@ function assessLiveReadiness(opts) {
 
   if (
     typeof attestation.reviewedBy !== 'string' ||
-    attestation.reviewedBy.length === 0 ||
+    attestation.reviewedBy.trim().length === 0 ||
     typeof attestation.reviewSHA !== 'string' ||
-    attestation.reviewSHA.length === 0
+    attestation.reviewSHA.trim().length === 0
   ) {
     return {
       live: false,
