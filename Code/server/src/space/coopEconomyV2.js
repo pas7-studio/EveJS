@@ -179,6 +179,8 @@ function noteWarehouse(record, item, durable) {
     const typeID = Number(record.typeID) || 0;
     const quantity = Number(record.quantity) || 0;
     const itemID = Number((item && item.itemID) || record.itemID) || 0;
+    // what the caller OBSERVED in the native ItemStore, never what the receipt claims
+    const observedItemID = Number(item && item.itemID) || 0;
 
     // one native cargoID is one receipt; a retry of the same stack is a replay
     if (state.receipts.some((r) => r.cargoID === cargoID)) {
@@ -190,7 +192,7 @@ function noteWarehouse(record, item, durable) {
     // A COMMITTED receipt without a real ItemStore stack is NOT station stock.
     // Counting it would let a bare depot phase unlock a refinery, so it is
     // recorded as a blocked observation and never added to the physical total.
-    const hasPhysicalItem = itemID > 0 && quantity > 0;
+    const hasPhysicalItem = observedItemID > 0 && quantity > 0;
     const row = stationRow(stationID, typeID);
     if (hasPhysicalItem) {
       row.types.set(row.key, (row.types.get(row.key) || 0) + quantity);
@@ -208,7 +210,7 @@ function noteWarehouse(record, item, durable) {
       arrival: { receiptID: "cargo:" + cargoID },
       // only a real observed native stack counts; a depot phase is never stock
       warehouseItems: hasPhysicalItem
-        ? [{ stationID: String(stationID), typeID: String(typeID), itemID: String(itemID), quantity }]
+        ? [{ stationID: String(stationID), typeID: String(typeID), itemID: String(observedItemID), quantity }]
         : [],
       depotStatus: record.phase,
     });
@@ -242,6 +244,9 @@ function noteWarehouse(record, item, durable) {
 function status() {
   // hydrate before snapshotting: the first status() after a restart must never report or overwrite
   // a smaller picture than the one already on disk
+  // hydrate first, whatever the switch says: an operator reading the view while the shadow is
+  // OFF must see what is on disk, and a corrupt state file must be named instead of looking empty.
+  hydrate();
   const live = enabled();
   const view = snapshot();
   if (live) persist(true);
