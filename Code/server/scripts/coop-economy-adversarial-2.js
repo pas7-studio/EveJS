@@ -3,8 +3,12 @@
 // payloads, boundary currencies, and the closed loop under hostile ports.
 
 const path = require("node:path");
-const root = process.env.EVEJS_FORK_ROOT || path.resolve(__dirname, "..", "..", "..");
-const sp = (name) => path.join(root, "Code/server/src/space", name);
+const root = process.env.EVEJS_FORK_ROOT || "O:\\tmp\\m003\\work";
+const fsProbe = require("node:fs");
+const spaceDir = fsProbe.existsSync(path.join(root, "Code/server/src/space"))
+  ? path.join(root, "Code/server/src/space")
+  : path.join(root, "src", "space");
+const sp = (name) => path.join(spaceDir, name);
 
 const m = {
   closedLoop: require(sp("coopEconomyClosedLoop.js")),
