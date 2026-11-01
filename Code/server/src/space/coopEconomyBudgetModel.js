@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const BUDGET_REASON = {
   OK: "OK",
@@ -44,6 +44,9 @@ function spendableCash({
     }
   }
 
+  if (reason === BUDGET_REASON.OK && cashAvailable < 0) {
+    reason = BUDGET_REASON.NO_SPENDABLE_FUNDS;
+  }
   return { cashAvailable, reason };
 }
 
@@ -64,3 +67,4 @@ function canSpend(state, cents) {
 }
 
 module.exports = { spendableCash, canSpend, BUDGET_REASON };
+

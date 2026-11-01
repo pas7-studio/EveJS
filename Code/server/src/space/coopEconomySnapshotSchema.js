@@ -96,8 +96,9 @@ function validateSnapshot(snapshot, options) {
     return { ok: errorCodes.length === 0, errors: errorCodes };
 }
 
-function createSnapshot(spec) {
-    var result = validateSnapshot(spec);
+function createSnapshot(spec, options) {
+    var now = options && Number.isFinite(options.now) ? options.now : spec && spec.observedAt;
+    var result = validateSnapshot(spec, { now: now });
     if (!result.ok) {
         throw new TypeError('invalid snapshot: ' + result.errors.join(','));
     }
@@ -110,4 +111,5 @@ module.exports = {
     createSnapshot: createSnapshot,
     SNAPSHOT_ERROR: SNAPSHOT_ERROR
 };
+
 
