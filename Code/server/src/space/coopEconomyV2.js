@@ -238,7 +238,11 @@ function noteWarehouse(record, item, durable) {
     });
     if (state.receipts.length > MAX_RECEIPTS) state.receipts.shift();
 
-    persist(state.deliveries % 10 === 0);
+    // A new receipt is the product of this module: it is written immediately. The 2-second
+    // throttle was measured to lose evidence - two receipts arrive as a batch (25999 units and the
+    // 1-unit remainder), the second one waits out the throttle in memory, and a restart in that
+    // window drops it (measured live 2026-11-01: cargo 980200218463 was observed and never stored).
+    persist(true);
     return { ok: true, code: "OBSERVED", cargoID, proof: proof.code, physical };
   } catch (error) {
     state.lastError = String((error && error.message) || error).slice(0, 300);
