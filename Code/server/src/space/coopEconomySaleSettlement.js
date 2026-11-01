@@ -1,0 +1,88 @@
+'use strict';
+
+// Settlement lifecycle state values stored per fillID in the private map.
+const STATE_SETTLED = 'SETTLED';
+const STATE_UNKNOWN = 'UNKNOWN';
+
+// SETTLEMENT_CODE: reference table describing every settlement outcome code.
+const SETTLEMENT_CODE = {
+    SETTLED: 'SETTLED',
+    ALREADY_SETTLED: 'ALREADY_SETTLED',
+    SETTLEMENT_UNKNOWN: 'SETTLEMENT_UNKNOWN',
+    INVALID_SETTLEMENT: 'INVALID_SETTLEMENT',
+    NATIVE_AUTHORITY_UNAVAILABLE: 'NATIVE_AUTHORITY_UNAVAILABLE',
+};
+
+function createSettlement() {
+    // Private map keyed by fillID -> { state, netCents, creditReceiptID }.
+    const ledger = new Map();
+
+    function isNonEmptyString(v) {
+        return typeof v === 'string' && v.length > 0;
+    }
+
+    function isNonNegativeSafeInteger(v) {
+        return typeof v === 'number'
+            && Number.isInteger(v)
+            && Number.isSafeInteger(v)
+            && v >= 0;
+    }
+
+    function settle(input) {
+        const { fillID, ownerCorpID, grossCents, taxCents, feeCents, walletPort } = input || {};
+
+        // 1. Validate identifiers and cent fields.
+        if (!isNonEmptyString(fillID)
+            || !isNonEmptyString(ownerCorpID)
+            || !isNonNegativeSafeInteger(grossCents)
+            || !isNonNegativeSafeInteger(taxCents)
+            || !isNonNegativeSafeInteger(feeCents)) {
+            return { ok: false, code: 'INVALID_SETTLEMENT' };
+        }
+
+        // 2. Already settled -> replay-safe, never credit the wallet twice.
+        const existing = ledger.get(fillID);
+        if (existing && existing.state === STATE_SETTLED) {
+            return { ok: true, code: 'ALREADY_SETTLED', netCents: existing.netCents };
+        }
+
+        // 3. Previously marked UNKNOWN -> no retry, no credit.
+        if (existing && existing.state === STATE_UNKNOWN) {
+            return { ok: false, code: 'SETTLEMENT_UNKNOWN' };
+        }
+
+        // 4. net = gross - tax - fee must be non-negative.
+        const netCents = grossCents - taxCents - feeCents;
+        if (netCents < 0) {
+            return { ok: false, code: 'INVALID_SETTLEMENT' };
+        }
+
+        // 5. Native authority must expose a credit function.
+        if (typeof walletPort !== 'object' || walletPort === null || typeof walletPort.credit !== 'function') {
+            return { ok: false, code: 'NATIVE_AUTHORITY_UNAVAILABLE' };
+        }
+
+        // 6. Credit exactly once.
+        let creditReceiptID;
+        try {
+            const receipt = walletPort.credit({ corpID: ownerCorpID, cents: netCents, fillID });
+            creditReceiptID = receipt && receipt.receiptID;
+        } catch (err) {
+            ledger.set(fillID, { state: STATE_UNKNOWN, netCents, creditReceiptID: null });
+            return { ok: false, code: 'SETTLEMENT_UNKNOWN' };
+        }
+
+        if (!creditReceiptID) {
+            ledger.set(fillID, { state: STATE_UNKNOWN, netCents, creditReceiptID: null });
+            return { ok: false, code: 'SETTLEMENT_UNKNOWN' };
+        }
+
+        // 7. Success -> mark SETTLED.
+        ledger.set(fillID, { state: STATE_SETTLED, netCents, creditReceiptID });
+        return { ok: true, code: 'SETTLED', fillID, netCents, creditReceiptID };
+    }
+
+    return { settle };
+}
+
+module.exports = { createSettlement, SETTLEMENT_CODE };
