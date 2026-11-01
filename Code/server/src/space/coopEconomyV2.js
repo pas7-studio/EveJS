@@ -37,15 +37,65 @@ const state = {
   stations: new Map(), // stationID -> Map(typeID -> quantity)
   lastWriteAt: 0,
   lastError: null,
+  hydrated: false,
 };
 
-function enabled() {
-  if (process.env.EVEJS_COOP_ECONOMY_V2 === "1") return true;
+// A restart must not erase the evidence: the persisted totals are loaded once, before the first
+// observation, and the file is never rewritten with a smaller picture than it already had.
+function hydrate() {
+  if (state.hydrated) return;
+  state.hydrated = true;
+  let raw;
   try {
-    return fs.existsSync(ENABLE_FILE);
+    raw = fs.readFileSync(STATE_FILE, "utf8");
+  } catch (error) {
+    return; // no file yet is the normal first run
+  }
+  let saved;
+  try {
+    saved = JSON.parse(raw);
+  } catch (error) {
+    state.lastError = "STATE_UNREADABLE";
+    return;
+  }
+  if (!saved || typeof saved !== "object") {
+    state.lastError = "STATE_UNREADABLE";
+    return;
+  }
+  if (typeof saved.startedAt === "string") state.startedAt = saved.startedAt;
+  if (Number.isSafeInteger(saved.deliveries) && saved.deliveries > 0) state.deliveries = saved.deliveries;
+  if (Number.isSafeInteger(saved.replays) && saved.replays > 0) state.replays = saved.replays;
+  if (saved.proofs && typeof saved.proofs === "object") {
+    if (Number.isSafeInteger(saved.proofs.proven)) state.proofs.proven = saved.proofs.proven;
+    if (Number.isSafeInteger(saved.proofs.blocked)) state.proofs.blocked = saved.proofs.blocked;
+  }
+  if (Array.isArray(saved.receipts)) {
+    state.receipts = saved.receipts.filter((r) => r && typeof r === "object" && Number.isSafeInteger(r.cargoID)).slice(-MAX_RECEIPTS);
+  }
+  if (saved.stations && typeof saved.stations === "object") {
+    for (const [stationID, types] of Object.entries(saved.stations)) {
+      if (!types || typeof types !== "object") continue;
+      const row = new Map();
+      for (const [typeID, quantity] of Object.entries(types)) {
+        if (Number.isSafeInteger(quantity) && quantity > 0) row.set(Number(typeID), quantity);
+      }
+      if (row.size > 0) state.stations.set(Number(stationID), row);
+    }
+  }
+}
+
+function enabled() {
+  if (process.env.EVEJS_COOP_ECONOMY_V2 === "1") {
+    hydrate();
+    return true;
+  }
+  try {
+    if (!fs.existsSync(ENABLE_FILE)) return false;
   } catch (error) {
     return false;
   }
+  hydrate();
+  return true;
 }
 
 function attestation() {
@@ -190,8 +240,11 @@ function noteWarehouse(record, item, durable) {
 }
 
 function status() {
+  // hydrate before snapshotting: the first status() after a restart must never report or overwrite
+  // a smaller picture than the one already on disk
+  const live = enabled();
   const view = snapshot();
-  if (enabled()) persist(true);
+  if (live) persist(true);
   return view;
 }
 
