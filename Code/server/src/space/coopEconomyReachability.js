@@ -47,11 +47,17 @@ function extractRequireArgs(content) {
       i++;
     }
     const argText = content.slice(argStart, i);
+    const literals = [];
     const strRe = /['"]([^'"]*)['"]/g;
     let s;
     while ((s = strRe.exec(argText)) !== null) {
-      args.push(s[1]);
+      literals.push(s[1]);
     }
+    if (!literals.length) continue;
+    // require(path.join(__dirname, "a", "b")) builds a local path from literals that need not start
+    // with "./": joining them keeps the directory-relative meaning of the original expression.
+    const fromDirname = argText.includes("__dirname");
+    args.push({ value: fromDirname ? literals.join("/") : literals[0], fromDirname });
   }
   return args;
 }
@@ -88,10 +94,12 @@ function buildRequireGraph({ srcRoot, entryFile }) {
     const content = fs.readFileSync(f, "utf8");
     const fileDir = path.dirname(f);
     const rel = toRel(srcRoot, f);
-    const relArgs = extractRequireArgs(content).filter((a) => a.startsWith("."));
+    const relArgs = extractRequireArgs(content).filter(
+      (a) => a.fromDirname || a.value.startsWith(".") || a.value.startsWith("/"),
+    );
     const targets = [];
     for (const a of relArgs) {
-      const t = resolveTarget(fileDir, a, fileSet);
+      const t = resolveTarget(fileDir, a.value, fileSet);
       if (t) targets.push(toRel(srcRoot, t));
     }
     if (targets.length) {
@@ -139,16 +147,23 @@ function unreachableModules(graph, prefixes) {
 }
 
 function detectIncompatibleExecutors(registry) {
+  // A registry filled from env or config usually carries "true"/1, not a boolean; a missing owner must
+  // not collapse two executors into one, because [] is the answer that reads as "compatible".
+  const ENABLED = new Set([true, "true", 1, "1"]);
   const groups = new Map();
   for (const e of registry || []) {
-    if (e && e.phase !== undefined && e.enabled === true) {
-      if (!groups.has(e.phase)) groups.set(e.phase, new Set());
-      groups.get(e.phase).add(e.owner);
-    }
+    if (!e || typeof e !== "object") continue;
+    if (e.phase === undefined || e.phase === null) continue;
+    if (!ENABLED.has(e.enabled)) continue;
+    const phase = String(e.phase);
+    if (!groups.has(phase)) groups.set(phase, []);
+    groups.get(phase).push(
+      typeof e.owner === "string" && e.owner.length > 0 ? e.owner : "<unnamed>",
+    );
   }
   const out = [];
   for (const [phase, owners] of groups) {
-    if (owners.size > 1) {
+    if (owners.length > 1) {
       out.push({ phase, owners: [...owners].sort() });
     }
   }
