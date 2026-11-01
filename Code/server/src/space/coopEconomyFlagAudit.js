@@ -25,11 +25,12 @@ function classifyFlagUsage(text, flag) {
   if (idx === -1) return result;
   const start = idx + flag.length;
   const sample = text.slice(start, start + 80);
-  if (sample.includes('1')) {
-    result.mode = 'STRICT_ONE';
-  } else if (sample.includes('!=1') || sample.includes('!="1"')) {
+  result.sample = sample;
+  if (/!==?\s*['"]?1/.test(sample)) {
     result.mode = 'STRICT_ONE_NEGATED';
-  } else if (sample.includes('true')) {
+  } else if (/===?\s*['"]?1/.test(sample)) {
+    result.mode = 'STRICT_ONE';
+  } else if (/===?\s*['"]?true/.test(sample)) {
     result.mode = 'STRICT_TRUE';
   } else {
     result.mode = 'OTHER';
@@ -67,7 +68,7 @@ function auditFlags({ srcRoot }) {
 
   const flagData = new Map();
   for (const file of files) {
-    const rel = path.relative(srcRoot, file);
+    const rel = path.relative(srcRoot, file).split(path.sep).join('/');
     const content = fs.readFileSync(file, 'utf8');
     for (const flag of collectFlags(content)) {
       const mode = classifyFlagUsage(content, flag).mode;
