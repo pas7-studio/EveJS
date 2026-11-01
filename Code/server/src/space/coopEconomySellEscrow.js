@@ -7,6 +7,7 @@
 const ESCROW_CODE = {
   STOCKED: 'STOCKED',
   RESERVED: 'RESERVED',
+  RELEASED: 'RELEASED',
   LISTED: 'LISTED',
   FILLED: 'FILLED',
   CANCELLED: 'CANCELLED',
@@ -56,6 +57,24 @@ function createEscrow() {
     if (!isID(itemID) || !isQuantity(quantity)) return { ok: false, code: ESCROW_CODE.INVALID_LISTING };
     row(itemID).onHand += quantity;
     return { ok: true, code: ESCROW_CODE.STOCKED, available: available(itemID) };
+  }
+
+  // The explicit counterpart of reserve(). A hold protects units for a purpose; when that
+  // purpose ends the holder releases it. Without this the reservation could only grow, so
+  // reserved stock was dead for ever.
+  function releaseReserved(itemID, quantity) {
+    const entry = row(itemID);
+    const release = Math.min(entry.reserved, Math.max(0, quantity));
+    entry.reserved -= release;
+    return release;
+  }
+
+  function release(args) {
+    const { itemID, quantity } = args || {};
+    if (!isID(itemID) || !isQuantity(quantity)) return { ok: false, code: ESCROW_CODE.INVALID_LISTING };
+    if (row(itemID).reserved < quantity) return { ok: false, code: ESCROW_CODE.INSUFFICIENT_ESCROW };
+    releaseReserved(itemID, quantity);
+    return { ok: true, code: ESCROW_CODE.RELEASED, available: available(itemID) };
   }
 
   function reserve(args) {
@@ -115,7 +134,7 @@ function createEscrow() {
     return row(itemID).reserved;
   }
 
-  return { stock: stockIn, reserve, list, fill, cancel, available, listed, reserved };
+  return { stock: stockIn, reserve, release, list, fill, cancel, available, listed, reserved };
 }
 
 module.exports = { createEscrow, ESCROW_CODE };
