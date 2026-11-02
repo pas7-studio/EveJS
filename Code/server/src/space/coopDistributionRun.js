@@ -64,9 +64,33 @@ function root(env = process.env) {
 function fileFor(haulerID, env = process.env) {
   return path.join(root(env), String(pos(haulerID)) + ".json");
 }
+// L7-B: a missing journal and a damaged one are different facts. `read()` used to answer null for
+// both, so a corrupt file was taken as "no run yet" and the hull was re-planned on top of a trip
+// that may still be loaded. The strict reader separates them; `read()` stays tolerant because the
+// bookkeeping around it only needs "is there usable state".
+function readJournal(haulerID, env = process.env) {
+  let text = null;
+  try {
+    text = fs.readFileSync(fileFor(haulerID, env), "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return { status: "MISSING" };
+    return { status: "UNREADABLE",
+      reason: String((error && (error.code || error.message)) || "READ_FAILED").slice(0, 120) };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return { status: "UNREADABLE",
+      reason: "JSON:" + String((error && error.message) || "").slice(0, 100) };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return { status: "UNREADABLE", reason: "NOT_AN_OBJECT" };
+  return { status: "OK", state: parsed };
+}
 function read(haulerID, env = process.env) {
-  try { return JSON.parse(fs.readFileSync(fileFor(haulerID, env), "utf8")); }
-  catch (_error) { return null; }
+  const loaded = readJournal(haulerID, env);
+  return loaded.status === "OK" ? loaded.state : null;
 }
 function write(state, env = process.env) {
   const file = fileFor(state.haulerID, env);
@@ -111,6 +135,24 @@ function list(env = process.env) {
       .map((n) => { try { return JSON.parse(fs.readFileSync(path.join(root(env), n), "utf8")); }
         catch (_error) { return null; } }).filter(Boolean);
   } catch (_error) { return []; }
+}
+// L7-B: the same listing, but it says which files it could not use. `list()` keeps its shape
+// because callers depend on it; damage is now reported instead of silently skipped.
+function listReport(env = process.env) {
+  const runs = [];
+  const unreadable = [];
+  let names = [];
+  try { names = fs.readdirSync(root(env)).filter((n) => /\.json$/.test(n)); }
+  catch (_error) { return { runs, unreadable }; }
+  for (const name of names) {
+    const haulerID = pos(name.replace(/\.json$/, ""));
+    if (!haulerID) continue;
+    const loaded = readJournal(haulerID, env);
+    if (loaded.status === "OK") runs.push(loaded.state);
+    else if (loaded.status === "UNREADABLE")
+      unreadable.push({ file: name, reason: loaded.reason });
+  }
+  return { runs, unreadable };
 }
 
 /**
@@ -202,7 +244,11 @@ async function tick(haulerID, authorities = {}, env = process.env) {
   if (!id) return { status: "INVALID_ARGUMENT" };
   const now = num(authorities.now) || Date.now();
   const observe = authorities.observe || null;
-  let state = read(id, env);
+  // L7-B: a damaged journal is not an empty one. Refuse the beat and touch nothing.
+  const journal = readJournal(id, env);
+  if (journal.status === "UNREADABLE")
+    return { status: "BLOCKED", reason: "JOURNAL_UNREADABLE", detail: journal.reason };
+  let state = journal.status === "OK" ? journal.state : null;
   const planned = decide(state, {});
   // A run in PLAN (a fresh one, or one that just came home) is planned here, once per beat.
   if (!state || String(state.phase || PHASE.PLAN) === PHASE.PLAN) {
@@ -1105,4 +1151,4 @@ async function tickAll(authorities = {}, env = process.env) {
 }
 module.exports = { REST_BETWEEN_CYCLES_MS, SALE_SETTLEMENT_READ_MS, SALE_SETTLEMENT_READS, MAX_STOP_WAITS, freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
   SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
-  read, write, list, decide, worthIt, note, tick, tickAll };
+  read, write, list, readJournal, listReport, decide, worthIt, note, tick, tickAll };
