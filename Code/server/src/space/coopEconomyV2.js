@@ -154,9 +154,65 @@ function snapshot() {
   };
 }
 
+// Merge what is on disk into memory before writing, so a second writer is never erased and the
+// file can only grow. Receipts are unioned by cargoID, counters take the larger value, and station
+// totals take the larger number per station/type (they are monotonic in this observer).
+function mergeFromDisk() {
+  let raw;
+  try {
+    raw = fs.readFileSync(STATE_FILE, "utf8");
+  } catch (error) {
+    return; // no file yet is the normal first run
+  }
+  let saved;
+  try {
+    saved = JSON.parse(raw);
+  } catch (error) {
+    return; // an unreadable file is named by hydrate(); never merge garbage
+  }
+  if (!saved || typeof saved !== "object") return;
+
+  const known = new Set(state.receipts.map((r) => Number(r.cargoID)));
+  for (const receipt of Array.isArray(saved.receipts) ? saved.receipts : []) {
+    const id = Number(receipt && receipt.cargoID);
+    if (!Number.isSafeInteger(id) || known.has(id)) continue;
+    state.receipts.push(receipt);
+    known.add(id);
+  }
+  if (state.receipts.length > MAX_RECEIPTS) {
+    state.receipts = state.receipts.slice(-MAX_RECEIPTS);
+  }
+  if (Number.isSafeInteger(saved.deliveries)) {
+    state.deliveries = Math.max(state.deliveries, saved.deliveries);
+  }
+  if (Number.isSafeInteger(saved.replays)) state.replays = Math.max(state.replays, saved.replays);
+  if (saved.proofs && typeof saved.proofs === "object") {
+    if (Number.isSafeInteger(saved.proofs.proven)) state.proofs.proven = Math.max(state.proofs.proven, saved.proofs.proven);
+    if (Number.isSafeInteger(saved.proofs.blocked)) state.proofs.blocked = Math.max(state.proofs.blocked, saved.proofs.blocked);
+  }
+  const savedStations = saved.stations && typeof saved.stations === "object" ? saved.stations : {};
+  for (const [stationKey, types] of Object.entries(savedStations)) {
+    if (!types || typeof types !== "object") continue;
+    const stationID = Number(stationKey);
+    if (!Number.isSafeInteger(stationID)) continue;
+    for (const [typeKey, quantity] of Object.entries(types)) {
+      const typeID = Number(typeKey);
+      const value = Number(quantity);
+      if (!Number.isSafeInteger(typeID) || !Number.isFinite(value) || value <= 0) continue;
+      const row = stationRow(stationID, typeID);
+      const current = row.types.get(row.key) || 0;
+      if (value > current) row.types.set(row.key, value);
+    }
+  }
+  while (state.stations.size > MAX_STATIONS) {
+    state.stations.delete(state.stations.keys().next().value);
+  }
+}
+
 function persist(force) {
   const now = Date.now();
   if (!force && now - state.lastWriteAt < 2000) return;
+  mergeFromDisk();
   state.lastWriteAt = now;
   const body = JSON.stringify(snapshot(), null, 2);
   const tmp = STATE_FILE + ".tmp";
