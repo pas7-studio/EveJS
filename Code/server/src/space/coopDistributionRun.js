@@ -789,8 +789,24 @@ async function tick(haulerID, authorities = {}, env = process.env) {
         volume: (prior ? prior.volume : 0) + num(item.quantity),
       };
     }
-    const demand = Object.keys(stopDemand).length ? stopDemand
-      : (state.demand || (state.trip && state.trip.demand) || null);
+    // L8-B: cap the stop demand at the trip's capped demand, if any. For each type, hand the lift
+    // min(stopSum, capped[type].volume) at the capped price when positive, else the stop's price.
+    const capped = state.demand || (state.trip && state.trip.demand);
+    const demand = capped
+      ? Object.keys(stopDemand)
+          .filter((typeID) => { const cap = capped[typeID]; return cap && cap.volume > 0; })
+          .reduce((acc, typeID) => {
+            const cap = capped[typeID];
+            const vol = Math.min(stopDemand[typeID].volume, Number(cap.volume));
+            acc[typeID] = {
+              price: (cap.price && cap.price > 0) ? cap.price : stopDemand[typeID].price,
+              volume: vol,
+            };
+            return acc;
+          }, {})
+      : Object.keys(stopDemand).length
+          ? stopDemand
+          : (state.demand || (state.trip && state.trip.demand) || null);
     try { answer = await authorities.lift({ haulerID: id, stationID: stop.stationID,
       systemID: state.fromSystemID, demand,
       cap: state.quantity || authorities.capacityM3 || 1e6,
