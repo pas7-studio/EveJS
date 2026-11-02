@@ -38,6 +38,72 @@ function warnOnce(code){
 // file grow forever: when it passes the cap it becomes `<file>.1` (replacing the previous one) and
 // a fresh file starts. Cap via EVEJS_COOP_EVENTS_MAX_MB (default 128, 0 disables rotation).
 let lastRotateCheckAt=0;
+// One open descriptor per event file instead of open/write/close for every record: measured on the
+// play stack at ~220 events/min, every one of them opened the file, wrote, closed it and asked the
+// filesystem for the same directory again. The descriptor is reopened only after a rotation or an
+// IO error, so a record is still written before observe() returns - the durability contract is the
+// same, only the syscalls are gone.
+const openFiles=new Map();
+const ensuredDirs=new Set();
+function ensureDirectory(destination){
+  const dir=path.dirname(destination);
+  if(ensuredDirs.has(dir))return;
+  fs.mkdirSync(dir,{recursive:true});
+  ensuredDirs.add(dir);
+}
+function closeFile(destination){
+  const entry=openFiles.get(destination);
+  if(!entry)return;
+  openFiles.delete(destination);
+  try{fs.closeSync(entry.fd);}catch(_error){/* already gone */}
+}
+function openFile(destination){
+  const existing=openFiles.get(destination);
+  if(existing)return existing;
+  ensureDirectory(destination);
+  const fd=fs.openSync(destination,"a");
+  let ino=0;
+  try{ino=fs.fstatSync(fd).ino;}catch(_error){ino=0;}
+  const entry={fd,ino,checkedAt:0};
+  openFiles.set(destination,entry);
+  return entry;
+}
+// A descriptor survives an external rename or delete: writes would quietly land in the old inode and
+// the new file would never appear. Re-validating the path costs one stat every few seconds, not one
+// per record. EVEJS_COOP_EVENTS_REVALIDATE_MS=0 makes every write re-validate (tests, small volumes).
+function revalidateIntervalMs(){
+  const raw=Number(process.env.EVEJS_COOP_EVENTS_REVALIDATE_MS??5000);
+  return Number.isFinite(raw)&&raw>=0?raw:5000;
+}
+function fileStillOurs(destination,entry){
+  const interval=revalidateIntervalMs();
+  const now=Date.now();
+  if(interval>0&&now-entry.checkedAt<interval)return true;
+  entry.checkedAt=now;
+  try{
+    const stat=fs.statSync(destination);
+    if(entry.ino&&stat.ino&&stat.ino!==entry.ino)return false;
+    return true;
+  }catch(_error){
+    return false;
+  }
+}
+function writeRecord(destination,line){
+  let entry=openFile(destination);
+  if(!fileStillOurs(destination,entry)){
+    closeFile(destination);
+    entry=openFile(destination);
+  }
+  try{
+    fs.writeSync(entry.fd,line,undefined,"utf8");
+  }catch(error){
+    // A stale descriptor (rotation, external truncation) must not lose the record: reopen once.
+    closeFile(destination);
+    const retried=openFile(destination);
+    fs.writeSync(retried.fd,line,undefined,"utf8");
+  }
+}
+process.once("exit",()=>{for(const destination of [...openFiles.keys()])closeFile(destination);});
 function rotateIfNeeded(destination){
   const capMb=Number(process.env.EVEJS_COOP_EVENTS_MAX_MB??128);
   if(!Number.isFinite(capMb)||capMb<=0)return false;
@@ -47,6 +113,8 @@ function rotateIfNeeded(destination){
   try{
     const size=fs.statSync(destination).size;
     if(size<capMb*1024*1024)return false;
+    // The descriptor points at the old inode after a rename, so it is dropped first.
+    closeFile(destination);
     fs.renameSync(destination,destination+".1");
     return true;
   }catch(_error){return false}
@@ -69,9 +137,8 @@ function observe(event,session,ship,extra={}){
       // Reserved final key: callers cannot counterfeit a prior process run.
       runtimeRunID,
     };
-    fs.mkdirSync(path.dirname(destination),{recursive:true});
     rotateIfNeeded(destination);
-    fs.appendFileSync(destination,JSON.stringify(record)+"\n",{encoding:"utf8",flag:"a"});
+    writeRecord(destination,JSON.stringify(record)+"\n");
     lastWarning="";
     // Listeners get the record after it is durable; failures are isolated.
     for(const listener of subscribers){
@@ -85,4 +152,4 @@ function observe(event,session,ship,extra={}){
     return false;
   }
 }
-module.exports={observe,subscribe,rotateIfNeeded};
+module.exports={observe,subscribe,rotateIfNeeded,closeAll:()=>{for(const destination of [...openFiles.keys()])closeFile(destination);}};

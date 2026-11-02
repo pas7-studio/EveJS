@@ -118,6 +118,7 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
   const stations = new Map(stationRowsOfSystem(worldData, systemID, scene)
     .map((row) => [row.stationID, row.station]));
   const stacks = [];
+  const reserveLeft = new Map();
   for (const row of owned) {
     const stationID = pos(row.locationID);
     if (!stationID || !stations.has(stationID)) continue;
@@ -131,7 +132,17 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
     const held = (typeof reserve === "function" ? (reserve(stationID) || {})
       : (reserve && (reserve[stationID] || reserve[String(stationID)]))) || {};
     const needed = num(held[typeID] !== undefined ? held[typeID] : held[String(typeID)]);
-    const shippable = Math.max(0, num(row.quantity) - Math.max(0, Math.round(needed)));
+    // L7-A: the reserve is the factory's need for the TYPE, not for each stack. Subtracting it
+    // from every stack reserved it once per row (measured 2026-11-02: three 10 000-row stacks
+    // with a 20 000 need reserved 60 000 and shipped nothing). Allocate it across the rows.
+    const reserveKey = stationID + ":" + typeID;
+    const stillNeeded = reserveLeft.has(reserveKey)
+      ? reserveLeft.get(reserveKey)
+      : Math.max(0, Math.round(needed));
+    const requested = Math.max(0, num(row.quantity));
+    const reservedHere = Math.min(requested, stillNeeded);
+    reserveLeft.set(reserveKey, Math.max(0, stillNeeded - reservedHere));
+    const shippable = Math.max(0, requested - reservedHere);
     if (!shippable) continue;
     stacks.push({ stationID, typeID, quantity: shippable,
       m3PerUnit: num(meta.volume) });
@@ -169,8 +180,22 @@ function planTrip({ haulerID, store, items, inventory, db, worldData, connectedG
       const total = num(answer.totalIsk);
       if (!best || total > best.expectedIsk) {
         const demand = {};
-        for (const item of answer.items) demand[pos(item.typeID)] = { price: num(item.price),
-          volume: num(item.quantity) };
+        // L7-A: a map written with `=` keeps only the LAST stack of a type, so the loader is
+        // bounded by that stack instead of by everything the destination will really take
+        // (measured 2026-11-02: planned 309,999 units, lifted 41,164). Sum the volumes, keep the
+        // highest quoted price for the type, and never ask the lift for more than the destination
+        // book still offers - the buyer bound is the plan's job, not the loader's.
+        for (const item of answer.items) {
+          const demandTypeID = pos(item.typeID);
+          if (!demandTypeID) continue;
+          const prior = demand[demandTypeID];
+          const summed = (prior ? prior.volume : 0) + num(item.quantity);
+          const offered = num(bids && bids[demandTypeID] && bids[demandTypeID].volume);
+          demand[demandTypeID] = {
+            price: prior ? Math.max(prior.price, num(item.price)) : num(item.price),
+            volume: offered > 0 ? Math.min(summed, offered) : summed,
+          };
+        }
         const first = answer.items[0] || {};
         best = { ...first, items: answer.items, demand, expectedIsk: total,
           fromSystemID: systemID, fromStationID: pos(first.stationID || stationID),

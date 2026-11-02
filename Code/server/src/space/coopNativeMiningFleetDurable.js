@@ -265,7 +265,7 @@ function repairPartialSlot({scene,store,systemID,slot,key,db,spawn,ensureState,m
  if(!born?.success||!born.data||born.data.minerSpawnResult?.data?.partialFailure||
      born.data.haulerSpawnResult?.data?.partialFailure)
   throw Error("ALIFE08_PARTIAL_NATIVE_SPAWN");
- const newMin=ids(born.data.minerEntityIDs||[]),newHau=ids(born.data.haulerEntityIDs||[]);
+ let newMin=ids(born.data.minerEntityIDs||[]),newHau=ids(born.data.haulerEntityIDs||[]);
  // The native wing spawner always creates AT LEAST one miner (miningNpcOperations:
  // amount = Math.max(1, ...)), even when only a hauler is missing. A repair that asked
  // for 0 miners therefore got 1 and refused itself: measured 2026-10-28
@@ -277,8 +277,22 @@ function repairPartialSlot({scene,store,systemID,slot,key,db,spawn,ensureState,m
    " partial="+String(Boolean(born&&born.data&&(born.data.minerSpawnResult?.data?.partialFailure||born.data.haulerSpawnResult?.data?.partialFailure)))+
    " ids="+String([...(newMin||[]),...(newHau||[])].join(",")));
  const merged={minerEntityIDs:[...aliveMin,...newMin],haulerEntityIDs:[...aliveHau,...newHau]};
- if(merged.minerEntityIDs.length+merged.haulerEntityIDs.length>MAX_WING)
-  throw Error("ALIFE08_REPAIR_WING_TOO_LARGE");
+ if(merged.minerEntityIDs.length+merged.haulerEntityIDs.length>MAX_WING){
+  // The native wing spawner always creates at least one miner, so a wing already at
+  // MAX_WING that lost only a hauler kept asking for 0 miners and getting 1: merged hit
+  // MAX_WING+1 and the slot was refused for ever (measured live 2026-11-01, slot
+  // 30000144-1: 22 miners + 10 haulers, 2 haulers gone, "ALIFE08_REPAIR_WING_TOO_LARGE"
+  // repeating every boot and no ore delivered). The ceiling is the invariant, not the
+  // mandatory extra: keep the hulls the slot actually needs and drop the surplus spawn,
+  // which pruneStaleSlotHulls then destroys. Refuse only when even the required hulls
+  // do not fit, because silently delivering a smaller wing would be a lie.
+  const room=MAX_WING-aliveMin.length-aliveHau.length-newHau.length;
+  if(room<missingMin||room<0)
+   throw Error("ALIFE08_REPAIR_WING_TOO_LARGE:alive="+aliveMin.length+"m/"+aliveHau.length+
+    "h need="+missingMin+"m/"+missingHau+"h new="+newMin.length+"m/"+newHau.length+"h max="+MAX_WING);
+  newMin=newMin.slice(0,Math.min(newMin.length,room));
+  merged.minerEntityIDs=[...aliveMin,...newMin];
+ }
  // Duplicates from earlier failed repairs are removed first, so the witness below can
  // match what this slot really owns.
  const pruned=pruneStaleSlotHulls({store,systemID,slot,
@@ -804,5 +818,5 @@ function noteDroppedFleetActors(fleetRecord,deps={}){
  }
  return dropped;
 }
-module.exports={createService,start,systemHasBelts,repairSlotComposition,roleMarker,slotKey,fleetIDForSlot,healFleetActors,noteDroppedFleetActors,
+module.exports={createService,start,systemHasBelts,repairSlotComposition,repairPartialSlot,roleMarker,slotKey,fleetIDForSlot,healFleetActors,noteDroppedFleetActors,
  pruneStaleSlotHulls};

@@ -137,9 +137,14 @@ function planBundle({stacks = [], destination = null, local = null, capacityM3 =
   let left = capacity;
   let totalIsk = 0;
   let used = 0;
+  // Remaining buyer volume is a budget per type, shared across every stack and station.
+  const remainingBuyerVolume = {};
+  for (const row of candidates) {
+    remainingBuyerVolume[row.typeID] = row.buyerVolume;
+  }
   for (const row of candidates) {
     const fit = Math.floor(left / row.perUnit);
-    const shipped = Math.min(row.quantity, row.buyerVolume, Math.max(0, fit));
+    const shipped = Math.min(row.quantity, Math.max(0, fit), remainingBuyerVolume[row.typeID]);
     if (shipped < 1) {
       refusals.push({typeID: row.typeID, stationID: row.stationID, quantity: row.quantity,
         reason: fit < 1 ? "HOLD_FULL" : "BUYER_VOLUME_EXHAUSTED"});
@@ -151,6 +156,7 @@ function planBundle({stacks = [], destination = null, local = null, capacityM3 =
     left -= shipped * row.perUnit;
     used += shipped * row.perUnit;
     totalIsk += shipped * row.price;
+    remainingBuyerVolume[row.typeID] -= shipped;
   }
   if (!items.length) return {status: "NO_TRIP", items: [], refusals, totalIsk: 0, m3: 0};
   if (totalIsk < num(minIsk)) {

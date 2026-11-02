@@ -1,4 +1,7 @@
 "use strict";
+// L7-D: the fee path is bounded by a durable budget. This module owns the commitments, never the
+// wallet, and never a second ledger of money.
+const budgetApi = require("./coopRefineryBudget");
 /**
  * ALIFE-16. The refinery had no caller.
  *
@@ -135,9 +138,21 @@ function fundTreasury({options, env, ownerID}) {
 
 // Pay a real station fee from the corporation's own wallet and leave a durable
 // receipt the refinery can verify by name. Never creates ISK: the debit is the source.
-function payFee({gameStore, root, ownerID, stationID, oreItemID, amountISK, now, corporationState, fsApi = require("node:fs")}) {
+function payFee({gameStore, root, ownerID, stationID, oreItemID, amountISK, now, corporationState, operationID, quantity, fsApi = require("node:fs")}) {
   const amount = Math.round(Number(amountISK) * 100) / 100;
   if (!(amount > 0)) return {status: "FEE_INVALID"};
+  // L7-D: a fee is only ever paid inside an operator-set scope, and the charge is identified before
+  // the money moves. The flag is an additional ceiling, never the authority: without a budget file
+  // the limit is 0 and nothing is spent, whatever the flag says.
+  const env = process.env;
+  const flag = Number(env.EVEJS_COOP_REFINERY_SPEND_LIMIT_ISK || 0) || 0;
+  const budget = budgetApi.readBudget(root, {fsApi});
+  if (budget.status === "BUDGET_UNREADABLE")
+    return {status: "BUDGET_UNREADABLE", reason: String(budget.reason || "").slice(0, 80)};
+  const limitISK = Math.min(flag, budget.status === "OK" ? Number(budget.budget.limitISK) : 0);
+  const sinceAt = budget.status === "OK" ? Number(budget.budget.sinceAt) : 0;
+  const chargeID = String(operationID || ("coop-refine:v1:" + pos(oreItemID) + ":" +
+    (pos(quantity) || pos(oreItemID))));
   const wallet = loadWallet().readWallet({corporationState, gameStore,
     corporationID: ownerID});
   if (wallet.status !== "OK") return {status: wallet.status};
@@ -145,6 +160,14 @@ function payFee({gameStore, root, ownerID, stationID, oreItemID, amountISK, now,
   const before = Number(divisions[1000] && divisions[1000].balance);
   if (!Number.isFinite(before) || before < 0) return {status: "CORP_WALLET_INVALID"};
   if (before < amount) return {status: "CORP_WALLET_INSUFFICIENT", iskCost: amount, balanceISK: before};
+  // The reservation is durable and counts against the cap even if the process dies before the debit.
+  const reserved = budgetApi.reserve(root, {operationID: chargeID, amountISK: amount,
+    corporationID: pos(ownerID), stationID: pos(stationID), balanceBefore: before,
+    limitISK, sinceAt, now, fsApi});
+  if (reserved.status === "SPEND_SCOPE_EXHAUSTED" || reserved.status === "OPERATION_ALREADY_COMMITTED")
+    return {status: reserved.status, iskCost: amount, limitISK, chargeID};
+  if (reserved.status !== "RESERVED")
+    return {status: String(reserved.status || "RESERVE_FAILED"), chargeID};
   const written = loadWallet().applyDelta({corporationState, gameStore,
     corporationID: ownerID, division: 1000, delta: -amount});
   if (!written || written.status !== "OK") return {status: String((written && written.status) || "CORP_DEBIT_FAILED")};
@@ -152,6 +175,11 @@ function payFee({gameStore, root, ownerID, stationID, oreItemID, amountISK, now,
     const flushed = gameStore.flushTableSync("corporationRuntime", {log: false});
     if (!flushed || flushed.success !== true) return {status: "CORP_DEBIT_FLUSH_UNCERTAIN"};
   }
+  // The money left the wallet: the reservation becomes a confirmed commitment. Only after this is the
+  // receipt written, so a crash in between is recoverable from the balance (review/L8-SPECS.md).
+  const debitAfter = Number.isFinite(Number(written.balance))
+    ? Number(written.balance) : Math.round((before - amount) * 100) / 100;
+  budgetApi.commit(root, {operationID: chargeID, balanceAfter: debitAfter, now, fsApi});
   const receiptID = pos(oreItemID);
   const after = Number.isFinite(Number(written.balance))
     ? Number(written.balance) : Math.round((before - amount) * 100) / 100;
