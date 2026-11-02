@@ -695,8 +695,16 @@ async function tick(haulerID, authorities = {}, env = process.env) {
     let answer = null;
     // The demand of THIS stop only: the types that really sit at this station.
     const stopDemand = {};
+    // L7-A: same defect as the planner's demand map - `=` kept only the last row of a type, so a
+    // two-stack stop loaded one stack. Sum the volumes, keep the highest quoted price.
     for (const item of stop.items) {
-      stopDemand[pos(item.typeID)] = {price: num(item.price), volume: num(item.quantity)};
+      const demandTypeID = pos(item.typeID);
+      if (!demandTypeID) continue;
+      const prior = stopDemand[demandTypeID];
+      stopDemand[demandTypeID] = {
+        price: prior ? Math.max(prior.price, num(item.price)) : num(item.price),
+        volume: (prior ? prior.volume : 0) + num(item.quantity),
+      };
     }
     const demand = Object.keys(stopDemand).length ? stopDemand
       : (state.demand || (state.trip && state.trip.demand) || null);
