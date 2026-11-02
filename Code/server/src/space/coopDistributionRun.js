@@ -66,6 +66,64 @@ function root(env = process.env) {
 function fileFor(haulerID, env = process.env) {
   return path.join(root(env), String(pos(haulerID)) + ".json");
 }
+// L7-C: a timed-out tick is not a cancelled tick.
+//
+// Measured 2026-11-02: hull 980000093319 stopped advancing for minutes while the loop logged
+// HULL_TIMEOUT; the journal was not written again until a process restart. The cause was that
+// `Promise.race` only stopped WAITING - the losing `tick()` kept running, and the timeout path then
+// wrote `{timeouts, lastReason}` over the journal that same tick was about to write. Two writers, one
+// file, no owner. And nothing stopped the next beat from starting a second mutation on the hull.
+//
+// The fix is ownership plus a durable fence, not cancellation:
+//   * INFLIGHT records which execution owns a hull; a hull whose execution has not settled is skipped.
+//   * A fence file says, on disk, that the hull's last operation is unresolved. `tick` refuses a
+//     fenced hull before it reads the journal, so a restart cannot launder the uncertainty either.
+//   * The fence is cleared only by evidence: the stuck promise really settled, or an operator called
+//     `clearFence` after reconciling by hand.
+const INFLIGHT = new Map();
+let EXECUTION_SEQUENCE = 0;
+
+function fenceFileFor(haulerID, env = process.env) {
+  return path.join(root(env), String(pos(haulerID)) + ".fence.json");
+}
+function readFence(haulerID, env = process.env) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(fenceFileFor(haulerID, env), "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch (_error) { return null; }
+}
+function writeFence(fence, env = process.env) {
+  const file = fenceFileFor(fence.haulerID, env);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = file + ".tmp";
+  fs.writeFileSync(temp, JSON.stringify(fence, null, 1), "utf8");
+  const fd = fs.openSync(temp, "r+");
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(temp, file);
+  return fence;
+}
+function auditFence(row, env = process.env) {
+  try {
+    const file = path.join(root(env), "fence-audit.jsonl");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify(row) + "\n", "utf8");
+    return true;
+  } catch (_error) { return false; }
+}
+function clearFence(haulerID, reason, env = process.env) {
+  const id = pos(haulerID);
+  const fence = id ? readFence(id, env) : null;
+  if (!fence) return { status: "NO_FENCE" };
+  auditFence({ haulerID: id, clearedAt: Date.now(), clearedBy: "OPERATOR",
+    reason: String(reason || ""), fence }, env);
+  try { fs.unlinkSync(fenceFileFor(id, env)); } catch (_error) { /* already gone */ }
+  return { status: "CLEARED" };
+}
+function inFlightReport() {
+  return Array.from(INFLIGHT.entries()).map(([haulerID, entry]) => ({ haulerID,
+    token: entry.token, startedAt: entry.startedAt, settled: entry.settled === true,
+    reason: String(entry.reason || "") }));
+}
 function validateJournal(state, haulerID) {
   if (!(state && typeof state === "object" && !Array.isArray(state)))
     return { status: "INVALID", reason: "STATE:NOT_AN_OBJECT" };
@@ -277,6 +335,10 @@ const BLOCKED_RETRY_MS = 30 * 60 * 1000;
 async function tick(haulerID, authorities = {}, env = process.env) {
   const id = pos(haulerID);
   if (!id) return { status: "INVALID_ARGUMENT" };
+  // L7-C: an unresolved execution owns the hull until it settles or an operator clears the fence.
+  const fence = readFence(id, env);
+  if (fence) return { status: "FENCED_UNRECONCILED",
+    reason: "FENCE:" + String(fence.reason || "") };
   const now = num(authorities.now) || Date.now();
   const observe = authorities.observe || null;
   // L7-B: a damaged journal is not an empty one. Refuse the beat and touch nothing.
@@ -1166,36 +1228,62 @@ async function tickAll(authorities = {}, env = process.env) {
   // minutes while three hulls waited behind one hung promise).
   const budget = Math.max(1000, Number(authorities.hullTimeoutMs) || HULL_TIMEOUT_MS);
   for (const haulerID of Array.isArray(hulls) ? hulls : []) {
+    const id = pos(haulerID);
+    // L7-C: a hull whose last execution has not settled is not offered a second one.
+    const prior = id ? INFLIGHT.get(id) : null;
+    if (prior && prior.settled !== true) {
+      results.push({ haulerID, status: "FENCED_UNRECONCILED",
+        reason: prior.reason || "IN_FLIGHT", token: prior.token });
+      continue;
+    }
     try {
+      const token = ++EXECUTION_SEQUENCE;
+      const entry = { token, startedAt: Date.now(), settled: false, reason: "" };
+      if (id) INFLIGHT.set(id, entry);
+      const execution = Promise.resolve()
+        .then(() => tick(haulerID, { ...authorities, executionToken: token }, env))
+        .then((value) => {
+          entry.settled = true;
+          // Evidence that the hull is free again: the fence is only lifted by the owner of its token.
+          const fence = id ? readFence(id, env) : null;
+          if (fence && Number(fence.token) === token) {
+            auditFence({ haulerID: id, clearedAt: Date.now(), clearedBy: "SETTLED",
+              reason: String((value && value.status) || "SETTLED"), fence }, env);
+            try { fs.unlinkSync(fenceFileFor(id, env)); } catch (_error) { /* already gone */ }
+          }
+          if (id) INFLIGHT.delete(id);
+          return { token, outcome: value || { status: "NO_ANSWER" } };
+        })
+        .catch((error) => {
+          entry.settled = true;
+          if (id) INFLIGHT.delete(id);
+          return { token, outcome: { status: "THREW",
+            reason: String((error && error.message) || error).slice(0, 90) } };
+        });
       const answer = await Promise.race([
-        tick(haulerID, authorities, env),
+        execution,
         new Promise((resolve) => {
-          const timer = setTimeout(() => resolve({ status: "HULL_TIMEOUT" }), budget);
+          const timer = setTimeout(() => resolve({ token, timedOut: true }), budget);
           if (timer && typeof timer.unref === "function") timer.unref();
         }),
       ]);
-      const outcome = answer || { status: "NO_ANSWER" };
-      // A hull that times out must not look busy for ever: measured 2026-10-31 two hulls sat in
-      // SELL for 21 minutes with nothing written, because every beat hit the per-hull budget.
-      if (String(outcome.status) === "HULL_TIMEOUT") {
-        const current = read(haulerID, env);
-        if (current) {
-          const timeouts = num(current.timeouts) + 1;
-          const next = timeouts >= 3
-            ? { ...current, phase: PHASE.BLOCKED, timeouts, blockedAt: Date.now(),
-                lastReason: "HULL_TIMEOUT_THREE_TIMES" }
-            : { ...current, timeouts, lastReason: "HULL_TIMEOUT" };
-          write(next, env);
-          note(authorities.observe, "living-distribution-run", next,
-            { reason: next.lastReason });
-          outcome.timeouts = timeouts;
+      if (answer && answer.timedOut) {
+        // The execution is still alive: fence the hull and write NOTHING to the journal, because the
+        // tick that owns the journal may still be about to write it.
+        entry.reason = "HULL_TIMEOUT";
+        const current = (id && readFence(id, env)) || null;
+        const timeouts = num(current && current.timeouts) + 1;
+        if (id) {
+          writeFence({ version: 1, haulerID: id, reason: "HULL_TIMEOUT", token,
+            at: Date.now(), timeouts, terminal: timeouts >= 3 }, env);
         }
-      } else if (num((read(haulerID, env) || {}).timeouts) > 0) {
-        const current = read(haulerID, env);
-        write({ ...current, timeouts: 0 }, env);
+        results.push({ haulerID, status: "HULL_TIMEOUT", timeouts, fenced: true, token });
+        continue;
       }
+      const outcome = (answer && answer.outcome) || { status: "NO_ANSWER" };
       results.push({ haulerID, ...outcome });
     } catch (error) {
+      if (id) INFLIGHT.delete(id);
       results.push({ haulerID, status: "THREW",
         reason: String((error && error.message) || error).slice(0, 90) });
     }
@@ -1204,4 +1292,5 @@ async function tickAll(authorities = {}, env = process.env) {
 }
 module.exports = { REST_BETWEEN_CYCLES_MS, SALE_SETTLEMENT_READ_MS, SALE_SETTLEMENT_READS, MAX_STOP_WAITS, freightLedgerFile, appendFreight, PHASE, MAX_TRIPS, HULL_TIMEOUT_MS, BLOCKED_RETRY_MS, STATION_RANGE_M, MAX_SELL_CALLS, SALE_SETTLE_TIMEOUT_MS,
   SALE_POLL_MS, MAX_POLLS_PER_BEAT, SALE_RETRYABLE, ORDER_SPACING_MS, root, fileFor,
-  read, write, list, readJournal, listReport, decide, worthIt, note, tick, tickAll };
+  read, write, list, readJournal, listReport, decide, worthIt, note, tick, tickAll,
+  fenceFileFor, readFence, writeFence, clearFence, auditFence, inFlightReport };
