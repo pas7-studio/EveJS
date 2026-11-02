@@ -22,6 +22,8 @@ const PHASE = Object.freeze({
   TO_DEST: "TO_DEST", SELL: "SELL", SUPPLY: "SUPPLY", RETURN: "RETURN", DONE: "DONE",
   BLOCKED: "BLOCKED",
 });
+// The phases a persisted run journal may legally carry.
+const PHASE_VALUES = Object.values(PHASE);
 // How close a hull must really be before a station lift or sale is allowed to act. The
 // native market refuses a sale beyond 10 km from the PHYSICAL station, so a laxer number here
 // only produces NOT_AT_NATIVE_STATION (measured 2026-10-30).
@@ -64,6 +66,33 @@ function root(env = process.env) {
 function fileFor(haulerID, env = process.env) {
   return path.join(root(env), String(pos(haulerID)) + ".json");
 }
+function validateJournal(state, haulerID) {
+  if (!(state && typeof state === "object" && !Array.isArray(state)))
+    return { status: "INVALID", reason: "STATE:NOT_AN_OBJECT" };
+  if (state.version !== 1)
+    return { status: "INVALID", reason: "VERSION:" + state.version };
+  if (typeof state.haulerID !== "number" || state.haulerID !== pos(haulerID))
+    return { status: "INVALID", reason: "HAULER:" + state.haulerID };
+  if (!PHASE_VALUES.includes(String(state.phase)))
+    return { status: "INVALID", reason: "PHASE:" + state.phase };
+  const TRIP_PHASES = ["TO_ORIGIN", "LOAD", "CROSS", "TO_DEST", "SELL"];
+  if (TRIP_PHASES.includes(state.phase) && !(state.trip && typeof state.trip === "object" && !Array.isArray(state.trip)))
+    return { status: "INVALID", reason: "PHASE_FIELDS:TRIP_REQUIRED" };
+  if (state.updatedAt !== undefined && !(typeof state.updatedAt === "number" && isFinite(state.updatedAt) && state.updatedAt > 0))
+    return { status: "INVALID", reason: "FIELD:UPDATED_AT" };
+  if (state.stopIndex !== undefined && !(Number.isInteger(state.stopIndex) && state.stopIndex >= 0))
+    return { status: "INVALID", reason: "FIELD:STOP_INDEX" };
+  if (state.stops !== undefined) {
+    if (!Array.isArray(state.stops))
+      return { status: "INVALID", reason: "FIELD:STOPS" };
+    for (const stop of state.stops) {
+      if (!(stop && typeof stop === "object" && !Array.isArray(stop) && Number.isInteger(stop.stationID) && stop.stationID > 0))
+        return { status: "INVALID", reason: "FIELD:STOPS" };
+    }
+  }
+  return null;
+}
+
 // L7-B: a missing journal and a damaged one are different facts. `read()` used to answer null for
 // both, so a corrupt file was taken as "no run yet" and the hull was re-planned on top of a trip
 // that may still be loaded. The strict reader separates them; `read()` stays tolerant because the
@@ -86,6 +115,8 @@ function readJournal(haulerID, env = process.env) {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     return { status: "UNREADABLE", reason: "NOT_AN_OBJECT" };
+  const invalid = validateJournal(parsed, haulerID);
+  if (invalid) return { status: "INVALID", reason: invalid.reason };
   return { status: "OK", state: parsed };
 }
 function read(haulerID, env = process.env) {
@@ -142,8 +173,10 @@ function listReport(env = process.env) {
   const runs = [];
   const unreadable = [];
   let names = [];
+  let status = "OK";
+  let error = null;
   try { names = fs.readdirSync(root(env)).filter((n) => /\.json$/.test(n)); }
-  catch (_error) { return { runs, unreadable }; }
+  catch (_error) { status = _error.code === "ENOENT" ? "ABSENT" : "UNREADABLE"; error = _error.code || _error.message; return { runs, unreadable, status, error }; }
   for (const name of names) {
     const haulerID = pos(name.replace(/\.json$/, ""));
     if (!haulerID) continue;
@@ -151,8 +184,10 @@ function listReport(env = process.env) {
     if (loaded.status === "OK") runs.push(loaded.state);
     else if (loaded.status === "UNREADABLE")
       unreadable.push({ file: name, reason: loaded.reason });
+    else if (loaded.status === "INVALID")
+      unreadable.push({ file: name, reason: loaded.reason });
   }
-  return { runs, unreadable };
+  return { runs, unreadable, status: "OK", error: null };
 }
 
 /**
@@ -248,6 +283,8 @@ async function tick(haulerID, authorities = {}, env = process.env) {
   const journal = readJournal(id, env);
   if (journal.status === "UNREADABLE")
     return { status: "BLOCKED", reason: "JOURNAL_UNREADABLE", detail: journal.reason };
+  if (journal.status === "INVALID")
+    return { status: "BLOCKED", reason: "JOURNAL_INVALID", detail: journal.reason };
   let state = journal.status === "OK" ? journal.state : null;
   const planned = decide(state, {});
   // A run in PLAN (a fresh one, or one that just came home) is planned here, once per beat.
