@@ -7,8 +7,12 @@
 // observed and dropped by a persist throttle, while the probe reported healthy=true and the
 // crosscheck reported mismatch=0. Only this comparison found it.
 //
-// usage: node coop-economy-v2-audit.js [--state FILE] [--receipts DIR] [--since ISO]
-// exit 0 when every receipt written since the shadow started has been observed, 1 otherwise.
+// A file that cannot be parsed is not noise - it is the receipt that was lost. Every receipt we
+// cannot read is a hole in the audit trail, so a single unreadable file fails the gate.
+//
+// usage: node coop-economy-v2-audit.js [--state FILE] [--receipts DIR] [--since ISO] [--allow-malformed N]
+// exit 0 when every receipt written since the shadow started has been observed and no file is
+// unreadable (or the operator acknowledged N known-bad files), 1 otherwise.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -21,6 +25,7 @@ const arg = (name, fallback) => {
 
 const STATE = arg("--state", "/var/lib/evejs/coop-economy-v2-shadow.json");
 const RECEIPTS = arg("--receipts", "/var/lib/evejs/coop-native-warehouse/receipts");
+const ALLOW_MALFORMED = Number.parseInt(arg("--allow-malformed", "0"), 10);
 
 let state;
 try {
@@ -70,14 +75,18 @@ for (const file of files) {
 }
 
 missed.sort((a, b) => a.at.localeCompare(b.at));
+const malformedDetail = malformed.slice(0, 20);
 const report = {
   audit: "coop-economy-v2",
-  ok: missed.length === 0,
+  ok: missed.length === 0 && malformed.length <= ALLOW_MALFORMED,
   since: since || null,
   observed: seen.size,
   writtenInWindow: inWindow,
   missed: missed.length,
   malformedFiles: malformed.length,
+  malformedDetail: malformedDetail,
+  allowMalformed: ALLOW_MALFORMED,
+  acknowledgedMalformed: Math.min(ALLOW_MALFORMED, malformed.length),
   missedDetail: missed.slice(0, 20),
 };
 process.stdout.write(JSON.stringify(report, null, 2) + "\n");

@@ -22,6 +22,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { proveStationStock } = require("./coopEconomyStationStockProof");
 const { assessLiveReadiness } = require("./coopEconomyLiveReadiness");
+const ShadowLock = require("./coopEconomyShadowLock");
 
 const ENABLE_FILE = process.env.EVEJS_COOP_ECONOMY_V2_ENABLE_FILE || "/var/lib/evejs/coop-economy-v2.enable";
 const STATE_FILE = process.env.EVEJS_COOP_ECONOMY_V2_FILE || "/var/lib/evejs/coop-economy-v2-shadow.json";
@@ -35,8 +36,10 @@ const state = {
   proofs: { proven: 0, blocked: 0 },
   receipts: [],
   stations: new Map(), // stationID -> Map(typeID -> quantity)
+  conflicts: [],
   lastWriteAt: 0,
   lastError: null,
+  lastLock: null,
   hydrated: false,
 };
 
@@ -68,6 +71,9 @@ function hydrate() {
   if (saved.proofs && typeof saved.proofs === "object") {
     if (Number.isSafeInteger(saved.proofs.proven)) state.proofs.proven = saved.proofs.proven;
     if (Number.isSafeInteger(saved.proofs.blocked)) state.proofs.blocked = saved.proofs.blocked;
+  }
+  if (Array.isArray(saved.conflicts)) {
+    state.conflicts = saved.conflicts.filter((c) => c && Number.isSafeInteger(c.cargoID)).slice(-50);
   }
   if (Array.isArray(saved.receipts)) {
     state.receipts = saved.receipts.filter((r) => r && typeof r === "object" && Number.isSafeInteger(r.cargoID)).slice(-MAX_RECEIPTS);
@@ -147,16 +153,49 @@ function snapshot() {
     proofs: { ...state.proofs },
     stations,
     receipts: state.receipts.map((r) => ({ ...r })),
+    conflicts: state.conflicts.map((c) => ({ ...c })),
     lastWriteAt: state.lastWriteAt,
     lastError: state.lastError,
+    lastLock: state.lastLock,
     readiness: assess(),
     generatedAt: new Date().toISOString(),
   };
 }
 
 // Merge what is on disk into memory before writing, so a second writer is never erased and the
-// file can only grow. Receipts are unioned by cargoID, counters take the larger value, and station
-// totals take the larger number per station/type (they are monotonic in this observer).
+// file can only grow.
+//
+// Independent review 2026-11-02: the merge was read-modify-write with no cross-process
+// serialisation, so two writers could both read version N and the second rename erased the first
+// writer's receipts (measured: cargo 1039 lost by a concurrent writer). persist() now holds a lock
+// for the whole merge+write. A cargoID that disagrees between memory and disk is resolved by the
+// newer evidence and the disagreement is recorded in state.conflicts, never silently dropped.
+function receiptStamp(receipt) {
+  const numeric = Number(receipt && receipt.updatedAt);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const at = receipt && receipt.at;
+  if (typeof at === "number" && Number.isFinite(at)) return at;
+  if (typeof at === "string") {
+    const parsed = Date.parse(at);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function sameReceipt(a, b) {
+  return Number(a.stationID) === Number(b.stationID)
+    && Number(a.typeID) === Number(b.typeID)
+    && Number(a.quantity) === Number(b.quantity)
+    && String(a.proof) === String(b.proof);
+}
+
+function noteConflict(cargoID, resolution) {
+  const row = { cargoID, resolution, at: new Date().toISOString() };
+  state.conflicts = state.conflicts.filter((c) => Number(c.cargoID) !== cargoID);
+  state.conflicts.push(row);
+  if (state.conflicts.length > 50) state.conflicts = state.conflicts.slice(-50);
+}
+
 function mergeFromDisk() {
   let raw;
   try {
@@ -168,16 +207,29 @@ function mergeFromDisk() {
   try {
     saved = JSON.parse(raw);
   } catch (error) {
+    state.lastError = "STATE_UNREADABLE";
     return; // an unreadable file is named by hydrate(); never merge garbage
   }
   if (!saved || typeof saved !== "object") return;
 
-  const known = new Set(state.receipts.map((r) => Number(r.cargoID)));
+  const index = new Map(state.receipts.map((r, i) => [Number(r.cargoID), i]));
   for (const receipt of Array.isArray(saved.receipts) ? saved.receipts : []) {
     const id = Number(receipt && receipt.cargoID);
-    if (!Number.isSafeInteger(id) || known.has(id)) continue;
-    state.receipts.push(receipt);
-    known.add(id);
+    if (!Number.isSafeInteger(id)) continue;
+    const at = index.get(id);
+    if (at === undefined) {
+      state.receipts.push(receipt);
+      index.set(id, state.receipts.length - 1);
+      continue;
+    }
+    const mine = state.receipts[at];
+    if (sameReceipt(mine, receipt)) continue;
+    if (receiptStamp(receipt) > receiptStamp(mine)) {
+      state.receipts[at] = receipt;
+      noteConflict(id, "DISK_NEWER");
+    } else {
+      noteConflict(id, "MEMORY_NEWER");
+    }
   }
   if (state.receipts.length > MAX_RECEIPTS) {
     state.receipts = state.receipts.slice(-MAX_RECEIPTS);
@@ -212,16 +264,38 @@ function mergeFromDisk() {
 function persist(force) {
   const now = Date.now();
   if (!force && now - state.lastWriteAt < 2000) return;
-  mergeFromDisk();
-  state.lastWriteAt = now;
-  const body = JSON.stringify(snapshot(), null, 2);
-  const tmp = STATE_FILE + ".tmp";
   try {
     fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+  } catch (error) {
+    state.lastError = String((error && error.message) || error).slice(0, 300);
+    return;
+  }
+  // one writer at a time across processes: the merge and the rename are one critical section.
+  // The lock is held for a merge and a rename (milliseconds); retry briefly so an observation is
+  // never dropped just because another writer happened to be inside the critical section.
+  let lock = ShadowLock.acquire(STATE_FILE, { staleMs: 30000 });
+  for (let attempt = 0; !lock.ok && attempt < 100; attempt += 1) {
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10); } catch (_e) { /* busy wait */ }
+    lock = ShadowLock.acquire(STATE_FILE, { staleMs: 30000 });
+  }
+  if (!lock.ok) {
+    // nothing was written; the observation stays in memory and the next lock persists it, so a
+    // busy lock can delay evidence but can never erase it
+    state.lastLock = lock.code;
+    return;
+  }
+  try {
+    state.lastLock = null;
+    mergeFromDisk();
+    state.lastWriteAt = now;
+    const body = JSON.stringify(snapshot(), null, 2);
+    const tmp = STATE_FILE + ".tmp";
     fs.writeFileSync(tmp, body, "utf8");
     fs.renameSync(tmp, STATE_FILE);
   } catch (error) {
     state.lastError = String((error && error.message) || error).slice(0, 300);
+  } finally {
+    lock.release();
   }
 }
 

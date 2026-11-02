@@ -4,9 +4,20 @@
 //
 // It writes the whole file on every change (tmp + rename), which is what the shadow already does for
 // its state: a crash either leaves the previous file or the new one, never a half-written one.
+//
+// Fail-closed rule (independent review 2026-11-02): a journal that cannot be parsed is not an empty
+// journal, and a flush that failed is not a stored row. Both throw (JOURNAL_UNREADABLE /
+// JOURNAL_WRITE_FAILED) and leave memory matching what the disk actually holds.
 
 const fs = require("node:fs");
 const path = require("node:path");
+
+function journalError(code, message, cause) {
+  const error = new Error(message);
+  error.code = code;
+  if (cause) error.cause = cause;
+  return error;
+}
 
 function createFileJournal(file, options) {
   if (typeof file !== "string" || file.length === 0) {
@@ -23,25 +34,34 @@ function createFileJournal(file, options) {
     try {
       raw = fsApi.readFileSync(file, "utf8");
     } catch (error) {
-      return; // no file yet is the normal first run
+      if (error && error.code === "ENOENT") return; // no file yet is the normal first run
+      throw journalError("JOURNAL_UNREADABLE",
+        "journal cannot be read: " + String((error && error.message) || error), error);
     }
     let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch (error) {
-      // an unreadable journal must not be silently treated as empty: it must be visible
+      // keep a forensic copy, then refuse: continuing with an empty map is how a settled fill is
+      // paid a second time after a restart
       const broken = file + ".corrupt";
-      try { fsApi.renameSync(file, broken); } catch (_e) { /* leave it */ }
-      return;
+      try { fsApi.renameSync(file, broken); } catch (_e) { /* the original text stays in the error */ }
+      throw journalError("JOURNAL_UNREADABLE",
+        "journal is not valid JSON (copy kept at " + broken + "): " + String((error && error.message) || error), error);
     }
-    if (!Array.isArray(parsed)) return;
+    if (!Array.isArray(parsed)) {
+      throw journalError("JOURNAL_UNREADABLE", "journal is not an array of [key, value] pairs");
+    }
     for (const entry of parsed) {
-      if (Array.isArray(entry) && entry.length === 2) rows.set(entry[0], entry[1]);
+      if (!Array.isArray(entry) || entry.length !== 2) {
+        throw journalError("JOURNAL_UNREADABLE", "journal contains a row that is not a [key, value] pair");
+      }
+      rows.set(entry[0], entry[1]);
     }
   }
 
-  function flush() {
-    const body = JSON.stringify([...rows.entries()]);
+  function flush(nextRows) {
+    const body = JSON.stringify([...nextRows.entries()]);
     const tmp = file + ".tmp";
     try {
       const dir = path.dirname(file);
@@ -49,15 +69,30 @@ function createFileJournal(file, options) {
       fsApi.writeFileSync(tmp, body, "utf8");
       fsApi.renameSync(tmp, file);
     } catch (error) {
-      // a journal that cannot write must not take the economy down with it
+      throw journalError("JOURNAL_WRITE_FAILED",
+        "journal could not be written: " + String((error && error.message) || error), error);
     }
   }
 
   return {
     get(key) { load(); return rows.get(key); },
-    set(key, value) { load(); rows.set(key, value); flush(); },
+    set(key, value) {
+      load();
+      const next = new Map(rows);
+      next.set(key, value);
+      flush(next);
+      rows.set(key, value);
+    },
     has(key) { load(); return rows.has(key); },
-    delete(key) { load(); const removed = rows.delete(key); if (removed) flush(); return removed; },
+    delete(key) {
+      load();
+      if (!rows.has(key)) return false;
+      const next = new Map(rows);
+      next.delete(key);
+      flush(next);
+      rows.delete(key);
+      return true;
+    },
     entries() { load(); return [...rows.entries()]; },
     get size() { load(); return rows.size; },
   };

@@ -47,8 +47,14 @@ function createSettlement(options) {
             return { ok: false, code: 'INVALID_SETTLEMENT' };
         }
 
-        // 2. Already settled -> replay-safe, never credit the wallet twice.
-        const existing = (journal && typeof journal.get === "function" && journal.get(fillID)) || ledger.get(fillID);
+        // 2. Replay check: a durable record wins over the in-memory ledger.
+        // A journal that cannot be read is not an empty journal: refuse instead of paying again.
+        let existing;
+        try {
+            existing = (journal && typeof journal.get === "function" && journal.get(fillID)) || ledger.get(fillID);
+        } catch (err) {
+            return { ok: false, code: 'JOURNAL_UNREADABLE' };
+        }
         if (existing && existing.state === STATE_SETTLED) {
             return { ok: true, code: 'ALREADY_SETTLED', netCents: existing.netCents };
         }
@@ -69,7 +75,21 @@ function createSettlement(options) {
             return { ok: false, code: 'NATIVE_AUTHORITY_UNAVAILABLE' };
         }
 
-        // 6. Credit exactly once.
+        // 6. If the journal already holds PENDING for this fill, an earlier attempt may have paid
+        //    already; return without calling the wallet port to avoid paying twice.
+        if (existing && existing.state === 'PENDING') {
+            return { ok: false, code: 'SETTLEMENT_UNKNOWN' };
+        }
+
+        // 7. Write-ahead: persist the PENDING intent BEFORE any money moves. If this write throws,
+        //    the durable record of the payment does not exist, so no money moved and we never credit.
+        try {
+            put(fillID, { state: 'PENDING', netCents, creditReceiptID: null });
+        } catch (err) {
+            return { ok: false, code: 'JOURNAL_WRITE_FAILED' };
+        }
+
+        // 8. Credit exactly once.
         let creditReceiptID;
         try {
             const receipt = walletPort.credit({ corpID: ownerCorpID, cents: netCents, fillID });
@@ -84,8 +104,14 @@ function createSettlement(options) {
             return { ok: false, code: 'SETTLEMENT_UNKNOWN' };
         }
 
-        // 7. Success -> mark SETTLED.
-        put(fillID, { state: STATE_SETTLED, netCents, creditReceiptID });
+        // 9. Success -> write the durable outcome. If this write throws, the payment is real but its
+        //    durable record is missing, so never report ok:true; return the receipt for reconciliation.
+        try {
+            put(fillID, { state: STATE_SETTLED, netCents, creditReceiptID });
+        } catch (err) {
+            return { ok: false, code: 'JOURNAL_WRITE_FAILED', fillID, creditReceiptID };
+        }
+
         return { ok: true, code: 'SETTLED', fillID, netCents, creditReceiptID };
     }
 

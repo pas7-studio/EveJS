@@ -1,8 +1,10 @@
 'use strict';
 
 // IE-060: one conservation audit across mining, warehouse, industry, market, wallet and cargo.
-// The audit fails closed: a scope without a real source receipt is unknown, not zero, and the same cargo
-// held by two holders blocks the whole scope instead of being silently averaged.
+// The audit fails closed: a scope without a real source receipt is unknown, not zero, and the same
+// cargo held by two holders blocks the whole scope instead of being silently averaged. An empty or
+// partial audit is not evidence: if no scope was measured at all, or a required scope was not measured
+// on both sides, the audit reports INCOMPLETE_SCOPE rather than pretending to be BALANCED.
 
 const SCOPES = ['mining', 'warehouse', 'industry', 'market', 'wallet', 'cargo'];
 
@@ -11,6 +13,7 @@ const COVERAGE_CODE = {
   IMBALANCE: 'IMBALANCE',
   UNKNOWN_SOURCE: 'UNKNOWN_SOURCE',
   DUPLICATE_CUSTODY: 'DUPLICATE_CUSTODY',
+  INCOMPLETE_SCOPE: 'INCOMPLETE_SCOPE',
 };
 
 function isCount(value) {
@@ -35,7 +38,7 @@ function measure(entry) {
 }
 
 function audit(args) {
-  const { before, after, custody } = args || {};
+  const { before, after, custody, requiredScopes } = args || {};
   const missing = [];
 
   const deltas = {};
@@ -58,10 +61,22 @@ function audit(args) {
     deltas[scope] = to.amount - from.amount;
   }
 
+
+  // a required scope must have been measured on both sides; the ones that were not are reported
+  if (Array.isArray(requiredScopes)) {
+    const unmeasured = requiredScopes.filter((scope) => !(scope in deltas));
+    if (unmeasured.length > 0) {
+      return { ok: false, code: COVERAGE_CODE.INCOMPLETE_SCOPE, closed: true, missing: unmeasured.slice().sort() };
+    }
+  }
+
   if (missing.length > 0) {
     return { ok: false, code: COVERAGE_CODE.UNKNOWN_SOURCE, closed: true, missing };
   }
-
+  // nothing was measured at all: an empty or partial audit is not evidence
+  if (Object.keys(deltas).length === 0) {
+    return { ok: false, code: COVERAGE_CODE.INCOMPLETE_SCOPE, closed: true, missing: missing.slice().sort() };
+  }
   // physical custody: one cargoID can only have one holder
   const holders = new Map();
   for (const entry of Array.isArray(custody) ? custody : []) {
