@@ -176,7 +176,7 @@ function listReport(env = process.env) {
   let status = "OK";
   let error = null;
   try { names = fs.readdirSync(root(env)).filter((n) => /\.json$/.test(n)); }
-  catch (_error) { status = _error.code === "ENOENT" ? "ABSENT" : "UNREADABLE"; error = _error.code || _error.message; return { runs, unreadable, status, error }; }
+  catch (_error) { status = _error.code === "ENOENT" ? "ABSENT" : "UNREADABLE"; error = _error.code === "ENOENT" ? null : (_error.code || _error.message); return { runs, unreadable, status, error }; }
   for (const name of names) {
     const haulerID = pos(name.replace(/\.json$/, ""));
     if (!haulerID) continue;
